@@ -170,11 +170,13 @@ func (s *ChannelScheduler) federateDefaultCandidates(ctx context.Context, reques
 			actualModel := model
 			if s.modelSupportResolverFunc != nil {
 				supported, resolvedModel, _, _ := s.modelSupportResolverFunc(ctx, kind, upstream, model)
-				if !supported || resolvedModel == "" {
+				if !supported {
 					trace.skipChannel(sibling, "protocol_federation", "unsupported_model", model)
 					continue
 				}
-				actualModel = resolvedModel
+				if resolvedModel != "" {
+					actualModel = resolvedModel
+				}
 			} else if supported, reason := s.resolveModelSupport(ctx, kind, upstream, model); !supported {
 				trace.skipChannel(sibling, "protocol_federation", "unsupported_model", reason)
 				continue

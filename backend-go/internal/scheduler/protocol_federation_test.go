@@ -252,6 +252,37 @@ func TestProtocolFederationExcludesSiblingWithoutModelSupport(t *testing.T) {
 	}
 }
 
+func TestProtocolFederationKeepsSupportedSiblingWhenResolverNeedsNoMapping(t *testing.T) {
+	cfg := federationTestConfig()
+	cfg.ChatUpstream[0].SupportedModels = []string{"shared-model"}
+	s, cleanup := createTestScheduler(t, cfg)
+	defer cleanup()
+	s.SetModelSupportResolverProvider(func(_ context.Context, kind ChannelKind, _ *config.UpstreamConfig, _ string) (bool, string, string, string) {
+		if kind == ChannelKindChat {
+			// 命中渠道 SupportedModels 时，resolver 表示“支持但无需映射”。
+			return true, "", "explain", ""
+		}
+		return false, "", "test", "not requested"
+	})
+
+	federated := s.federateDefaultCandidates(context.Background(), ChannelKindMessages, []ChannelInfo{{
+		Route: channelRouteRef(ChannelKindMessages, 0, &config.UpstreamConfig{ChannelUID: "msg"}), Index: 0, Status: "active",
+	}}, "shared-model", nil, newSelectionTrace(SelectionOptions{Kind: ChannelKindMessages}))
+	if len(federated) != 2 {
+		t.Fatalf("supported sibling with no mapping must be retained: %#v", federated)
+	}
+	var chatSibling *ChannelInfo
+	for i := range federated {
+		if federated[i].Route.Kind == string(ChannelKindChat) {
+			chatSibling = &federated[i]
+			break
+		}
+	}
+	if chatSibling == nil || chatSibling.ActualModel != "shared-model" {
+		t.Fatalf("sibling route/model = %#v, want chat/shared-model", chatSibling)
+	}
+}
+
 func TestProtocolFederationPreservesExplicitChannelPin(t *testing.T) {
 	s, cleanup := createTestScheduler(t, federationTestConfig())
 	defer cleanup()
