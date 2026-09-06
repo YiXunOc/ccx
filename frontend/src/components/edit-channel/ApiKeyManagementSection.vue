@@ -372,6 +372,26 @@
                 <template #append>
                   <div class="d-flex align-center ga-1" @click.stop>
                     <v-tooltip
+                      :text="t('channelCard.keyModelRules')"
+                      location="top"
+                      :open-delay="150"
+                      content-class="ccx-tooltip"
+                    >
+                      <template #activator="{ props: tooltipProps }">
+                        <v-btn
+                          v-bind="tooltipProps"
+                          size="small"
+                          color="primary"
+                          icon
+                          variant="text"
+                          data-test="key-model-rules-button"
+                          @click="openKeyModelRulesEditor(row)"
+                        >
+                          <v-icon size="small">mdi-format-list-bulleted</v-icon>
+                        </v-btn>
+                      </template>
+                    </v-tooltip>
+                    <v-tooltip
                       v-if="!row.disabled"
                       :text="t('channelCard.groupModelPolicy')"
                       location="top"
@@ -1325,6 +1345,37 @@
       </v-card-text>
     </v-card>
 
+    <v-dialog v-model="keyModelRulesDialog" max-width="520">
+      <v-card>
+        <v-card-title class="d-flex align-center ga-2">
+          <v-icon color="primary">mdi-format-list-bulleted</v-icon>
+          {{ t('channelCard.keyModelRules') }}
+        </v-card-title>
+        <v-card-text class="d-flex flex-column ga-3">
+          <code v-if="keyModelRulesEditing">{{ maskApiKey(keyModelRulesEditing.key) }}</code>
+          <v-textarea
+            v-model="keyModelRulesText"
+            :label="t('channelCard.keyModelRules')"
+            :placeholder="t('channelCard.keyModelRulesPlaceholder')"
+            :hint="t('channelCard.keyModelRulesHint')"
+            persistent-hint
+            auto-grow
+            rows="4"
+            variant="outlined"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="keyModelRulesDialog = false">
+            {{ t('app.actions.cancel') }}
+          </v-btn>
+          <v-btn color="primary" @click="saveKeyModelRules">
+            {{ t('app.actions.save') }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <v-dialog v-model="groupModelDialog" max-width="520">
       <v-card>
         <v-card-title class="d-flex align-center ga-2">
@@ -1538,6 +1589,10 @@ const groupModelDialog = ref(false)
 const groupModelEditing = ref<ChannelApiKeyRow | null>(null)
 const groupModelForm = ref({ model: '', note: '' })
 const multiplierDialog = ref(false)
+const keyModelRulesDialog = ref(false)
+const keyModelRulesEditing = ref<ChannelApiKeyRow | null>(null)
+const keyModelRulesText = ref('')
+const pendingDisabledKeyModelRules = ref(new Map<string, { channelIdentity: string; models: string[] }>())
 const multiplierSaving = ref(false)
 const multiplierError = ref('')
 const multiplierEditing = ref<ChannelApiKeyRow | null>(null)
@@ -1748,6 +1803,109 @@ const groupModelAffectedCount = computed(() => {
   const group = groupModelEditing.value?.quotaGroup || ''
   return keyRows.value.filter(row => (row.quotaGroup || '') === group && !row.disabled).length
 })
+
+const normalizeModelRules = (value: string): string[] => {
+  const seen = new Set<string>()
+  return value
+    .split(/[\n,]/)
+    .map(rule => rule.trim())
+    .filter(rule => rule && !seen.has(rule) && !!seen.add(rule))
+}
+
+const channelEditorIdentity = computed(() => {
+  const channelUid = props.channelUid?.trim()
+  if (channelUid) return `uid:${channelUid}`
+  if (props.channelId !== undefined) return `route:${props.channelKind ?? 'unknown'}:${props.channelId}`
+  const accountUid = props.accountUid?.trim()
+  if (accountUid) return `account:${props.providerId ?? 'unknown'}:${accountUid}`
+  return 'component-session'
+})
+
+const clearPendingDisabledKeyModelRules = () => {
+  pendingDisabledKeyModelRules.value = new Map()
+}
+
+watch(
+  [() => props.dialogOpen, channelEditorIdentity],
+  ([dialogOpen, identity], [, previousIdentity]) => {
+    if (!dialogOpen || identity !== previousIdentity) {
+      clearPendingDisabledKeyModelRules()
+      keyModelRulesDialog.value = false
+      keyModelRulesEditing.value = null
+      keyModelRulesText.value = ''
+    }
+  },
+)
+
+const openKeyModelRulesEditor = (row: ChannelApiKeyRow) => {
+  keyModelRulesEditing.value = row
+  const pending = pendingDisabledKeyModelRules.value.get(row.key)
+  const models = pending?.channelIdentity === channelEditorIdentity.value
+    ? pending.models
+    : row.disabled?.config?.models ?? row.models
+  keyModelRulesText.value = Array.isArray(models) ? models.join('\n') : ''
+  keyModelRulesDialog.value = true
+}
+
+const saveKeyModelRules = () => {
+  const row = keyModelRulesEditing.value
+  if (!row) return
+
+  const models = normalizeModelRules(keyModelRulesText.value)
+  if (row.disabled) {
+    const pending = new Map(pendingDisabledKeyModelRules.value)
+    pending.set(row.key, { channelIdentity: channelEditorIdentity.value, models })
+    pendingDisabledKeyModelRules.value = pending
+    keyModelRulesDialog.value = false
+    return
+  }
+
+  const existingConfigs = props.apiKeyConfigs ?? []
+  const updatedConfigs = existingConfigs.some(config => config.key === row.key)
+    ? existingConfigs.map(config => config.key === row.key ? { ...config, models } : config)
+    : [...existingConfigs, { key: row.key, models }]
+  emit('update:apiKeyConfigs', updatedConfigs)
+  keyModelRulesDialog.value = false
+}
+
+watch(
+  [() => props.apiKeys, () => props.disabledKeys, () => props.apiKeyConfigs],
+  () => {
+    const pending = pendingDisabledKeyModelRules.value
+    if (!props.dialogOpen || pending.size === 0) return
+
+    const activeKeys = new Set(props.apiKeys)
+    const disabledKeys = new Set(props.disabledKeys.map(item => item.key))
+    const restoredConfigs = props.apiKeyConfigs ?? []
+    const nextPending = new Map(pending)
+    let updatedConfigs: APIKeyConfig[] | undefined
+
+    for (const [key, entry] of pending) {
+      if (entry.channelIdentity !== channelEditorIdentity.value) continue
+      if (!activeKeys.has(key) || disabledKeys.has(key)) continue
+      const configIndex = restoredConfigs.findIndex(config => config.key === key)
+      if (configIndex < 0) continue
+
+      nextPending.delete(key)
+      const restoredConfig = restoredConfigs[configIndex]
+      const models = entry.models
+      const modelsUnchanged = restoredConfig.models?.length === models.length
+        && restoredConfig.models.every((model, index) => model === models[index])
+      if (modelsUnchanged) continue
+
+      updatedConfigs ??= [...restoredConfigs]
+      updatedConfigs[configIndex] = { ...restoredConfig, models: [...models] }
+    }
+
+    if (nextPending.size !== pending.size) {
+      pendingDisabledKeyModelRules.value = nextPending
+    }
+    if (updatedConfigs) {
+      emit('update:apiKeyConfigs', updatedConfigs)
+    }
+  },
+  { deep: true },
+)
 
 const openGroupModelEditor = (row: ChannelApiKeyRow) => {
   groupModelEditing.value = row

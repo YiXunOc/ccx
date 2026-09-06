@@ -17,6 +17,7 @@ import (
 	"github.com/BenedictKing/ccx/internal/config"
 	"github.com/BenedictKing/ccx/internal/eventbus"
 	"github.com/BenedictKing/ccx/internal/httpclient"
+	"github.com/BenedictKing/ccx/internal/keypool"
 	"github.com/BenedictKing/ccx/internal/utils"
 )
 
@@ -58,6 +59,13 @@ type EndpointDiscoveryResult struct {
 	ProtocolDiscoveryError   map[string]string    `json:"protocolDiscoveryError,omitempty"`
 	apiKey                   string               `json:"-"`
 	credentialUID            string               `json:"-"`
+	// manualModels 是 APIKeyConfig.Models 中未被发现清单覆盖的精确 allow 候选。
+	// 它用于端点精确路由与未验证手动 ModelProfile，不进入发现时间、来源、协议清单或模型哈希。
+	manualModels []string `json:"-"`
+	// discoveredModels/discoveredProtocolModels 保留 checkpoint 对应的上游原始清单。
+	// Models/ProtocolModels 之后会被当前 Key 规则过滤，但恢复时需重新按最新规则计算。
+	discoveredModels         []string              `json:"-"`
+	discoveredProtocolModels map[string][]string `json:"-"`
 	// usedClientFingerprint 标记该端点裸请求被客户端指纹风控拒绝、
 	// 带 Claude Code 伪装头重试后成功；runDiscovery 据此学习渠道级标记。
 	usedClientFingerprint bool `json:"-"`
@@ -729,8 +737,12 @@ func (r *AutoDiscoveryRunner) discoverEndpoints(ctx context.Context, channel *co
 			}
 			result.apiKey = key
 			result.credentialUID = r.resolveDiscoveryCredentialUID(channel, cfgManager, key)
+			r.applyKeyModelRules(channel, &result)
 			if result.ProtocolOk && channel.AutoManaged {
 				r.discoverEndpointProtocols(ctx, channel, baseURL, key, &result, cfgManager)
+				// 协议级发现发生在基础模型清单之后，再应用一次 Key 规则，避免
+				// 协议探测结果绕过单 Key allow/deny 约束。
+				r.applyKeyModelRules(channel, &result)
 			}
 			logEndpointDiscovery(channel.ChannelUID, result)
 			results = append(results, result)
@@ -810,24 +822,42 @@ func (r *AutoDiscoveryRunner) discoverEndpointsWithCheckpoint(ctx context.Contex
 
 			// 已持久化且配置未变：用 checkpoint 重建结果，不重新探测，避免重复请求 /models。
 			if cp, ok := prevByUID[endpointUID]; ok {
-				results = append(results, EndpointDiscoveryResult{
+				result := EndpointDiscoveryResult{
 					KeyMask:                  utils.MaskAPIKey(key),
 					BaseURL:                  baseURL,
 					Models:                   cp.Models,
 					ModelsCount:              cp.ModelsCount,
+					discoveredModels:         append([]string(nil), cp.Models...),
 					ProtocolOk:               cp.ProtocolOk,
 					ModelDiscoverySource:     cp.ModelDiscoverySource,
 					ModelDiscoveryMessage:    cp.ModelDiscoveryMessage,
 					ModelsDiscoveredAt:       cp.ModelsDiscoveredAt,
 					ProtocolModels:           cloneProtocolModels(cp.ProtocolModels),
+					discoveredProtocolModels: cloneProtocolModels(cp.ProtocolModels),
 					ProtocolDiscoveredAt:     cloneTimeMap(cp.ProtocolDiscoveredAt),
 					ProtocolDiscoverySource:  cloneStringMap(cp.ProtocolDiscoverySource),
 					ProtocolDiscoveryMessage: cloneStringMap(cp.ProtocolDiscoveryMessage),
 					ProtocolDiscoveryError:   cloneStringMap(cp.ProtocolDiscoveryError),
 					apiKey:                   key,
 					credentialUID:            cp.CredentialUID,
-				})
-				continue
+				}
+				r.applyKeyModelRules(channel, &result)
+				// 规则可能在任务中断后发生变化：checkpoint 只保存真实发现字段，
+				// 恢复时必须按当前 Key 规则重新写入 endpoint/model profiles 并 Flush，
+				// 不能只更新内存结果后直接跳过持久化。
+				if result.ProtocolOk {
+					if _, err := r.writeProfileForEndpoint(channelUID, channel, result, channelID, channelKind, globalModelCapabilities); err == nil {
+						if err := r.flushStores(); err == nil {
+							results = append(results, result)
+							continue
+						} else {
+							log.Printf("[AutoDiscovery-Checkpoint] 恢复端点画像 Flush 失败，转为重新探测 endpoint=%s: %v", endpointUID, err)
+						}
+					} else {
+						log.Printf("[AutoDiscovery-Checkpoint] 恢复端点画像写入失败，转为重新探测 endpoint=%s: %v", endpointUID, err)
+					}
+				}
+				// 持久化失败时不复用 checkpoint，继续走真实探测路径。
 			}
 
 			var result EndpointDiscoveryResult
@@ -838,8 +868,12 @@ func (r *AutoDiscoveryRunner) discoverEndpointsWithCheckpoint(ctx context.Contex
 			}
 			result.apiKey = key
 			result.credentialUID = r.resolveDiscoveryCredentialUID(channel, cfgManager, key)
+			r.applyKeyModelRules(channel, &result)
 			if result.ProtocolOk && channel.AutoManaged {
 				r.discoverEndpointProtocols(ctx, channel, baseURL, key, &result, cfgManager)
+				// 协议级发现发生在基础模型清单之后，再应用一次 Key 规则，避免
+				// 协议探测结果绕过单 Key allow/deny 约束。
+				r.applyKeyModelRules(channel, &result)
 			}
 			logEndpointDiscovery(channel.ChannelUID, result)
 			results = append(results, result)
@@ -857,19 +891,27 @@ func (r *AutoDiscoveryRunner) discoverEndpointsWithCheckpoint(ctx context.Contex
 				log.Printf("[AutoDiscovery-Checkpoint] 画像 Flush 失败，不标记 checkpoint endpoint=%s: %v", endpointUID, err)
 				continue
 			}
+			checkpointModels := result.discoveredModels
+			if checkpointModels == nil {
+				checkpointModels = result.Models
+			}
+			checkpointProtocolModels := result.discoveredProtocolModels
+			if checkpointProtocolModels == nil {
+				checkpointProtocolModels = result.ProtocolModels
+			}
 			checkpoint := CheckpointedEndpoint{
 				EndpointUID:              endpointUID,
 				KeyHash:                  keyHash,
 				CredentialUID:            result.credentialUID,
 				BaseURL:                  canonicalBaseURL,
-				Models:                   append([]string(nil), result.Models...),
-				ModelsCount:              result.ModelsCount,
+				Models:                   append([]string(nil), checkpointModels...),
+				ModelsCount:              len(checkpointModels),
 				ProtocolOk:               result.ProtocolOk,
 				Error:                    result.ErrorMessage,
 				ModelDiscoverySource:     result.ModelDiscoverySource,
 				ModelDiscoveryMessage:    result.ModelDiscoveryMessage,
 				ModelsDiscoveredAt:       cloneTimePointer(result.ModelsDiscoveredAt),
-				ProtocolModels:           cloneProtocolModels(result.ProtocolModels),
+				ProtocolModels:           cloneProtocolModels(checkpointProtocolModels),
 				ProtocolDiscoveredAt:     cloneTimeMap(result.ProtocolDiscoveredAt),
 				ProtocolDiscoverySource:  cloneStringMap(result.ProtocolDiscoverySource),
 				ProtocolDiscoveryMessage: cloneStringMap(result.ProtocolDiscoveryMessage),
@@ -931,6 +973,55 @@ func (r *AutoDiscoveryRunner) resolveAutoManagedKeys(channel *config.UpstreamCon
 		}
 	}
 	return keys
+}
+
+func (r *AutoDiscoveryRunner) applyKeyModelRules(channel *config.UpstreamConfig, result *EndpointDiscoveryResult) {
+	if channel == nil || result == nil {
+		return
+	}
+	apiKey := strings.TrimSpace(result.apiKey)
+	if apiKey == "" {
+		return
+	}
+	var rules []string
+	for _, keyConfig := range channel.APIKeyConfigs {
+		if strings.TrimSpace(keyConfig.Key) == apiKey ||
+			(strings.TrimSpace(keyConfig.Key) == "" && strings.TrimSpace(keyConfig.CredentialUID) != "" &&
+				strings.TrimSpace(keyConfig.CredentialUID) == strings.TrimSpace(result.credentialUID)) {
+			rules = keyConfig.Models
+			break
+		}
+	}
+	if len(rules) == 0 {
+		result.manualModels = nil
+		return
+	}
+
+	rawModels := result.Models
+	if result.discoveredModels != nil {
+		rawModels = result.discoveredModels
+	} else if result.Models != nil {
+		result.discoveredModels = append([]string(nil), result.Models...)
+	}
+	filtered, manual := keypool.ApplyModelRules(rawModels, rules)
+	result.Models = filtered
+	result.ModelsCount = len(filtered)
+	result.manualModels = manual
+
+	// 协议清单同样是单 Key 的运行时候选事实，必须受同一 allow/deny 约束；
+	// 手动项不混入协议发现清单，避免被展示为已发现或已验证。
+	rawProtocolModels := result.ProtocolModels
+	if result.discoveredProtocolModels != nil {
+		rawProtocolModels = result.discoveredProtocolModels
+	} else if result.ProtocolModels != nil {
+		result.discoveredProtocolModels = cloneProtocolModels(result.ProtocolModels)
+	}
+	filteredProtocols := make(map[string][]string, len(rawProtocolModels))
+	for protocol, models := range rawProtocolModels {
+		protocolFiltered, _ := keypool.ApplyModelRules(models, rules)
+		filteredProtocols[protocol] = protocolFiltered
+	}
+	result.ProtocolModels = filteredProtocols
 }
 
 func (r *AutoDiscoveryRunner) resolveDiscoveryCredentialUID(channel *config.UpstreamConfig, cfgManager *config.ConfigManager, apiKey string) string {
@@ -1483,7 +1574,21 @@ func (r *AutoDiscoveryRunner) writeProfileForEndpoint(channelUID string, channel
 	if profile.CredentialUID == "" {
 		profile.CredentialUID = channel.CredentialUIDForKey(apiKey)
 	}
-	profile.AvailableModels = ep.Models
+	// AvailableModels 是该 Key 的有效模型候选：真实发现清单先按规则过滤，
+	// 再附加精确 positive allow 手动项。手动项仅供精确请求路径，不进入发现元数据。
+	profile.AvailableModels = append([]string{}, ep.Models...)
+	for _, modelID := range ep.manualModels {
+		alreadyPresent := false
+		for _, available := range profile.AvailableModels {
+			if strings.EqualFold(strings.TrimSpace(available), strings.TrimSpace(modelID)) {
+				alreadyPresent = true
+				break
+			}
+		}
+		if !alreadyPresent {
+			profile.AvailableModels = append(profile.AvailableModels, modelID)
+		}
+	}
 	ensureConfiguredProtocolDiscovery(channel, &ep)
 	profile.ProtocolModels = cloneProtocolModels(ep.ProtocolModels)
 	profile.ProtocolModelsHash = hashProtocolModels(ep.ProtocolModels)
@@ -1491,11 +1596,9 @@ func (r *AutoDiscoveryRunner) writeProfileForEndpoint(channelUID string, channel
 	profile.ProtocolDiscoverySource = cloneStringMap(ep.ProtocolDiscoverySource)
 	profile.ProtocolDiscoveryMessage = cloneStringMap(ep.ProtocolDiscoveryMessage)
 	profile.ProtocolDiscoveryError = cloneStringMap(ep.ProtocolDiscoveryError)
-	if len(ep.Models) > 0 {
+	if ep.ModelDiscoverySource != "" {
 		hash := sha256.Sum256([]byte(strings.Join(ep.Models, ",")))
 		profile.ModelListHash = hex.EncodeToString(hash[:8])
-	}
-	if ep.ModelDiscoverySource != "" {
 		profile.ModelDiscoverySource = ep.ModelDiscoverySource
 	}
 	if ep.ModelDiscoveryMessage != "" {
@@ -1512,23 +1615,54 @@ func (r *AutoDiscoveryRunner) writeProfileForEndpoint(channelUID string, channel
 		return endpointUID, err
 	}
 
-	// Phase 3B-2：写入每个发现模型的 ModelProfile 行
-	if r.ModelProfileStore != nil && channel.AutoManaged && len(ep.Models) > 0 {
-		// 先收敛到本次清单：上游已下架/更名的模型不再残留候选池
-		//（kimi-k2.6 2026-08-18 下架后模型画像行不清理导致死候选的事故路径）。
-		keep := make(map[string]struct{}, len(ep.Models))
+	// Phase 3B-2：发现模型写入已验证画像；精确手动 allow 作为未验证候选单独保存。
+	// 两类画像复用同一模型主键，但手动候选永远不把发现来源或 ProbeSuccess 伪造为 true。
+	if r.ModelProfileStore != nil && channel.AutoManaged && (len(ep.Models) > 0 || len(ep.manualModels) > 0) {
+		// Reconcile 前先按规范化模型 ID 汇总既有画像。规则与路由均按大小写不敏感，
+		// 不能让 casing 变化导致旧成功画像先被删除、随后以未验证画像重建。
+		existingByModel := make(map[string]ModelProfile)
+		for _, candidate := range r.ModelProfileStore.ListByChannel(channelUID) {
+			if candidate.ChannelKind != channelKind || candidate.MetricsKey != metricsKey {
+				continue
+			}
+			canonical := strings.ToLower(strings.TrimSpace(candidate.ModelID))
+			current, exists := existingByModel[canonical]
+			preferCandidate := !exists ||
+				(candidate.ProbeSuccess && !current.ProbeSuccess) ||
+				(candidate.ProbeSuccess == current.ProbeSuccess && candidate.LastProbeAt.After(current.LastProbeAt)) ||
+				(candidate.ProbeSuccess == current.ProbeSuccess && candidate.LastProbeAt.Equal(current.LastProbeAt) && candidate.ProbeConfidence > current.ProbeConfidence)
+			if preferCandidate {
+				existingByModel[canonical] = candidate
+			}
+		}
+
+		// 自动刷新收敛时保留当前 APIKeyConfig.Models 的手动意图，避免发现清单覆盖用户配置。
+		// 对大小写等价模型沿用既有最强画像的 ModelID 作为写入键；Reconcile 会删除
+		// 其他 casing 行，随后 writeModelProfile 继承其完整实证，确保只保留一个逻辑模型。
+		profileModelID := func(modelID string) string {
+			if existing, ok := existingByModel[strings.ToLower(strings.TrimSpace(modelID))]; ok && strings.TrimSpace(existing.ModelID) != "" {
+				return existing.ModelID
+			}
+			return modelID
+		}
+		selectedCasing := make(map[string]struct{}, len(ep.Models)+len(ep.manualModels))
 		for _, modelID := range ep.Models {
+			selectedCasing[profileModelID(modelID)] = struct{}{}
+		}
+		for _, modelID := range ep.manualModels {
+			selectedCasing[profileModelID(modelID)] = struct{}{}
+		}
+		keep := make(map[string]struct{}, len(selectedCasing))
+		for modelID := range selectedCasing {
 			keep[modelID] = struct{}{}
 		}
 		if removed := r.ModelProfileStore.ReconcileModels(channelUID, channelKind, metricsKey, keep); len(removed) > 0 {
 			log.Printf("[AutoDiscovery-ModelProfile] channel=%s key=%s 清单外模型画像已移除: %s",
 				channelUID, ep.KeyMask, strings.Join(removed, ", "))
 		}
-		now := time.Now()
-		for _, modelID := range ep.Models {
-			family := InferModelFamily(modelID, "")
-			qualityTier := ModelProfileQualityTier(modelID, family)
 
+		writeModelProfile := func(modelID, source string, discovered bool) {
+			family := InferModelFamily(modelID, "")
 			modelProfile := &ModelProfile{
 				ChannelUID:   channelUID,
 				ChannelID:    channelID,
@@ -1536,16 +1670,16 @@ func (r *AutoDiscoveryRunner) writeProfileForEndpoint(channelUID string, channel
 				ServiceType:  channel.ServiceType,
 				MetricsKey:   metricsKey,
 				ModelID:      modelID,
-				UpdatedAt:    now,
+				UpdatedAt:    time.Now(),
 				ModelFamily:  family,
-				QualityTier:  qualityTier,
-				ProbeSuccess: true,
-				Source:       "auto_discovery",
+				QualityTier:  ModelProfileQualityTier(modelID, family),
+				ProbeSuccess: discovered,
+				Source:       source,
 			}
 			if resolved := config.ResolveUpstreamCapability(modelID, channel, globalModelCapabilities); resolved.Known {
 				applyUpstreamModelCapability(modelProfile, resolved.Capability)
 			}
-			if existing := r.ModelProfileStore.Get(channelUID, channelKind, metricsKey, modelID); existing != nil {
+			if existing, ok := existingByModel[strings.ToLower(strings.TrimSpace(modelID))]; ok {
 				modelProfile.ProviderQualityScore = existing.ProviderQualityScore
 				modelProfile.ProviderQualitySource = existing.ProviderQualitySource
 				modelProfile.ProviderQualityConfidence = existing.ProviderQualityConfidence
@@ -1553,10 +1687,34 @@ func (r *AutoDiscoveryRunner) writeProfileForEndpoint(channelUID string, channel
 				modelProfile.LastProbeAt = existing.LastProbeAt
 				modelProfile.ProbeLatencyMs = existing.ProbeLatencyMs
 				modelProfile.ProbeConfidence = existing.ProbeConfidence
+				// 已有真实调用/探测成功证据不可被后续自动发现刷新降级；
+				// 手动 allow 仅表达用户意图，不能覆盖更强的既有验证来源。
+				if existing.ProbeSuccess {
+					modelProfile.ProbeSuccess = true
+					if strings.TrimSpace(existing.Source) != "" {
+						modelProfile.Source = existing.Source
+					}
+				}
 			}
 			if err := r.ModelProfileStore.Upsert(modelProfile); err != nil {
 				log.Printf("[AutoDiscovery-ModelProfile] 写入模型画像失败 channel=%s model=%s: %v",
 					channelUID, modelID, err)
+			}
+		}
+		for _, modelID := range ep.Models {
+			writeModelProfile(profileModelID(modelID), "auto_discovery", true)
+		}
+		for _, modelID := range ep.manualModels {
+			// 若本轮发现已覆盖同一模型，则发现画像已携带验证证据，不能被手动项覆盖。
+			discoveredThisRound := false
+			for _, discoveredID := range ep.Models {
+				if strings.EqualFold(discoveredID, modelID) {
+					discoveredThisRound = true
+					break
+				}
+			}
+			if !discoveredThisRound {
+				writeModelProfile(profileModelID(modelID), "manual", false)
 			}
 		}
 		// /v1/models 元数据自报的输入窗口落入学习记忆（放宽方向声明证据）。

@@ -271,3 +271,8 @@ __pycache__/
 
 .mcp.json
 store-msix/
+.agent-teams
+.dsh-meow
+.pnpm-store
+frontend/.npm-cache
+frontend/.tools

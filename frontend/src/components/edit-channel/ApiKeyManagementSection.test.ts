@@ -40,10 +40,16 @@ vi.mock('../../i18n', () => ({
 }))
 
 const passthroughStub = defineComponent({ template: '<div v-bind="$attrs"><slot /></div>' })
+const tooltipStub = defineComponent({ template: '<div><slot name="activator" :props="{}" /><slot /></div>' })
 const inputStub = defineComponent({
   props: ['modelValue', 'type', 'placeholder'],
   emits: ['update:modelValue'],
   template: '<input :type="type" :placeholder="placeholder" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+})
+const textareaStub = defineComponent({
+  props: ['modelValue', 'placeholder', 'hint'],
+  emits: ['update:modelValue'],
+  template: '<textarea :placeholder="placeholder" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
 })
 const selectStub = defineComponent({
   props: ['modelValue', 'items', 'itemTitle', 'itemValue', 'label'],
@@ -81,7 +87,7 @@ const mountSection = (props: Record<string, unknown> = {}) => mount(ApiKeyManage
       VCardActions: passthroughStub,
       VIcon: passthroughStub,
       VChip: passthroughStub,
-      VTooltip: passthroughStub,
+      VTooltip: tooltipStub,
       VProgressCircular: passthroughStub,
       VProgressLinear: passthroughStub,
       VAlert: passthroughStub,
@@ -100,6 +106,7 @@ const mountSection = (props: Record<string, unknown> = {}) => mount(ApiKeyManage
       }),
       VSelect: selectStub,
       VTextField: inputStub,
+      VTextarea: textareaStub,
       VBtn: buttonStub,
       VExpandTransition: passthroughStub,
       VDivider: passthroughStub,
@@ -425,5 +432,181 @@ describe('ApiKeyManagementSection', () => {
     expect(reloadedAlphaRow.html()).toContain('kimiConsoleToken.configured')
     expect(reloadedAlphaRow.html()).toContain('kimiConsoleToken.validatedAt')
     expect(reloadedBetaRow.html()).not.toContain('kimiConsoleToken.configured')
+  })
+
+  it('edits every key model rule list and writes trimmed, stable models back to apiKeyConfigs', async () => {
+    const wrapper = mountSection({
+      apiKeys: ['sk-1', 'sk-2'],
+      apiKeyConfigs: [
+        { key: 'sk-1', name: 'first', models: ['gpt-4o'] },
+        { key: 'sk-2', name: 'second', models: ['old-model', '!old-deny'] },
+      ],
+    })
+
+    const ruleButtons = wrapper.findAll('[data-test="key-model-rules-button"]')
+    expect(ruleButtons).toHaveLength(2)
+
+    await ruleButtons[1].trigger('click')
+    await nextTick()
+
+    const modelRulesInput = wrapper.getComponent(textareaStub)
+    expect(modelRulesInput.props('modelValue')).toBe('old-model\n!old-deny')
+    expect(modelRulesInput.props('hint')).toBe('channelCard.keyModelRulesHint')
+
+    await modelRulesInput.vm.$emit('update:modelValue', ' gpt-4o ,\n gpt-4* \n, !gpt-4o-mini , gpt-4o ')
+    const saveButton = wrapper.findAllComponents(buttonStub)
+      .find(button => button.text().includes('app.actions.save'))
+    await saveButton!.trigger('click')
+
+    expect(wrapper.emitted('update:apiKeyConfigs')).toEqual([[
+      [
+        { key: 'sk-1', name: 'first', models: ['gpt-4o'] },
+        { key: 'sk-2', name: 'second', models: ['gpt-4o', 'gpt-4*', '!gpt-4o-mini'] },
+      ],
+    ]])
+  })
+
+  it('creates a model rule config for a visible key without one', async () => {
+    const wrapper = mountSection({
+      apiKeys: ['sk-1', 'sk-2'],
+      apiKeyConfigs: [{ key: 'sk-1', name: 'first', models: ['gpt-4o'] }],
+    })
+
+    const ruleButtons = wrapper.findAll('[data-test="key-model-rules-button"]')
+    await ruleButtons[1].trigger('click')
+    await nextTick()
+    await wrapper.getComponent(textareaStub).vm.$emit('update:modelValue', 'gpt-4o-mini')
+    const saveButton = wrapper.findAllComponents(buttonStub)
+      .find(button => button.text().includes('app.actions.save'))
+    await saveButton!.trigger('click')
+
+    expect(wrapper.emitted('update:apiKeyConfigs')).toEqual([[
+      [
+        { key: 'sk-1', name: 'first', models: ['gpt-4o'] },
+        { key: 'sk-2', models: ['gpt-4o-mini'] },
+      ],
+    ]])
+  })
+
+  it('merges disabled key model edits into the same channel authoritative config after restore', async () => {
+    const key = 'sk-disabled'
+    const wrapper = mountSection({
+      channelUid: 'channel-a',
+      apiKeys: [],
+      disabledKeys: [{
+        key,
+        reason: 'authentication_error',
+        message: 'expired',
+        disabledAt: '2026-08-20T00:00:00Z',
+        config: { key, name: 'restored key', weight: 3, quotaGroup: 'group-a', models: ['old-model'] },
+      }],
+      apiKeyConfigs: [],
+    })
+
+    await wrapper.get('[data-test="key-model-rules-button"]').trigger('click')
+    await nextTick()
+    expect(wrapper.getComponent(textareaStub).props('modelValue')).toBe('old-model')
+
+    await wrapper.getComponent(textareaStub).vm.$emit('update:modelValue', ' gpt-4o ,\n !gpt-4o-mini, gpt-4o ')
+    const saveButton = wrapper.findAllComponents(buttonStub)
+      .find(button => button.text().includes('app.actions.save'))
+    await saveButton!.trigger('click')
+
+    expect(wrapper.emitted('update:apiKeyConfigs')).toBeUndefined()
+
+    const restoredConfig = {
+      key,
+      name: 'restored key',
+      weight: 3,
+      quotaGroup: 'group-a',
+      rateLimitRpm: 60,
+      models: ['old-model'],
+    }
+    await wrapper.setProps({
+      apiKeys: [key],
+      disabledKeys: [],
+      apiKeyConfigs: [restoredConfig],
+    })
+    await nextTick()
+
+    expect(wrapper.emitted('update:apiKeyConfigs')).toEqual([[
+      [{ ...restoredConfig, models: ['gpt-4o', '!gpt-4o-mini'] }],
+    ]])
+
+    await wrapper.setProps({ apiKeyConfigs: [{ ...restoredConfig }] })
+    await nextTick()
+    expect(wrapper.emitted('update:apiKeyConfigs')).toHaveLength(1)
+  })
+
+  it('does not apply pending disabled models to the same key on another channel', async () => {
+    const key = 'sk-shared'
+    const wrapper = mountSection({
+      channelUid: 'channel-a',
+      apiKeys: [],
+      disabledKeys: [{
+        key,
+        reason: 'authentication_error',
+        message: 'expired',
+        disabledAt: '2026-08-20T00:00:00Z',
+        config: { key, models: ['channel-a-old'] },
+      }],
+      apiKeyConfigs: [],
+    })
+
+    await wrapper.get('[data-test="key-model-rules-button"]').trigger('click')
+    await wrapper.getComponent(textareaStub).vm.$emit('update:modelValue', 'channel-a-new')
+    const saveButton = wrapper.findAllComponents(buttonStub)
+      .find(button => button.text().includes('app.actions.save'))
+    await saveButton!.trigger('click')
+    expect(wrapper.emitted('update:apiKeyConfigs')).toBeUndefined()
+
+    const channelBConfig = { key, name: 'channel-b key', quotaGroup: 'group-b', models: ['channel-b-old'] }
+    await wrapper.setProps({
+      channelUid: 'channel-b',
+      apiKeys: [key],
+      disabledKeys: [],
+      apiKeyConfigs: [channelBConfig],
+    })
+    await nextTick()
+
+    expect(wrapper.emitted('update:apiKeyConfigs')).toBeUndefined()
+    await wrapper.get('[data-test="key-model-rules-button"]').trigger('click')
+    expect(wrapper.getComponent(textareaStub).props('modelValue')).toBe('channel-b-old')
+  })
+
+  it('clears pending disabled models when the channel dialog closes before reopening', async () => {
+    const key = 'sk-dialog'
+    const wrapper = mountSection({
+      channelUid: 'channel-a',
+      apiKeys: [],
+      disabledKeys: [{
+        key,
+        reason: 'authentication_error',
+        message: 'expired',
+        disabledAt: '2026-08-20T00:00:00Z',
+        config: { key, models: ['old-model'] },
+      }],
+      apiKeyConfigs: [],
+    })
+
+    await wrapper.get('[data-test="key-model-rules-button"]').trigger('click')
+    await wrapper.getComponent(textareaStub).vm.$emit('update:modelValue', 'edited-before-close')
+    const saveButton = wrapper.findAllComponents(buttonStub)
+      .find(button => button.text().includes('app.actions.save'))
+    await saveButton!.trigger('click')
+    expect(wrapper.emitted('update:apiKeyConfigs')).toBeUndefined()
+
+    await wrapper.setProps({ dialogOpen: false })
+    await nextTick()
+    const restoredConfig = { key, name: 'restored key', weight: 2, models: ['old-model'] }
+    await wrapper.setProps({
+      dialogOpen: true,
+      apiKeys: [key],
+      disabledKeys: [],
+      apiKeyConfigs: [restoredConfig],
+    })
+    await nextTick()
+
+    expect(wrapper.emitted('update:apiKeyConfigs')).toBeUndefined()
   })
 })

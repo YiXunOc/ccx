@@ -219,6 +219,74 @@ func identitiesConflict(left, right string) bool {
 //
 // 若有任意 include 规则匹配则返回 true；否定优先级最高（任意 !xx 匹配则返回 false）。
 // 全部规则均为 include 时，仅当至少一条匹配时返回 true。
+// ApplyModelRules 将单 Key 的模型规则应用到自动发现清单。
+// 返回过滤后的发现模型与可补全的手动候选。
+//
+// 发现候选只能来自上游清单：通配规则仅用于筛选已有发现模型，
+// 不会把通配符本身展开成虚构模型；只有精确 allow 规则才可补入手动候选。
+// deny 规则始终只负责排除，不会生成任何候选。
+func ApplyModelRules(discovered, rules []string) (filtered, manual []string) {
+	seen := make(map[string]struct{}, len(discovered))
+	for _, model := range discovered {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		canonical := strings.ToLower(model)
+		if _, ok := seen[canonical]; ok {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		if matchesModel(model, rules) {
+			filtered = append(filtered, model)
+		}
+	}
+
+	// 只有精确 allow（无 *）才代表用户明确补入了一个模型。
+	manualSeen := make(map[string]struct{})
+	for _, raw := range rules {
+		pattern := strings.TrimSpace(raw)
+		if pattern == "" || strings.HasPrefix(pattern, "!") || strings.Contains(pattern, "*") {
+			continue
+		}
+		canonical := strings.ToLower(pattern)
+		if _, ok := seen[canonical]; ok {
+			continue
+		}
+		if _, ok := manualSeen[canonical]; ok || !matchesModel(pattern, rules) {
+			continue
+		}
+		manualSeen[canonical] = struct{}{}
+		manual = append(manual, pattern)
+	}
+	return filtered, manual
+}
+
+// ModelMatchesRules 复用单 Key 的运行时 allow/deny 过滤语义。
+// 它只判定已有请求模型，不生成候选；通配规则可匹配已发现模型。
+func ModelMatchesRules(model string, rules []string) bool {
+	return matchesModel(model, rules)
+}
+
+// ModelRulesAllowModel 判断规则是否把模型明确补成手动候选。
+// 只有精确 allow 可以补入；通配 allow 仅过滤已发现候选，deny 始终优先。
+func ModelRulesAllowModel(model string, rules []string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" || !matchesModel(model, rules) {
+		return false
+	}
+	for _, raw := range rules {
+		pattern := strings.TrimSpace(raw)
+		if pattern == "" || strings.HasPrefix(pattern, "!") || strings.Contains(pattern, "*") {
+			continue
+		}
+		if strings.EqualFold(pattern, model) {
+			return true
+		}
+	}
+	return false
+}
+
 func matchesModel(model string, models []string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
 	matched := false

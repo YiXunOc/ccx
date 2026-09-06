@@ -189,6 +189,12 @@ func (r *ModelResolver) ResolveModel(
 	if len(candidates) == 0 {
 		return ResolvedRouteTarget{Model: requestModel, Reason: "no_model_profiles"}, false, "no_model_profiles"
 	}
+	// 精确手动模型是用户明确要求的路由意图：可直接发送，但不能仅凭手动来源进入
+	// 后续跨模型替代/渠道枚举。精确路由不要求 ProbeSuccess；一旦同一画像获得成功
+	// 证据，既有候选过滤链会允许它参与自动能力选择。
+	if manual, found := findExactManualModelProfile(candidates, requestModel); found {
+		return ResolvedRouteTarget{Model: manual.ModelID, Reason: "found_exact_manual_model"}, true, "found_exact_manual_model"
+	}
 	candidates = r.refreshAutoDiscoveryCapabilities(candidates, channelUID, channelKind)
 
 	// Step 3.5: 安全分类能力硬约束——实测无法完成 </severity> 格式分类的 渠道×模型
@@ -264,6 +270,9 @@ func (r *ModelResolver) ResolveModelAnyEndpoint(
 	channelUID string,
 	channelKind string,
 ) (target ResolvedRouteTarget, found bool, reason string) {
+	if manual, found := r.exactManualModelAnyEndpoint(channelUID, channelKind, requestModel); found {
+		return ResolvedRouteTarget{Model: manual.ModelID, Reason: "found_exact_manual_model"}, true, "found_exact_manual_model"
+	}
 	return r.resolveModelAnyEndpoint(requestModel, channelUID, channelKind, CapabilityFloor{})
 }
 
@@ -275,6 +284,9 @@ func (r *ModelResolver) ResolveModelAnyEndpointWithFloor(
 	channelKind string,
 	floor CapabilityFloor,
 ) (target ResolvedRouteTarget, found bool, reason string) {
+	if manual, found := r.exactManualModelAnyEndpoint(channelUID, channelKind, requestModel); found {
+		return ResolvedRouteTarget{Model: manual.ModelID, Reason: "found_exact_manual_model"}, true, "found_exact_manual_model"
+	}
 	return r.resolveModelAnyEndpoint(requestModel, channelUID, channelKind, floor)
 }
 
@@ -451,6 +463,30 @@ func (r *ModelResolver) probedModelsAnyEndpoint(channelUID, channelKind string) 
 	}
 	candidates = r.refreshAutoDiscoveryCapabilities(candidates, channelUID, channelKind)
 	return candidates, ""
+}
+
+func findExactManualModelProfile(profiles []ModelProfile, requestModel string) (ModelProfile, bool) {
+	manual := make([]ModelProfile, 0, len(profiles))
+	for _, profile := range profiles {
+		if profile.Source == "manual" && !profile.ProbeSuccess {
+			manual = append(manual, profile)
+		}
+	}
+	return findExactModelProfile(manual, requestModel)
+}
+
+func (r *ModelResolver) exactManualModelAnyEndpoint(channelUID, channelKind, requestModel string) (ModelProfile, bool) {
+	if r == nil || r.profileStore == nil {
+		return ModelProfile{}, false
+	}
+	profiles := r.profileStore.ListActiveByChannel(channelUID)
+	matchingProtocol := make([]ModelProfile, 0, len(profiles))
+	for _, profile := range profiles {
+		if profile.ChannelKind == channelKind {
+			matchingProtocol = append(matchingProtocol, profile)
+		}
+	}
+	return findExactManualModelProfile(matchingProtocol, requestModel)
 }
 
 // ── 过滤与排序 ──

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/ccx/internal/config"
+	"github.com/BenedictKing/ccx/internal/keypool"
 )
 
 // ── EndpointAttemptPolicy（设计 §4.6.2 + §4.6.2a）──
@@ -209,7 +210,7 @@ func classifyKeyBinding(deps EndpointPolicyDeps, req *RequestProfile, channelUID
 			return decision
 		}
 	}
-	if !profileSupportsRequestModel(profile, req.Model, req, &deps) {
+	if !profileSupportsRequestModel(profile, req.Model, req, &deps, cfg) {
 		decision.HardEligible = false
 		decision.Candidate.HardFiltered = true
 		decision.Candidate.Reason = "model_ineligible"
@@ -1026,14 +1027,28 @@ func findProfileForBinding(store *ProfileStore, channelUID, baseURL, apiKey stri
 	return &snapshot
 }
 
-func profileSupportsRequestModel(profile *KeyEndpointProfile, model string, req *RequestProfile, deps *EndpointPolicyDeps) bool {
-	if profile == nil || model == "" || len(profile.AvailableModels) == 0 {
+func profileSupportsRequestModel(profile *KeyEndpointProfile, model string, req *RequestProfile, deps *EndpointPolicyDeps, keyConfig *config.APIKeyConfig) bool {
+	if profile == nil || model == "" {
 		return true
+	}
+	// 先执行当前 Key 的 deny/include 约束，防止旧画像中仍残留已被收紧的模型。
+	if keyConfig != nil && len(keyConfig.Models) > 0 && !keypool.ModelMatchesRules(model, keyConfig.Models) {
+		return false
+	}
+	if len(profile.AvailableModels) == 0 {
+		// 旧画像没有模型清单时，不能因通配规则凭空创建路由候选；只保留当前精确
+		// positive allow 的手动意图。无 Models 规则时继续兼容原有 fail-open 行为。
+		return keyConfig == nil || len(keyConfig.Models) == 0 || keypool.ModelRulesAllowModel(model, keyConfig.Models)
 	}
 	for _, available := range profile.AvailableModels {
 		if strings.EqualFold(strings.TrimSpace(available), strings.TrimSpace(model)) {
 			return true
 		}
+	}
+	// APIKeyConfig.Models 是手动模型意图的唯一入口：即使自动发现清单没有该模型，
+	// 精确请求仍可在该 Key 上试用。这里仅放行请求本身，不把模型加入自动替代池。
+	if keyConfig != nil && len(keyConfig.Models) > 0 && keypool.ModelRulesAllowModel(model, keyConfig.Models) {
+		return true
 	}
 	if target, _ := resolveMappedModel(profile, model, req, deps); target != nil && target.Model != "" {
 		return true
