@@ -24,6 +24,7 @@ import {
   collectUnmappedTableModels,
   toBenchmarkEvidence as toDradarEvidence,
   buildEffortEvidences,
+  effortCoverageSufficient,
   DRADAR_MODEL_MAP,
 } from './dradar.mjs'
 import { extractProfiles as extractBenchlmProfiles } from './benchlm.mjs'
@@ -321,18 +322,20 @@ test('dradar cohort size is model count rather than graded run count', () => {
 })
 
 test('dradar collectUnmappedTableModels dedupes unmapped models and feeds new-model detection', () => {
+  // gpt-6.5 须高于 DRADAR_MODEL_MAP 中 gpt 族已映射最高版本（现为 gpt-6-astra v6），
+  // 且主版本同代或仅高一代，否则不会被报为新候选
   const table = {
     cells: {
       'task-a|gpt-5.6-sol|low': { n: 3, p: 2 },
       'task-b|gpt-5.6-sol|high': { n: 3, p: 3 },
-      'task-c|gpt-5.7|high': { n: 3, p: 1 },
-      'task-d|gpt-5.7|low': { n: 3, p: 2 },
+      'task-c|gpt-6.5|high': { n: 3, p: 1 },
+      'task-d|gpt-6.5|low': { n: 3, p: 2 },
       'task-e|unrelated-model|high': { n: 3, p: 1 },
     },
   }
   const unmapped = collectUnmappedTableModels(table, DRADAR_MODEL_MAP)
-  assert.deepEqual(unmapped, ['gpt-5.7', 'unrelated-model'])
-  assert.deepEqual(detectNewModelCandidates(unmapped, DRADAR_MODEL_MAP).map(c => c.name), ['gpt-5.7'])
+  assert.deepEqual(unmapped, ['gpt-6.5', 'unrelated-model'])
+  assert.deepEqual(detectNewModelCandidates(unmapped, DRADAR_MODEL_MAP).map(c => c.name), ['gpt-6.5'])
 })
 
 test('CodexRadar leaderboard aggregation uses strict cell majority', () => {
@@ -352,8 +355,26 @@ test('CodexRadar leaderboard aggregation uses strict cell majority', () => {
     passed: 6,
     cells: 3,
     cells_passed: 2,
+    taskIds: ['task-a', 'task-b', 'task-c'],
     pass_rate: 2 / 3,
   }])
+  // 分母按全表任务计（含未映射模型的 task-d）
+  assert.equal(leaderboard.totalTasks, 4)
+})
+
+test('dradar task-coverage gate follows official MIN_BENCHMARK_TASK_COVERAGE', () => {
+  // 官网口径：单模型×effort 覆盖去重任务数 / 全表任务数 >= 0.6 才足额
+  assert.equal(effortCoverageSufficient({ taskIds: ['a', 'b', 'c'] }, 5), true)   // 3/5 = 0.6
+  assert.equal(effortCoverageSufficient({ taskIds: ['a', 'b'] }, 5), false)       // 2/5 < 0.6
+  assert.equal(effortCoverageSufficient({ taskIds: ['a'] }, 0), true)             // total=0 官方判非不足
+  assert.equal(effortCoverageSufficient({}, 5), false)                            // 无 taskIds 视为 0 覆盖
+  // tasks 清单优先作分母；缺失时回退 cells 键去重
+  const withTasks = extractLeaderboardFromTable({
+    tasks: [{ id: 't1' }, { id: 't2' }, { id: 't3' }, { id: 't4' }, { id: 't5' }, { id: 't6' }, { id: 't7' }, { id: 't8' }, { id: 't9' }, { id: 't10' }],
+    cells: { 't1|m|low': { n: 1, p: 1 }, 't2|m|low': { n: 1, p: 0 }, 't3|m|low': { n: 1, p: 1 }, 't4|m|low': { n: 1, p: 1 }, 't5|m|low': { n: 1, p: 0 }, 't6|m|low': { n: 1, p: 1 } },
+  }, { m: 'm' })
+  assert.equal(withTasks.totalTasks, 10)
+  assert.equal(effortCoverageSufficient(withTasks.models[0], withTasks.totalTasks), true) // 6/10
 })
 
 test('dradar extractCostData aggregates mean and median cost per model x effort', () => {
@@ -862,7 +883,8 @@ test('newly published dradar model variants stay mapped (2026-08-29 audit)', () 
   assert.equal(DRADAR_MODEL_MAP['gemini-3.7-flash'], 'gemini-3.7-flash')
   assert.equal(DRADAR_MODEL_MAP['glm-5.3-flash'], 'glm-5.3-flash')
   assert.equal(DRADAR_MODEL_MAP['glm-5-3-flash'], 'glm-5.3-flash')
-  assert.equal(DRADAR_MODEL_MAP['dsh-deepseek-v4-flash-vision-exp'], 'deepseek-v4-flash')
+  // vision-exp 2026-09-05 起独立注册为 deepseek-v4-flash-vision，不再归并 flash
+  assert.equal(DRADAR_MODEL_MAP['dsh-deepseek-v4-flash-vision-exp'], 'deepseek-v4-flash-vision')
 })
 
 test('deepswe glm-5.3-flash stays mapped (2026-08-26 release-day regression)', () => {
