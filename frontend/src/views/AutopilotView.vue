@@ -81,6 +81,7 @@ import AutopilotTraceDetailDialog from '@/components/AutopilotTraceDetailDialog.
 import EmptyState from '@/components/EmptyState.vue'
 import type {
   SmartRoutingConfig,
+  SmartRoutingConfigUpdate,
   AutopilotTraceStats as TraceStatsType,
   TraceSummary,
 } from '@/services/api-types'
@@ -137,9 +138,26 @@ function openTraceDetail(traceUid: string) {
 }
 
 async function handleConfigUpdate(updated: SmartRoutingConfig) {
+  const current = config.value
+  if (!current) return
+
   saving.value = true
   try {
-    const resp = await api.updateSmartRoutingConfig(updated)
+    const payload: SmartRoutingConfigUpdate = {}
+    if (updated.costPreference !== current.costPreference) {
+      payload.costPreference = updated.costPreference
+    }
+    if ((updated.scenario ?? 'auto') !== (current.scenario ?? 'auto')) {
+      payload.scenario = updated.scenario ?? 'auto'
+    }
+    if (
+      current.killSwitchForced === false
+      && typeof current.killSwitchConfigured === 'boolean'
+      && updated.killSwitchActive !== current.killSwitchConfigured
+    ) {
+      payload.killSwitch = updated.killSwitchActive
+    }
+    const resp = await api.updateSmartRoutingConfig(payload)
     config.value = resp
   } catch (e) {
     console.error('[Autopilot-View] 配置保存失败:', e)

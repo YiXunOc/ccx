@@ -54,6 +54,7 @@ import type {
   HealthCenterEndpointsResponse,
   TokenPlanUsageRefreshResponse,
   SmartRoutingConfig,
+  SmartRoutingConfigUpdate,
   AutopilotTraceListResponse,
   AutopilotTraceStats,
   AutopilotTraceDetailResponse,
@@ -1597,7 +1598,7 @@ export class ApiService {
   }
 
   /** 更新智能路由全局配置 */
-  async updateSmartRoutingConfig(data: Partial<SmartRoutingConfig>): Promise<SmartRoutingConfig> {
+  async updateSmartRoutingConfig(data: SmartRoutingConfigUpdate): Promise<SmartRoutingConfig> {
     return this.request('/smart-routing/config', {
       method: 'PUT',
       body: JSON.stringify(data),

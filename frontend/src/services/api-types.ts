@@ -1673,10 +1673,19 @@ export type RoutingScenario = 'auto' | 'daily_dev' | 'hard_problem' | 'backgroun
 
 export interface SmartRoutingConfig {
   killSwitchActive: boolean
+  killSwitchConfigured?: boolean
+  killSwitchForced?: boolean
   costPreference: string
   scenario?: RoutingScenario
   scenarioPresets?: ScenarioPresetView[]
   l2ProbeEnabled?: boolean
+}
+
+/** PUT /smart-routing/config 请求体，只包含允许持久化的配置字段。 */
+export interface SmartRoutingConfigUpdate {
+  killSwitch?: boolean
+  costPreference?: string
+  scenario?: RoutingScenario
 }
 
 export interface CandidateScore {

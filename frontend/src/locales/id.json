@@ -1359,6 +1359,7 @@
   "autopilot.modePanel.killSwitch": "Saklar Darurat",
   "autopilot.modePanel.killSwitchHint": "Saat diaktifkan, mematikan smart routing secara paksa. Lebih prioritas dari pemilihan mode.",
   "autopilot.modePanel.killSwitchActive": "Saklar darurat aktif. Smart routing dimatikan paksa. Nonaktifkan saklar darurat terlebih dahulu.",
+  "autopilot.modePanel.killSwitchForced": "Variabel lingkungan AUTOPILOT_KILL_SWITCH sedang memaksa penghentian darurat; status ini tidak dapat dinonaktifkan melalui konsol Web.",
   "autopilot.modePanel.costPreference": "Preferensi Biaya",
   "autopilot.modePanel.save": "Simpan Konfigurasi",
   "autopilot.modePanel.reset": "Atur Ulang",

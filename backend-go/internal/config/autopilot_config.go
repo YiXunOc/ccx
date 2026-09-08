@@ -1021,6 +1021,30 @@ func (cm *ConfigManager) GetAutopilotRouting() AutopilotRoutingConfig {
 	return cfg
 }
 
+// GetPersistedAutopilotRouting 获取未叠加环境变量的智能路由配置（返回深拷贝）。
+// 用于区分 config.json 中保存的 KillSwitch 与运行时强制状态。
+func (cm *ConfigManager) GetPersistedAutopilotRouting() AutopilotRoutingConfig {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.config.AutopilotRouting.deepCopy()
+}
+
+// SetAutopilotKillSwitch 更新 KillSwitch 持久化值并持久化。
+// 保存失败时恢复修改前的内存配置，避免内存值与磁盘值分叉。
+func (cm *ConfigManager) SetAutopilotKillSwitch(enabled bool) error {
+	cm.mu.Lock()
+	previous := cm.config.AutopilotRouting.deepCopy()
+	cm.config.AutopilotRouting.KillSwitch = enabled
+	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.AutopilotRouting = previous
+		cm.mu.Unlock()
+		return err
+	}
+	log.Printf("[Config-Autopilot] KillSwitch 已更新: enabled=%v", enabled)
+	cm.fireConfigChangeCallbacks()
+	return nil
+}
+
 // SetCostPreferenceMode 更新全局价格偏向模式并持久化。
 // 只修改 Mode，保留已有的 PerTaskClass 覆盖。
 func (cm *ConfigManager) SetCostPreferenceMode(mode string) error {
@@ -1259,6 +1283,10 @@ func (c AutopilotRoutingConfig) deepCopy() AutopilotRoutingConfig {
 			cp.Scenario.Overrides[k] = v
 		}
 	}
+	if c.Scenario.HeaderOverrideEnabled != nil {
+		value := *c.Scenario.HeaderOverrideEnabled
+		cp.Scenario.HeaderOverrideEnabled = &value
+	}
 
 	// CostOptimization.ProviderTimePricing
 	if c.CostOptimization.ProviderTimePricing != nil {
@@ -1345,6 +1373,15 @@ func (c AutopilotRoutingConfig) deepCopy() AutopilotRoutingConfig {
 	if c.ReasoningEffort.QualityTierShadowEnabled != nil {
 		value := *c.ReasoningEffort.QualityTierShadowEnabled
 		cp.ReasoningEffort.QualityTierShadowEnabled = &value
+	}
+
+	if c.LogicalChannelIdentityEnabled != nil {
+		value := *c.LogicalChannelIdentityEnabled
+		cp.LogicalChannelIdentityEnabled = &value
+	}
+	if c.LogicalChannelScoringEnabled != nil {
+		value := *c.LogicalChannelScoringEnabled
+		cp.LogicalChannelScoringEnabled = &value
 	}
 
 	// TrustedRoutingAdvisor slice 字段

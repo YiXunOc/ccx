@@ -18,8 +18,18 @@
         >
           {{ t('autopilot.modePanel.killSwitchActive') }}
         </v-alert>
+        <v-alert
+          v-if="localConfig.killSwitchForced"
+          type="warning"
+          variant="tonal"
+          density="compact"
+          class="mb-4"
+          icon="mdi-alert"
+        >
+          {{ t('autopilot.modePanel.killSwitchForced') }}
+        </v-alert>
 
-        <!-- KillSwitch 开关（只读） -->
+        <!-- KillSwitch 开关 -->
         <div class="mb-4">
           <v-switch
             v-model="localConfig.killSwitchActive"
@@ -27,7 +37,7 @@
             color="error"
             density="compact"
             hide-details
-            disabled
+            :disabled="localConfig.killSwitchForced === true"
           />
           <div class="text-caption text-medium-emphasis mt-1">
             {{ t('autopilot.modePanel.killSwitchHint') }}
@@ -135,6 +145,8 @@ const localConfig = reactive<SmartRoutingConfig>(cloneConfig(props.config))
 // 监听 props 变化（保存后父组件传入新配置时同步）
 watch(() => props.config, (newCfg) => {
   localConfig.killSwitchActive = newCfg.killSwitchActive
+  localConfig.killSwitchConfigured = newCfg.killSwitchConfigured
+  localConfig.killSwitchForced = newCfg.killSwitchForced
   localConfig.costPreference = newCfg.costPreference
   localConfig.scenario = newCfg.scenario ?? 'auto'
   localConfig.scenarioPresets = newCfg.scenarioPresets
@@ -188,7 +200,8 @@ const scenarioSummary = computed(() => {
 
 // 检测是否有变更
 const hasChanges = computed(() => {
-  return localConfig.costPreference !== props.config.costPreference
+  return localConfig.killSwitchActive !== props.config.killSwitchActive
+    || localConfig.costPreference !== props.config.costPreference
     || (localConfig.scenario ?? 'auto') !== (props.config.scenario ?? 'auto')
 })
 
@@ -200,6 +213,8 @@ function saveConfig() {
 // 重置为父组件传入的值
 function resetConfig() {
   localConfig.killSwitchActive = props.config.killSwitchActive
+  localConfig.killSwitchConfigured = props.config.killSwitchConfigured
+  localConfig.killSwitchForced = props.config.killSwitchForced
   localConfig.costPreference = props.config.costPreference
   localConfig.scenario = props.config.scenario ?? 'auto'
 }
@@ -208,6 +223,8 @@ function resetConfig() {
 function cloneConfig(src: SmartRoutingConfig): SmartRoutingConfig {
   return {
     killSwitchActive: src.killSwitchActive,
+    killSwitchConfigured: src.killSwitchConfigured,
+    killSwitchForced: src.killSwitchForced,
     costPreference: src.costPreference,
     scenario: src.scenario ?? 'auto',
     scenarioPresets: src.scenarioPresets ? [...src.scenarioPresets] : undefined,

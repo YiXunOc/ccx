@@ -24,16 +24,19 @@ type ScenarioPresetView struct {
 // RoutingConfigResponse GET /smart-routing/config 响应体。
 // 安全视图，只暴露只读字段，不暴露完整配置。
 type RoutingConfigResponse struct {
-	KillSwitchActive bool                 `json:"killSwitchActive"`
-	CostPreference   string               `json:"costPreference,omitempty"`
-	Scenario         string               `json:"scenario,omitempty"`
-	ScenarioPresets  []ScenarioPresetView `json:"scenarioPresets,omitempty"`
-	L2ProbeEnabled   bool                 `json:"l2ProbeEnabled,omitempty"`
+	KillSwitchActive     bool                 `json:"killSwitchActive"`
+	KillSwitchConfigured bool                 `json:"killSwitchConfigured"`
+	KillSwitchForced     bool                 `json:"killSwitchForced"`
+	CostPreference       string               `json:"costPreference,omitempty"`
+	Scenario             string               `json:"scenario,omitempty"`
+	ScenarioPresets      []ScenarioPresetView `json:"scenarioPresets,omitempty"`
+	L2ProbeEnabled       bool                 `json:"l2ProbeEnabled,omitempty"`
 }
 
 // RoutingConfigUpdateRequest PUT /smart-routing/config 请求体。
-// 只允许修改 rolloutPercent、costPreference 和 scenario。
+// 只允许修改 killSwitch、rolloutPercent、costPreference 和 scenario。
 type RoutingConfigUpdateRequest struct {
+	KillSwitch     *bool  `json:"killSwitch,omitempty"`
 	RolloutPercent *int   `json:"rolloutPercent,omitempty"`
 	CostPreference string `json:"costPreference,omitempty"`
 	Scenario       string `json:"scenario,omitempty"`
@@ -60,16 +63,7 @@ func RegisterRoutingConfigRoutes(group *gin.RouterGroup, deps *RoutingConfigDeps
 // 返回当前智能路由配置的安全视图。
 func handleGetRoutingConfig(deps *RoutingConfigDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		cfg := deps.CfgManager.GetAutopilotRouting()
-
-		// 综合判断 killSwitch：config 字段 OR 环境变量
-		envKillSwitch := false
-		if envVal := os.Getenv("AUTOPILOT_KILL_SWITCH"); isTruthyEnv(envVal) {
-			envKillSwitch = true
-		}
-		killSwitchActive := cfg.KillSwitch || envKillSwitch
-
-		c.JSON(http.StatusOK, routingConfigResponse(cfg, killSwitchActive))
+		c.JSON(http.StatusOK, currentRoutingConfigResponse(deps.CfgManager))
 	}
 }
 
@@ -80,6 +74,12 @@ func handleUpdateRoutingConfig(deps *RoutingConfigDeps) gin.HandlerFunc {
 		var req RoutingConfigUpdateRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求体"})
+			return
+		}
+
+		killSwitchForced := isTruthyEnv(os.Getenv("AUTOPILOT_KILL_SWITCH"))
+		if req.KillSwitch != nil && !*req.KillSwitch && killSwitchForced {
+			c.JSON(http.StatusConflict, gin.H{"error": "AUTOPILOT_KILL_SWITCH 正在强制启用急停，无法通过 WebUI 关闭"})
 			return
 		}
 
@@ -108,19 +108,20 @@ func handleUpdateRoutingConfig(deps *RoutingConfigDeps) gin.HandlerFunc {
 			}
 		}
 
-		if req.CostPreference == "" && req.Scenario == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "至少需要提供 costPreference 或 scenario"})
+		if req.KillSwitch == nil && req.CostPreference == "" && req.Scenario == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "至少需要提供 killSwitch、costPreference 或 scenario"})
 			return
 		}
 
-		// 返回更新后的安全视图
-		cfg := deps.CfgManager.GetAutopilotRouting()
-		envKillSwitch := false
-		if envVal := os.Getenv("AUTOPILOT_KILL_SWITCH"); isTruthyEnv(envVal) {
-			envKillSwitch = true
+		if req.KillSwitch != nil {
+			if err := deps.CfgManager.SetAutopilotKillSwitch(*req.KillSwitch); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "保存急停开关失败"})
+				return
+			}
 		}
 
-		c.JSON(http.StatusOK, routingConfigResponse(cfg, cfg.KillSwitch || envKillSwitch))
+		// 返回更新后的安全视图
+		c.JSON(http.StatusOK, currentRoutingConfigResponse(deps.CfgManager))
 	}
 }
 
@@ -135,7 +136,15 @@ func isValidScenarioMode(mode string) bool {
 	return false
 }
 
-func routingConfigResponse(cfg config.AutopilotRoutingConfig, killSwitchActive bool) RoutingConfigResponse {
+func currentRoutingConfigResponse(cfgManager *config.ConfigManager) RoutingConfigResponse {
+	cfg := cfgManager.GetPersistedAutopilotRouting()
+	configured := cfg.KillSwitch
+	forced := isTruthyEnv(os.Getenv("AUTOPILOT_KILL_SWITCH"))
+	return routingConfigResponse(cfg, configured, forced)
+}
+
+func routingConfigResponse(cfg config.AutopilotRoutingConfig, killSwitchConfigured, killSwitchForced bool) RoutingConfigResponse {
+	cfg.KillSwitch = killSwitchConfigured || killSwitchForced
 	presets := BuiltinScenarioPresets(cfg.Scenario)
 	views := make([]ScenarioPresetView, 0, len(presets))
 	for _, key := range []string{"daily_dev", "hard_problem", "background", "batch_cheap"} {
@@ -159,11 +168,13 @@ func routingConfigResponse(cfg config.AutopilotRoutingConfig, killSwitchActive b
 		scenario = ScenarioModeAuto
 	}
 	return RoutingConfigResponse{
-		KillSwitchActive: killSwitchActive,
-		CostPreference:   cfg.CostPreference.Mode,
-		Scenario:         scenario,
-		ScenarioPresets:  views,
-		L2ProbeEnabled:   cfg.HealthCheck.L2ProbeEnabled,
+		KillSwitchActive:     cfg.KillSwitch,
+		KillSwitchConfigured: killSwitchConfigured,
+		KillSwitchForced:     killSwitchForced,
+		CostPreference:       cfg.CostPreference.Mode,
+		Scenario:             scenario,
+		ScenarioPresets:      views,
+		L2ProbeEnabled:       cfg.HealthCheck.L2ProbeEnabled,
 	}
 }
 

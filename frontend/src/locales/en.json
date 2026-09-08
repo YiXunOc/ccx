@@ -1359,6 +1359,7 @@
   "autopilot.modePanel.killSwitch": "Kill Switch",
   "autopilot.modePanel.killSwitchHint": "When enabled, forces smart routing off. Takes priority over routing mode selection.",
   "autopilot.modePanel.killSwitchActive": "Kill switch is active. Smart routing is forced off. Disable the kill switch first to use other modes.",
+  "autopilot.modePanel.killSwitchForced": "The AUTOPILOT_KILL_SWITCH environment variable is forcing an emergency stop; it cannot be disabled in the Web console.",
   "autopilot.modePanel.costPreference": "Cost Preference",
   "autopilot.modePanel.save": "Save Configuration",
   "autopilot.modePanel.reset": "Reset",

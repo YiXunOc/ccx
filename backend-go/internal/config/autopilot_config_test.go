@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"math"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -607,6 +609,124 @@ func TestAutopilotRoutingConfig_Validate_SLORollbackConsecutiveWindows(t *testin
 					cfg.SLORollback.ConsecutiveWindows, tt.expected)
 			}
 		})
+	}
+}
+
+func TestSetAutopilotKillSwitchPersistsTrueAndFalse(t *testing.T) {
+	t.Setenv(autopilotKillSwitchEnv, "false")
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	cm := &ConfigManager{
+		config:     Config{AutopilotRouting: AutopilotRoutingConfig{KillSwitch: false}},
+		configFile: configFile,
+		backupDir:  filepath.Join(dir, "backups"),
+	}
+
+	for _, enabled := range []bool{true, false} {
+		if err := cm.SetAutopilotKillSwitch(enabled); err != nil {
+			t.Fatalf("SetAutopilotKillSwitch(%v) error = %v", enabled, err)
+		}
+		if got := cm.GetPersistedAutopilotRouting().KillSwitch; got != enabled {
+			t.Fatalf("SetAutopilotKillSwitch(%v) 后内存 KillSwitch = %v", enabled, got)
+		}
+
+		data, err := os.ReadFile(configFile)
+		if err != nil {
+			t.Fatalf("读取持久化配置失败: %v", err)
+		}
+		var saved Config
+		if err := json.Unmarshal(data, &saved); err != nil {
+			t.Fatalf("解析持久化配置失败: %v", err)
+		}
+		if got := saved.AutopilotRouting.KillSwitch; got != enabled {
+			t.Fatalf("SetAutopilotKillSwitch(%v) 后磁盘 KillSwitch = %v", enabled, got)
+		}
+	}
+}
+
+func TestAutopilotKillSwitchEnvOverrideDoesNotPollutePersistedConfig(t *testing.T) {
+	t.Setenv(autopilotKillSwitchEnv, "true")
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	cm := &ConfigManager{
+		config:     Config{AutopilotRouting: AutopilotRoutingConfig{KillSwitch: false}},
+		configFile: configFile,
+		backupDir:  filepath.Join(dir, "backups"),
+	}
+
+	if err := cm.SetAutopilotKillSwitch(false); err != nil {
+		t.Fatalf("SetAutopilotKillSwitch(false) error = %v", err)
+	}
+	if !cm.GetAutopilotRouting().KillSwitch {
+		t.Fatal("环境变量强制 true 时有效 KillSwitch 应为 true")
+	}
+	if cm.GetPersistedAutopilotRouting().KillSwitch {
+		t.Fatal("环境变量强制 true 不应污染内存中的持久化 KillSwitch")
+	}
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("读取持久化配置失败: %v", err)
+	}
+	var saved Config
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("解析持久化配置失败: %v", err)
+	}
+	if saved.AutopilotRouting.KillSwitch {
+		t.Fatal("环境变量强制 true 不应写入磁盘 KillSwitch")
+	}
+}
+
+func TestGetPersistedAutopilotRoutingReturnsDeepCopyForKillSwitchConfig(t *testing.T) {
+	cm := &ConfigManager{config: Config{AutopilotRouting: AutopilotRoutingConfig{
+		KillSwitch:      false,
+		WeightOverrides: map[string]float64{"w_quality": 0.5},
+	}}}
+
+	first := cm.GetPersistedAutopilotRouting()
+	first.WeightOverrides["w_quality"] = 1
+
+	if got := cm.GetPersistedAutopilotRouting().WeightOverrides["w_quality"]; got != 0.5 {
+		t.Fatalf("修改 persisted getter 返回值污染了 ConfigManager: got %v", got)
+	}
+}
+
+func TestSetAutopilotKillSwitchRollsBackMemoryOnSaveFailure(t *testing.T) {
+	t.Setenv(autopilotKillSwitchEnv, "false")
+	cm := &ConfigManager{
+		config:     Config{AutopilotRouting: AutopilotRoutingConfig{KillSwitch: false}},
+		configFile: filepath.Join(t.TempDir(), "missing", "config.json"),
+	}
+
+	if err := cm.SetAutopilotKillSwitch(true); err == nil {
+		t.Fatal("写入不存在的目录时 SetAutopilotKillSwitch 应返回错误")
+	}
+	if cm.GetPersistedAutopilotRouting().KillSwitch {
+		t.Fatal("保存失败后内存 KillSwitch 应恢复为 false")
+	}
+}
+
+func TestSetAutopilotKillSwitchFiresConfigChangeCallback(t *testing.T) {
+	t.Setenv(autopilotKillSwitchEnv, "false")
+	dir := t.TempDir()
+	cm := &ConfigManager{
+		config:     Config{AutopilotRouting: AutopilotRoutingConfig{KillSwitch: false}},
+		configFile: filepath.Join(dir, "config.json"),
+		backupDir:  filepath.Join(dir, "backups"),
+	}
+	changed := make(chan Config, 1)
+	cm.RegisterOnConfigChange(func(cfg Config) { changed <- cfg })
+
+	if err := cm.SetAutopilotKillSwitch(true); err != nil {
+		t.Fatalf("SetAutopilotKillSwitch(true) error = %v", err)
+	}
+	select {
+	case cfg := <-changed:
+		if !cfg.AutopilotRouting.KillSwitch {
+			t.Fatal("配置变更回调未收到 KillSwitch=true")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SetAutopilotKillSwitch 成功后未触发配置变更回调")
 	}
 }
 
