@@ -807,6 +807,10 @@ type rankedModelCandidate struct {
 	benchmarkScore                 float64
 	benchmarkModel                 string
 	benchmarkLane                  string // benchmark 证据泳道（provisional/verified），frontier 置信区间加宽用
+	// evidenceQualityTier 是编码域证据档位（EffortAwareQualityAssessment 的
+	// 评定结果，即图表档位带）。非空时报告展示与排序均以它为准；空表示
+	// 未做证据评定（非编码域或无编码证据）。
+	evidenceQualityTier            QualityTier
 	measuredCostUSD                float64
 	versionLineage                 string
 	versionNumbers                 []int
@@ -878,9 +882,16 @@ func (r *ModelResolver) rankEligibleModels(
 	ranked := r.buildRankedCandidates(eligible, requestModel, channelUID, channelKind, floor)
 	preferenceMode := r.modelCostPreferenceMode(floor)
 
+	// 收益帽在进入前沿前先做档位带过滤（与回退链 selectQualityBenefitBand 同语义）：
+	// 带外模型不参与前沿。旧实现依赖"四档→簇索引投影"把 cap 映射到动态 F0...Fn，
+	// 该投影假设簇数≈档位数量，细粒度聚类下投影漂移，premium 模型可穿透 cap=high。
+	if floor.QualityBenefitCap != "" && floor.QualityBenefitCap != QualityTierPremium {
+		ranked = selectQualityBenefitBand(ranked, floor.QualityBenefitCap)
+	}
+
 	// Frontier 选型：在全部 model × effort 候选的 Pareto 前沿上按车道选择，
 	// 成本与质量并列成轴（替代下方 qualityRank 绝对主导的字典序链）。
-	// QualityBenefitCap 在 Frontier 内投影到动态 F0...Fn；成本证据不足时
+	// QualityBenefitCap 已在上方收敛为档位带；成本证据不足时
 	// 才回退固定 QualityTier 分带与旧字典序链。
 	frontierFallback := ""
 	idx, note, frontierOK := selectViaFrontier(ranked, floor, preferenceMode)
@@ -904,16 +915,33 @@ func (r *ModelResolver) rankEligibleModels(
 	return best
 }
 
-// effortAwareBenchmarkScore 根据候选 effort 档位返回该档位对应的 benchmark 分数。
-// 当 BenchmarkEvidence 中存有该 effort 的 overall 实测数据时，用实测 rawValue 相对
-// default effort 的比值缩放 OverallScore；否则返回原始 OverallScore（不惩罚缺数据）。
-// effort 为空时视为 default，直接返回 OverallScore。
-func effortAwareBenchmarkScore(bp config.ModelBenchmarkProfile, effort EffortLevel) (float64, bool) {
-	if bp.OverallScore <= 0 {
+// domainBenchmarkAnchor 返回候选在指定任务域的基准锚分。
+// general（含空域）沿用 OverallScore 总分；其余域优先取域映射类目的校准类目分
+// （coding 请求锚 coding 分，而非总分冒充），弱代理映射（置信度 <0.8，如
+// aesthetics_ui 借用多模态分）不接管锚点；类目分缺失时回退 OverallScore，
+// 不惩罚缺域证据的模型。
+func domainBenchmarkAnchor(bp config.ModelBenchmarkProfile, domain TaskDomain) (float64, bool) {
+	if domain != "" && domain != TaskDomainGeneral {
+		if mapping, ok := benchmarkDomainMappings[domain]; ok && mapping.confidence >= 0.8 {
+			if score, found := bp.CategoryScores[mapping.category]; found && score > 0 {
+				return score, true
+			}
+		}
+	}
+	return bp.OverallScore, bp.OverallScore > 0
+}
+
+// effortAwareBenchmarkScore 根据候选 effort 档位返回该档位对应的 benchmark 分数，
+// 锚点随任务域切换（domainBenchmarkAnchor）。当 BenchmarkEvidence 中存有该 effort
+// 的 overall 实测数据时，用实测 rawValue 相对 default effort 的比值缩放锚点；
+// 否则返回原始锚点（不惩罚缺数据）。effort 为空时视为 default。
+func effortAwareBenchmarkScore(bp config.ModelBenchmarkProfile, effort EffortLevel, domain TaskDomain) (float64, bool) {
+	anchor, known := domainBenchmarkAnchor(bp, domain)
+	if !known {
 		return 0, false
 	}
 	if effort == "" || effort == "default" {
-		return bp.OverallScore, true
+		return anchor, true
 	}
 
 	// 收集 default effort 的 overall rawValue 作为基准。
@@ -932,15 +960,15 @@ func effortAwareBenchmarkScore(bp config.ModelBenchmarkProfile, effort EffortLev
 		}
 	}
 	if defaultRaw <= 0 {
-		// 无 default 基准，直接返回 OverallScore。
-		return bp.OverallScore, true
+		// 无 default 基准，直接返回锚点。
+		return anchor, true
 	}
 	if effortRaw > 0 {
-		// 按实测 raw 比值缩放 OverallScore，反映 effort 间真实智商差异。
+		// 按实测 raw 比值缩放锚点，反映 effort 间真实智商差异。
 		ratio := effortRaw / defaultRaw
-		return bp.OverallScore * ratio, true
+		return anchor * ratio, true
 	}
-	return bp.OverallScore, true
+	return anchor, true
 }
 
 // 优先精确匹配候选 effort 档位；当 evidence 报告的档位超出注册表 SupportedEffortLevels
@@ -958,6 +986,12 @@ func measuredCostForEffort(effortCostUSD map[EffortLevel]float64, effort EffortL
 		}
 	}
 	return minCost
+}
+
+// isCodingBenchmarkDomain 报告任务域是否由 deepswe/codexradar 编码直测证据
+// 驱动选型（DeepSWE 等效分与证据档位）。code_review 与 coding 共用同一映射类目。
+func isCodingBenchmarkDomain(domain TaskDomain) bool {
+	return domain == TaskDomainCoding || domain == TaskDomainCodeReview
 }
 
 // buildRankedCandidates 把 eligible 画像展开为 model × effort 排序候选，
@@ -1015,13 +1049,41 @@ func (r *ModelResolver) buildRankedCandidates(
 			// 实测 cost 按候选 effort 精确取；未命中时回退该模型已测档位成本下界，
 			// 保证 frontier 校准在"evidence 档位超注册表档位"场景仍生效。
 			measuredCost := measuredCostForEffort(effortCostUSD, effort)
-			// benchmark 分按 effort 特定实测数据缩放，反映不同思考等级的真实智商差异。
-			effBenchScore, effBenchKnown := effortAwareBenchmarkScore(benchmark.Profile, effort)
+			// benchmark 分按 effort 特定实测数据缩放，反映不同思考等级的真实智商差异；
+			// 锚点随场景任务域切换（coding 场景锚 coding 类目分）。
+			effBenchScore, effBenchKnown := effortAwareBenchmarkScore(benchmark.Profile, effort, floor.TaskDomain)
+			qualityRank := qualityTierRank(profile.QualityTier)
+			var evidenceTier QualityTier
+			// 编码域候选锚定到图表同源校准：EffortAwareQualityAssessmentFor 返回
+			// DeepSWE 等效 0-100 分（即 benchmark 图表 Y 轴刻度）与证据档位
+			// （阈值即图表 v3 档位线 70/59.1/44.3/15）。这使模型选型与图表的
+			// 能力—成本边界同一把尺：图上直测模型按实测分与证据档竞争，
+			// 图外旧世代模型不再凭静态家族档位或 AA 类目分冒充编程能力登顶。
+			if isCodingBenchmarkDomain(floor.TaskDomain) {
+				assessment := EffortAwareQualityAssessmentFor(profile.ModelID, effort, profile.ModelFamily)
+				if assessment.Known {
+					effBenchScore, effBenchKnown = assessment.Score, true
+					qualityRank = qualityTierRank(assessment.Tier)
+					evidenceTier = assessment.Tier
+					// 「不推荐」档（常规口径实测 <15，成功率被噪声主导）不参与编码选型；
+					// 与图表 avoid 档的产品语义一致。
+					if assessment.Tier == QualityTierAvoid {
+						continue
+					}
+				} else {
+					// 无编码证据（注册表外或仅 AA 未钉档摘要）：不冒充图表刻度分数，
+					// 档位先验封顶 normal——编码域的高/旗舰档必须由编码证据证明。
+					effBenchScore, effBenchKnown = 0, false
+					if normalRank := qualityTierRank(QualityTierNormal); qualityRank > normalRank {
+						qualityRank = normalRank
+					}
+				}
+			}
 			ranked = append(ranked, rankedModelCandidate{
 				profile:                      profile,
 				effort:                       effort,
 				effortDecided:                decided,
-				qualityRank:                  qualityTierRank(profile.QualityTier),
+				qualityRank:                  qualityRank,
 				qualityBenefitCap:            floor.QualityBenefitCap,
 				providerModelQualityKnown:    qualityKnown,
 				providerModelQualityPriority: qualityPriority,
@@ -1035,9 +1097,10 @@ func (r *ModelResolver) buildRankedCandidates(
 				publicCostKnown:              publicCostKnown,
 				normalizedPublicCostUSD:      publicCostUSD,
 				benchmarkKnown:               effBenchKnown,
-				benchmarkScore:               effBenchScore,
-				benchmarkModel:               benchmark.Profile.CanonicalModel,
-				benchmarkLane:                benchmark.Profile.Lane,
+					benchmarkScore:               effBenchScore,
+					benchmarkModel:               benchmark.Profile.CanonicalModel,
+					benchmarkLane:                benchmark.Profile.Lane,
+					evidenceQualityTier:          evidenceTier,
 				measuredCostUSD:              measuredCost,
 				versionLineage:               modelVersionLineage(profile.ModelFamily, profile.ModelID),
 				versionNumbers:               modelVersionNumbers(profile.ModelFamily, profile.ModelID),
@@ -1049,6 +1112,26 @@ func (r *ModelResolver) buildRankedCandidates(
 
 	// EffortFloor 过滤：移除低于下界的已决定候选（fail-open）。
 	ranked = filterEffortFloor(ranked, floor)
+	// 编码域兜底退场：池内存在任一图表在册（有编码证据）模型时，
+	// 无编码证据的候选不参与自动选型——编码选型只落在 benchmark 图表的
+	// 模型集合内；整池皆无证据时保留原候选（fail-open，防空池断路）。
+	if isCodingBenchmarkDomain(floor.TaskDomain) && len(ranked) > 0 {
+		evidenceBacked := 0
+		for i := range ranked {
+			if ranked[i].benchmarkKnown {
+				evidenceBacked++
+			}
+		}
+		if evidenceBacked > 0 && evidenceBacked < len(ranked) {
+			filtered := make([]rankedModelCandidate, 0, evidenceBacked)
+			for i := range ranked {
+				if ranked[i].benchmarkKnown {
+					filtered = append(filtered, ranked[i])
+				}
+			}
+			ranked = filtered
+		}
+	}
 	qualityPriorityComplete := make(map[int]bool)
 	qualityRankSeen := make(map[int]bool)
 	for i := range ranked {
