@@ -96,7 +96,7 @@ function mountPanel(value: SmartRoutingConfig) {
 }
 
 describe('AutopilotModePanel KillSwitch', () => {
-  it('普通状态下可编辑 KillSwitch 并检测变更', async () => {
+  it('普通状态下切换 KillSwitch 会立即提交', async () => {
     const wrapper = mountPanel(config())
     const toggle = wrapper.get('.kill-switch-control')
 
@@ -105,19 +105,17 @@ describe('AutopilotModePanel KillSwitch', () => {
 
     await toggle.trigger('click')
 
-    expect(wrapper.get('.save-button').attributes('disabled')).toBeUndefined()
-    await wrapper.get('.save-button').trigger('click')
     expect(wrapper.emitted<SmartRoutingConfig[]>('update:config')?.[0]?.[0].killSwitchActive).toBe(true)
+    expect(wrapper.get('.save-button').attributes('disabled')).toBeDefined()
   })
 
-  it('配置急停可关闭，并保留 configured/forced 响应状态', async () => {
+  it('配置急停可立即关闭，并保留 configured/forced 响应状态', async () => {
     const wrapper = mountPanel(config({
       killSwitchActive: true,
       killSwitchConfigured: true,
     }))
 
     await wrapper.get('.kill-switch-control').trigger('click')
-    await wrapper.get('.save-button').trigger('click')
 
     expect(wrapper.emitted<SmartRoutingConfig[]>('update:config')?.[0]?.[0]).toMatchObject({
       killSwitchActive: false,
@@ -139,15 +137,21 @@ describe('AutopilotModePanel KillSwitch', () => {
     expect(wrapper.findAll('.select-control').every(select => select.attributes('disabled') !== undefined)).toBe(true)
   })
 
-  it('reset 恢复 props 中的 KillSwitch 值', async () => {
+  it('后端确认前保持旧值，props 更新后同步新值', async () => {
     const wrapper = mountPanel(config())
 
     await wrapper.get('.kill-switch-control').trigger('click')
-    expect(wrapper.get('.kill-switch-control').attributes('data-model')).toBe('true')
-
-    await wrapper.get('.reset-button').trigger('click')
     expect(wrapper.get('.kill-switch-control').attributes('data-model')).toBe('false')
-    expect(wrapper.get('.save-button').attributes('disabled')).toBeDefined()
+
+    await wrapper.setProps({
+      config: config({
+        killSwitchActive: true,
+        killSwitchConfigured: true,
+      }),
+    })
+    await nextTick()
+
+    expect(wrapper.get('.kill-switch-control').attributes('data-model')).toBe('true')
   })
 
   it('props 更新时同步 configured/forced 状态', async () => {

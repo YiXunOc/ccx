@@ -32,12 +32,13 @@
         <!-- KillSwitch 开关 -->
         <div class="mb-4">
           <v-switch
-            v-model="localConfig.killSwitchActive"
+            :model-value="localConfig.killSwitchActive"
             :label="t('autopilot.modePanel.killSwitch')"
             color="error"
             density="compact"
             hide-details
-            :disabled="localConfig.killSwitchForced === true"
+            :disabled="saving || localConfig.killSwitchForced === true"
+            @update:model-value="updateKillSwitch"
           />
           <div class="text-caption text-medium-emphasis mt-1">
             {{ t('autopilot.modePanel.killSwitchHint') }}
@@ -198,14 +199,22 @@ const scenarioSummary = computed(() => {
   return parts.join(' · ')
 })
 
-// 检测是否有变更
+// 急停属于安全控制：切换时立即提交，并由后端响应确认后再更新显示。
+function updateKillSwitch(enabled: boolean | null) {
+  if (typeof enabled !== 'boolean' || props.saving || localConfig.killSwitchForced === true) return
+  emit('update:config', {
+    ...cloneConfig(localConfig),
+    killSwitchActive: enabled,
+  })
+}
+
+// 检测需要手动保存的普通配置变更
 const hasChanges = computed(() => {
-  return localConfig.killSwitchActive !== props.config.killSwitchActive
-    || localConfig.costPreference !== props.config.costPreference
+  return localConfig.costPreference !== props.config.costPreference
     || (localConfig.scenario ?? 'auto') !== (props.config.scenario ?? 'auto')
 })
 
-// 保存配置
+// 保存普通配置
 function saveConfig() {
   emit('update:config', cloneConfig(localConfig))
 }
