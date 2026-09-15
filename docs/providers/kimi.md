@@ -23,11 +23,11 @@ Kimi 同时兼容 OpenAI 和 Anthropic 两种协议。Kimi Code 的两个入口�
 
 | 会员档位 | 模型 | 上下文窗口 |
 |----------|------|------------|
-| Andante | `kimi-for-coding` | 256K |
-| Moderato | `k3`、`kimi-for-coding` | 256K |
-| Allegretto 及以上 | `k3`、`kimi-for-coding`、`kimi-for-coding-highspeed` | K3 最高 1M；其他模型 256K |
+| Andante | `kimi-for-coding` | 1M |
+| Moderato | `k3`、`kimi-for-coding` | K3 256K；`kimi-for-coding` 1M |
+| Allegretto 及以上 | `k3`、`kimi-for-coding`、`kimi-for-coding-highspeed` | K3 最高 1M；`kimi-for-coding` 1M；高速版 256K |
 
-`k3` 支持 `low`、`high`、`max` 三档思考强度；K2.7 Code 系列由服务端保持 Thinking。关闭 thinking 时，K3 和 K2.7 Code 会被路由到 K2.6。
+`k3` 与 `kimi-for-coding` 均支持 `low`、`high`、`max` 三档思考强度（`k3` 默认 `high`，`kimi-for-coding` 默认 `max`）。关闭 thinking 时，K3 系列与 `kimi-for-coding` 的请求均由 K2.8 Preview（无思考版）处理；`kimi-for-coding-highspeed` 由服务端保持 Thinking。
 
 Claude Code 环境变量中的 `k3[1m]` 只是声明 1M 上下文的客户端写法；API 请求和 CCX 的模型字段仍使用 `k3`。
 
@@ -83,7 +83,7 @@ kimi-for-coding-highspeed
 | 模型 | 说明 |
 |------|------|
 | `k3` | Kimi K3 旗舰编程模型；Moderato 可用 256K，Allegretto 及以上可解锁最高 1M；支持 `low` / `high` / `max` |
-| `kimi-for-coding` | Kimi K2.7 Code，所有 Kimi Code 会员可用，服务端保持 Thinking |
+| `kimi-for-coding` | Kimi K2.8 Preview（2026-09 起模型 ID 不变、实际模型升级），综合性能接近 K3，1M 上下文，支持 `low` / `high` / `max`（默认 `max`），所有会员可用 |
 | `kimi-for-coding-highspeed` | Kimi K2.7 Code 高速版，输出约快 5-6 倍；Allegretto 及以上可用，消耗更高 |
 | `kimi-k2.7` | 最新按量计费模型，原生多模态 Agentic 模型 |
 | `kimi-k2.6` | 多模态 Agentic 模型，1T 总参 / 32B 激活 |

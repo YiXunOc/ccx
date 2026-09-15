@@ -709,3 +709,24 @@ func TestScoreCandidate_Penalty(t *testing.T) {
 func floatEq(a, b float64) bool {
 	return math.Abs(a-b) < 1e-9
 }
+
+// 回归：延迟劣化学习结论软降权 -15（叠加健康惩罚通道）。
+func TestScoreCandidateLatencyDegradedPenalty(t *testing.T) {
+	base := ScoringCandidate{
+		ChannelUID: "ch_a", QualityTier: QualityTierNormal, StabilityTier: StabilityTierNormal,
+		SpeedTier: SpeedTierNormal, CostTier: CostTierNormal, HealthState: HealthStateHealthy,
+		ProviderQualityScore: 0.5, ProviderQualityConfidence: 0.3, SavingsScore: 0.5, DomainStrengthScore: 0.5,
+	}
+	weights := DefaultTaskWeights()[TaskClassWorker]
+	ctx := ScoringContext{Weights: weights}
+	normal := ScoreCandidate(base, ctx)
+	degraded := base
+	degraded.LatencyDegraded = true
+	scored := ScoreCandidate(degraded, ctx)
+	if scored.Penalty != normal.Penalty+15 {
+		t.Fatalf("LatencyDegraded 应叠加 15 惩罚: got %v want %v", scored.Penalty, normal.Penalty+15)
+	}
+	if scored.Score >= normal.Score {
+		t.Fatalf("降权后总分应更低: %v vs %v", scored.Score, normal.Score)
+	}
+}

@@ -152,8 +152,9 @@ func handleMultiChannel(
 		userID,
 		claudeReq.Model,
 		contextRequirement,
+		claudeReq.Stream,
 		agentRole,
-		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
+		func(c *gin.Context, selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
 			executionRoute := selection.Route
 
@@ -498,6 +499,10 @@ func handleNormalResponse(
 		}
 	}()
 
+	// 竞速提交闸门：完整响应校验通过后裁决赢家；败者零字节写客户端。
+	if !common.RacingClaimClientCommit(c) {
+		return nil, common.ErrRacingSuperseded
+	}
 	// 转发上游响应头
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
 	if normalProtocolDebugEnabled(envCfg) {

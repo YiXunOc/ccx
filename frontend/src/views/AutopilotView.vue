@@ -150,6 +150,9 @@ async function handleConfigUpdate(updated: SmartRoutingConfig) {
     if ((updated.scenario ?? 'auto') !== (current.scenario ?? 'auto')) {
       payload.scenario = updated.scenario ?? 'auto'
     }
+    if ((updated.racingEnabled ?? false) !== (current.racingEnabled ?? false)) {
+      payload.racingEnabled = updated.racingEnabled ?? false
+    }
     if (
       current.killSwitchForced === false
       && typeof current.killSwitchConfigured === 'boolean'

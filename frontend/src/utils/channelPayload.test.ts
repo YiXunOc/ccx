@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildChannelPayload, embeddingCapabilityRowsToRecord } from './channelPayload'
+import { buildChannelPayload, embeddingCapabilityRowsToRecord, normalizeMaxGroupMultiplier } from './channelPayload'
 
 describe('buildChannelPayload', () => {
   it('应序列化 reasoningMapping 与渠道级 verbosity/fastMode', () => {
@@ -847,5 +847,28 @@ describe('buildChannelPayload tags', () => {
   it('空字符串 tag 应被过滤', () => {
     const result = buildChannelPayload({ ...baseForm, tags: ['valid', '', '  ', 'also'] })
     expect(result.tags).toEqual(['valid', 'also'])
+  })
+})
+
+describe('normalizeMaxGroupMultiplier', () => {
+  it('有效正数保留（含字符串形态），空值/非法值/非正数归 null', () => {
+    expect(normalizeMaxGroupMultiplier(2.5)).toBe(2.5)
+    expect(normalizeMaxGroupMultiplier('3')).toBe(3)
+    expect(normalizeMaxGroupMultiplier(null)).toBeNull()
+    expect(normalizeMaxGroupMultiplier(undefined)).toBeNull()
+    expect(normalizeMaxGroupMultiplier('')).toBeNull()
+    expect(normalizeMaxGroupMultiplier('  ')).toBeNull()
+    expect(normalizeMaxGroupMultiplier(0)).toBeNull()
+    expect(normalizeMaxGroupMultiplier(-1)).toBeNull()
+    expect(normalizeMaxGroupMultiplier('abc')).toBeNull()
+    expect(normalizeMaxGroupMultiplier(Number.NaN)).toBeNull()
+    expect(normalizeMaxGroupMultiplier(Infinity)).toBeNull()
+  })
+
+  it('表单值与渠道视图值同口径比较（托管账号保存时的变化判定）', () => {
+    // 表单回传字符串 '2.5'、视图存数字 2.5，应判等不触发误更新
+    expect(normalizeMaxGroupMultiplier('2.5')).toBe(normalizeMaxGroupMultiplier(2.5))
+    // 清空表单（''）与视图无值（undefined）同口径
+    expect(normalizeMaxGroupMultiplier('')).toBe(normalizeMaxGroupMultiplier(undefined))
   })
 })

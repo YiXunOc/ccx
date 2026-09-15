@@ -254,18 +254,31 @@ func TestCandidatesForModel_DisabledKeyFiltered(t *testing.T) {
 func TestCandidatesForModel_FiltersKeysAboveGroupMultiplierLimit(t *testing.T) {
 	safeRatio, unsafeRatio, limit := 1.0, 2.0, 1.0
 	up := &config.UpstreamConfig{
-		APIKeys: []string{"safe", "unsafe", "legacy", "incomplete"},
+		APIKeys: []string{"safe", "unsafe", "legacy", "ungated"},
+		// 渠道级上限是唯一真源：unsafe 倍率 2 超过渠道上限 1，自动退出调度。
+		MaxGroupMultiplier: &limit,
 		APIKeyConfigs: []config.APIKeyConfig{
-			{Key: "safe", GroupMultiplier: &safeRatio, MaxGroupMultiplier: &limit},
-			{Key: "unsafe", GroupMultiplier: &unsafeRatio, MaxGroupMultiplier: &limit},
+			{Key: "safe", GroupMultiplier: &safeRatio},
+			{Key: "unsafe", GroupMultiplier: &unsafeRatio},
 			{Key: "legacy"},
-			{Key: "incomplete", GroupMultiplier: &safeRatio},
+			// 渠道未启用闸门时（另一渠道）高价 key 不因倍率被禁——见下个子测试。
+			{Key: "ungated", GroupMultiplier: &unsafeRatio},
+		},
+	}
+	upNoGate := &config.UpstreamConfig{
+		APIKeys: []string{"ungated"},
+		APIKeyConfigs: []config.APIKeyConfig{
+			{Key: "ungated", GroupMultiplier: &unsafeRatio},
 		},
 	}
 
 	cands := CandidatesForModel(up, nil, "gpt-5.6")
 	if len(cands) != 2 || cands[0].APIKey != "safe" || cands[1].APIKey != "legacy" {
-		t.Fatalf("group multiplier guard should keep only safe and legacy keys, got %+v", cands)
+		t.Fatalf("channel gate should drop over-limit keys, got %+v", cands)
+	}
+	cands = CandidatesForModel(upNoGate, nil, "gpt-5.6")
+	if len(cands) != 1 || cands[0].APIKey != "ungated" {
+		t.Fatalf("without channel gate the premium key must stay eligible, got %+v", cands)
 	}
 }
 

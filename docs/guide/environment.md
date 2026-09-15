@@ -77,10 +77,10 @@ ENABLE_CORS=false                      # 是否启用 CORS
 CORS_ORIGIN=*                          # CORS 允许的源
 
 # 调校台启动兜底（旧部署兼容）：运行时请优先使用 Web/桌面调校台
-# REQUEST_TIMEOUT=120000               # 非流式上游请求总超时（毫秒，1000-300000）
-# RESPONSE_HEADER_TIMEOUT=60           # 等待上游 HTTP 响应头超时（秒，30-120；调校台支持到 300 秒）
-# METRICS_WINDOW_SIZE=10               # 滑动窗口大小（最小 3，默认 10）
-# METRICS_FAILURE_THRESHOLD=0.5        # 失败率阈值（0-1，默认 0.5 即 50%）
+# REQUEST_TIMEOUT=300000               # 非流式上游请求总超时（毫秒，1000-300000，默认 300000）
+# RESPONSE_HEADER_TIMEOUT=120          # 等待上游 HTTP 响应头超时（秒，30-300，默认 120）
+# METRICS_WINDOW_SIZE=20               # 滑动窗口大小（最小 3，默认 20）
+# METRICS_FAILURE_THRESHOLD=0.7        # 失败率阈值（0-1，默认 0.7 即 70%）
 
 # 渠道权威形态（Phase 3c，调试/运维用，一般无需设置）
 # 配置携带 channelsV3 时，加载始终以它为权威重建运行时六数组
@@ -253,9 +253,9 @@ Vectors 仍不支持 capability-test；不要通过能力测试推断 Embedding 
 
 | 字段 | 默认值 | 范围 | 说明 |
 | --- | --- | --- | --- |
-| `streamFirstContentTimeoutMs` | `30000` | `5000-300000` | HTTP 200 后等待首个有效内容的时间。 |
-| `streamInactivityTimeoutMs` | `20000` | `1000-180000` | 首字后等待后续有效输出的空闲时间。 |
-| `streamToolCallIdleTimeoutMs` | `120000` | `30000-300000` | 工具调用 pending 阶段连续无上游 SSE 帧的 idle timeout；收到参数片段、状态事件或心跳帧都会重置计时器。 |
+| `streamFirstContentTimeoutMs` | `90000` | `5000-300000` | HTTP 200 后等待首个有效内容的时间。 |
+| `streamInactivityTimeoutMs` | `90000` | `1000-180000` | 首字后等待后续有效输出的空闲时间。 |
+| `streamToolCallIdleTimeoutMs` | `300000` | `30000-300000` | 工具调用 pending 阶段连续无上游 SSE 帧的 idle timeout；收到参数片段、状态事件或心跳帧都会重置计时器。 |
 
 `streamToolCallIdleTimeoutMs` 是破坏性字段名，旧 `streamToolCallTimeoutMs` 不再使用。该字段不是工具调用总耗时上限。
 

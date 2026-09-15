@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BenedictKing/ccx/internal/autopilot"
 	"github.com/BenedictKing/ccx/internal/config"
 	"github.com/BenedictKing/ccx/internal/eventbus"
 	"github.com/BenedictKing/ccx/internal/handlers/common"
@@ -335,6 +336,14 @@ func runRoundRobinTests(ctx context.Context, channel *config.UpstreamConfig, pro
 			models = userModels
 		} else {
 			models, err = getProbeModelsForCapabilityProtocol(protocol)
+			// 探测范围画像对齐：内置通用清单（gpt/claude 家族）对没有对应模型
+			// 家族的渠道天然全 MODEL_NOT_AVAILABLE，探不到真实结论；画像
+			// protocolModels 是发现层在该渠道×协议逐模型实测验证过的清单，
+			// 有画像时优先测真实存在的模型（工具调用探针的学习依赖于此）。
+			if profiled := autopilot.SharedProtocolModelsForChannel(channel.ChannelUID, protocol); len(profiled) > 0 {
+				models = profiled
+				err = nil
+			}
 		}
 		if err != nil {
 			errMsg := "no_models_configured"
@@ -745,7 +754,7 @@ func executeModelTest(ctx context.Context, channel *config.UpstreamConfig, proto
 			toolSummary := runCapabilityToolCallProbe(reqCtx, channel, protocol, actualModel, apiKey)
 			if toolSummary.Tested {
 				modelResult.ToolCalls = &toolSummary
-				recordToolCallProbeResult(channel, apiKey, actualModel, toolSummary)
+				recordToolCallProbeResult(channel, apiKey, actualModel, protocol, toolSummary)
 				log.Printf("[CapabilityTest-ToolCall] 渠道 %s 模型 %s 工具调用探针完成 (支持: %v, %s)",
 					channel.Name, actualModel, toolSummary.Supported, toolSummary.Evidence)
 			}

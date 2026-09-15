@@ -45,9 +45,8 @@ func (o OptionalFloat64) IsCleared() bool {
 }
 
 type keyMultiplierPatchRequest struct {
-	GroupMultiplier    OptionalFloat64           `json:"groupMultiplier"`
-	MaxGroupMultiplier OptionalFloat64           `json:"maxGroupMultiplier"`
-	ConsumptionPolicy  OptionalConsumptionPolicy `json:"consumptionPolicy,omitempty"`
+	GroupMultiplier   OptionalFloat64           `json:"groupMultiplier"`
+	ConsumptionPolicy OptionalConsumptionPolicy `json:"consumptionPolicy,omitempty"`
 }
 
 // OptionalConsumptionPolicy 支持 JSON 三态：缺失 / null / 具体值。
@@ -120,16 +119,12 @@ func handlePatchKeyMultiplier(cfgManager *config.ConfigManager) gin.HandlerFunc 
 			c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效: " + err.Error()})
 			return
 		}
-		if !req.GroupMultiplier.Present && !req.MaxGroupMultiplier.Present && !req.ConsumptionPolicy.Present {
+		if !req.GroupMultiplier.Present && !req.ConsumptionPolicy.Present {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "至少提供一个字段"})
 			return
 		}
 		if req.GroupMultiplier.IsSet() && !isFiniteNonNegativeValue(req.GroupMultiplier.Value) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "groupMultiplier 必须是有限且非负数"})
-			return
-		}
-		if req.MaxGroupMultiplier.IsSet() && !isFiniteNonNegativeValue(req.MaxGroupMultiplier.Value) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "maxGroupMultiplier 必须是有限且非负数"})
 			return
 		}
 		if req.ConsumptionPolicy.Present && req.ConsumptionPolicy.Valid {
@@ -171,15 +166,6 @@ func handlePatchKeyMultiplier(cfgManager *config.ConfigManager) gin.HandlerFunc 
 			}
 			next.MultiplierUpdatedAt = &now
 		}
-		if req.MaxGroupMultiplier.Present {
-			if req.MaxGroupMultiplier.Valid {
-				value := req.MaxGroupMultiplier.Value
-				next.MaxGroupMultiplier = &value
-			} else {
-				next.MaxGroupMultiplier = nil
-			}
-			next.MultiplierUpdatedAt = &now
-		}
 		if req.ConsumptionPolicy.Present {
 			if req.ConsumptionPolicy.Valid {
 				next.ConsumptionPolicy = config.NormalizeKeyConsumptionPolicy(req.ConsumptionPolicy.Value)
@@ -188,19 +174,12 @@ func handlePatchKeyMultiplier(cfgManager *config.ConfigManager) gin.HandlerFunc 
 			}
 		}
 
-		// 当 GroupMultiplier 被显式设置或当前非 nil 时，必须同时有 MaxGroupMultiplier；否则 400。
-		// 注意：0 是合法倍率，不能通过 Value > 0 判断“是否设置”。
-		groupWillBeSet := req.GroupMultiplier.IsSet()
-		if groupWillBeSet && next.MaxGroupMultiplier == nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "设置 groupMultiplier 时必须同时提供 maxGroupMultiplier"})
-			return
-		}
-		// 当只提供 maxGroupMultiplier 而未提供 groupMultiplier 且当前也无 groupMultiplier 时，同样无法构成合法配对。
-		// 但允许单独设置 maxGroupMultiplier 以收紧已有配对的上限；此情况 next.GroupMultiplier 非 nil 已在上一条处理。
+		// 倍率上限统一为渠道级 UpstreamConfig.MaxGroupMultiplier，Key 级不再维护配对：
+		// Key 倍率超过渠道级上限时由 evaluator 判 over_group_limit 自动退出调度。
 
 		if !isNewAPI {
 			next.MultiplierSource = "manual"
-			if next.GroupMultiplier == nil && next.MaxGroupMultiplier == nil {
+			if next.GroupMultiplier == nil {
 				next.MultiplierSyncStatus = ""
 				next.MultiplierSyncError = ""
 				next.MultiplierExpiresAt = nil
@@ -211,16 +190,22 @@ func handlePatchKeyMultiplier(cfgManager *config.ConfigManager) gin.HandlerFunc 
 				next.MultiplierSyncError = ""
 				next.MultiplierExpiresAt = nil
 			}
-		} else if next.MaxGroupMultiplier != nil {
-			if next.GroupMultiplier != nil && *next.GroupMultiplier > *next.MaxGroupMultiplier {
+			// 历史写入的 key 级上限已废弃，随本次编辑一并清除，保持单源。
+			next.MaxGroupMultiplier = nil
+		} else {
+			next.MaxGroupMultiplier = nil
+			if upstream.MaxGroupMultiplier != nil && next.GroupMultiplier != nil &&
+				*next.GroupMultiplier > *upstream.MaxGroupMultiplier {
 				next.MultiplierSyncStatus = "over_limit"
 			} else if strings.TrimSpace(next.MultiplierSyncStatus) == "" {
 				next.MultiplierSyncStatus = "fresh"
 			}
 		}
 
-		response := buildKeyMultiplierResponse(keyUID, next, time.Now())
-		updates := config.UpstreamUpdate{APIKeyConfigs: patchAPIKeyConfigAt(upstream.APIKeyConfigs, cfgIndex, next)}
+		response := buildKeyMultiplierResponse(keyUID, next, upstream.MaxGroupMultiplier, time.Now())
+		// 精确写语义：next 是从当前值 clone 后的完整意图（含显式清除），
+		// 必须绕过渠道编辑表单的 merge 回填，否则清除倍率会被旧值填回。
+		updates := config.UpstreamUpdate{APIKeyConfigs: patchAPIKeyConfigAt(upstream.APIKeyConfigs, cfgIndex, next), SkipAPIKeyConfigMerge: true}
 		if err := updateUpstreamByType(cfgManager, apiType, channelIndex, updates); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -229,15 +214,17 @@ func handlePatchKeyMultiplier(cfgManager *config.ConfigManager) gin.HandlerFunc 
 	}
 }
 
-func buildKeyMultiplierResponse(keyUID string, cfg config.APIKeyConfig, now time.Time) keyMultiplierResponse {
-	eligibility := config.EvaluateAPIKeyMultiplierEligibility(cfg, now)
+// buildKeyMultiplierResponse 构造倍率编辑响应。channelMax 是渠道级分组倍率上限，
+// 响应的 maxMultiplier 字段始终回显渠道级值（Key 级上限已废弃）。
+func buildKeyMultiplierResponse(keyUID string, cfg config.APIKeyConfig, channelMax *float64, now time.Time) keyMultiplierResponse {
+	eligibility := config.EvaluateAPIKeyMultiplierEligibility(cfg, channelMax, now)
 	effectiveCostClass := deriveEffectiveCostClass(cfg, eligibility.Eligible)
 	return keyMultiplierResponse{
 		KeyUID:             keyUID,
 		Group:              strings.TrimSpace(cfg.QuotaGroup),
 		RemoteMultiplier:   remoteMultiplierForResponse(cfg),
 		GroupMultiplier:    cloneFloat64Ptr(cfg.GroupMultiplier),
-		MaxMultiplier:      cloneFloat64Ptr(cfg.MaxGroupMultiplier),
+		MaxMultiplier:      cloneFloat64Ptr(channelMax),
 		ConsumptionPolicy:  cfg.ConsumptionPolicy,
 		EffectiveCostClass: effectiveCostClass,
 		Status:             eligibility.Status,

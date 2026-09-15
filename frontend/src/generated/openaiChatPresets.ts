@@ -23,8 +23,10 @@ export const openaiChatPresets: Record<string, OpenAIChatPreset> = {
     "reasoningParamStyle": "reasoning",
     "authHeader": "",
     "normalizeSystemRoleToTopLevel": false,
-    "noVision": true,
-    "noVisionModels": [],
+    "noVision": false,
+    "noVisionModels": [
+      "deepseek-v4-pro"
+    ],
     "visionFallbackModel": ""
   },
   "mimo": {

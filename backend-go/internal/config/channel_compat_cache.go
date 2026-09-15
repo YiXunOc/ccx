@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,11 @@ const ChannelCompatStatePath = ".config/channel_compat.json"
 // channelCompatTTL 兼容性记忆的有效期。
 // 与 DeprecatedParamCache / SystemHeaderFilterCache 保持一致：上游能力变化后自动重新学习。
 const channelCompatTTL = 24 * time.Hour
+
+// channelCompatFlushDebounce 高频统计样本（latency 证据）的防抖落盘窗口。
+// 这类样本廉价且可重新学习，合并到固定窗口后单次落盘，避免把整份状态的
+// 序列化+rename 压到请求热路径上；窗口内进程退出只是少学几次样本（streak 重计）。
+const channelCompatFlushDebounce = 10 * time.Second
 
 // CompatTrait 一个可自动学习的渠道兼容性事实。
 // 取字符串而非 iota，便于落盘 JSON 与日志直接可读。
@@ -57,7 +63,62 @@ const (
 	// 需在转发前从 anthropic-beta header 中按 token 粒度剥离。
 	// 学习条件：400/422 错误明确点名拒绝某 token + 请求侧确实携带 anthropic-beta header。
 	TraitUnsupportedBetaHeader CompatTrait = "unsupported_beta_header"
+	// TraitVerifiedToolCalls 渠道×模型实测产生过真实 function_call 事件（正向证据）。
+	// 写入方：能力测试工具探针（强制 tool_choice 返回 ccx_probe 调用）与运行期
+	// 成功路径（带 tools 请求 2xx 完成且流中观察到真实工具调用块）。读取方：
+	// ModelResolver 与 SmartRouter 的白名单模式——渠道内存在任一验证组合时，
+	// 带工具请求的候选只从验证组合中产生；无记录渠道 fail-open 不受影响。
+	// 这是「伪工具标记方言长尾」（qwen/deepseek/glm 各族 auto 下文本化工具
+	// 调用，负向清单打地鼠）的根治：agentic 流量只走实证可用的组合。
+	// 不进 AllCompatTraits（无请求改写）。
+	TraitVerifiedToolCalls CompatTrait = "verified_tool_calls"
 )
+
+// TraitProtocolUnsupportedPrefix 「模型×执行协议端点不可用」记忆的 trait 键前缀，
+// 按执行协议参数化（如 no_protocol_support:responses）。写入方是 failover 错误路径
+// （上游 400 明确报 model_not_supported_on_endpoint 或等价文案），读取方是
+// ModelResolver——跨模型替代映射的候选剔除该 渠道×协议×模型 组合，同模型在其他
+// 协议下不受影响。与 TraitNoToolCallSupport 同类：无请求改写可兜底，不进 AllCompatTraits。
+const TraitProtocolUnsupportedPrefix = "no_protocol_support:"
+
+// ProtocolUnsupportedTrait 构造指定执行协议的「端点不支持」trait 键。
+// protocol 传调度层 ChannelKind 字符串（responses/chat/messages/gemini）。
+func ProtocolUnsupportedTrait(protocol string) CompatTrait {
+	return CompatTrait(TraitProtocolUnsupportedPrefix + strings.ToLower(strings.TrimSpace(protocol)))
+}
+
+// ToolRouteIdentity 返回工具能力学习（TraitVerifiedToolCalls / TraitNoToolCallSupport）
+// 的稳定路由身份，作为 CompatCache 键的 channelUID 段。
+//
+// 锚选逻辑渠道 UID（LogicalChannelUID）：物理 ChannelUID 会随渠道重建/账号同步被
+// 重铸（实测 ark 两个月 ≥5 代，画像库累积 580 个已不在 config 中的幽灵 UID），以其为
+// 学习键的结论在重铸后静默失效；逻辑卡经 RebuildLogicalChannels 的 absorb 语义保持
+// UID 不变，是「站点账号×协议路由」的稳定锚。无逻辑 UID 的旧配置回退物理 UID
+// （加载期 ensureLogicalBackfill 会补齐，回退仅防御手工构造的内存态）。
+//
+// kind 维度（messages/chat/responses/gemini）必须保留：同一站点不同协议端点的工具
+// 行为可能相反（tokenrhythm chat 返回真实 function_call / responses 把工具调用透传
+// 为伪标记文本），证据不得跨协议外溢。kind 为空时返回裸锚——查询侧用带 kind 的
+// 身份查不到它，等价于无证据 fail-open，不会误伤。
+//
+// 返回值形如 "lc_xxx#responses"；分隔符用 '#' 而非 ':'，避免与缓存键
+// "channelUID:keyHash:model" 的分段符冲突（模型名本身可含冒号，必须 SplitN 3 段）。
+func ToolRouteIdentity(u *UpstreamConfig, kind string) string {
+	if u == nil {
+		return ""
+	}
+	anchor := strings.TrimSpace(u.LogicalChannelUID)
+	if anchor == "" {
+		anchor = strings.TrimSpace(u.ChannelUID)
+	}
+	if anchor == "" {
+		return ""
+	}
+	if kind = strings.ToLower(strings.TrimSpace(kind)); kind != "" {
+		return anchor + "#" + kind
+	}
+	return anchor
+}
 
 // AllCompatTraits 全部可学习兼容项，供配置迁移与诊断遍历。
 func AllCompatTraits() []CompatTrait {
@@ -101,6 +162,10 @@ type CompatTraitState struct {
 	Evidence   string    `json:"evidence"`    // 触发时的错误/探测摘要（截断）
 	LearnedAt  time.Time `json:"learned_at"`  // 首次学到的时间
 	ApplyCount int       `json:"apply_count"` // 命中记忆并主动改写的次数
+	// AutoMissStreak 连续伪标记未命中计数：仅 verified_tool_calls 使用的负反馈
+	// 计数器（auto 模式干净 2xx 但输出伪工具调用标记文本的连续次数），达阈值
+	// 撤销 Enabled。易失语义：计数变更不落盘，仅撤销（结论翻转）时持久化。
+	AutoMissStreak int `json:"auto_miss_streak,omitempty"`
 }
 
 // 上下文上限的两种证据来源，强弱不同，合成规则也不同（见 RecordContextLimit）。
@@ -166,17 +231,22 @@ type ChannelCompatCache struct {
 	mu    sync.RWMutex
 	// contextWindows 渠道×协议×模型 粒度的放宽方向窗口证据（键见 contextWindowLearnedKey）。
 	contextWindows map[string]*ContextWindowLearnedState
+	// latencyPenalties 渠道×Key×模型×任务类 粒度的延迟慢证据（键见 latencyPenaltyKey）。
+	latencyPenalties map[string]*LatencyPenaltyState
 	// path 为空表示纯内存模式（测试与未启用持久化时）。
 	path string
 	// dirty 标记自上次落盘后是否有新增记忆，避免无变化时重复写盘。
 	dirty bool
+	// flushTimer 非空表示已安排一次防抖落盘（见 scheduleFlushLocked）。
+	flushTimer *time.Timer
 }
 
 // NewChannelCompatCache 创建纯内存缓存实例（不落盘）。
 func NewChannelCompatCache() *ChannelCompatCache {
 	return &ChannelCompatCache{
-		cache:          make(map[string]*ChannelCompatEntry),
-		contextWindows: make(map[string]*ContextWindowLearnedState),
+		cache:            make(map[string]*ChannelCompatEntry),
+		contextWindows:   make(map[string]*ContextWindowLearnedState),
+		latencyPenalties: make(map[string]*LatencyPenaltyState),
 	}
 }
 
@@ -185,9 +255,10 @@ func NewChannelCompatCache() *ChannelCompatCache {
 // 不应阻断代理服务启动。
 func NewChannelCompatCacheWithPersistence(path string) *ChannelCompatCache {
 	c := &ChannelCompatCache{
-		cache:          make(map[string]*ChannelCompatEntry),
-		contextWindows: make(map[string]*ContextWindowLearnedState),
-		path:           path,
+		cache:            make(map[string]*ChannelCompatEntry),
+		contextWindows:   make(map[string]*ContextWindowLearnedState),
+		latencyPenalties: make(map[string]*LatencyPenaltyState),
+		path:             path,
 	}
 	if err := c.load(); err != nil {
 		log.Printf("[ChannelCompat-Load] 加载渠道兼容性记忆失败，从空状态开始: %v", err)
@@ -203,6 +274,7 @@ func NewChannelCompatCacheWithPersistence(path string) *ChannelCompatCache {
 type channelCompatFile struct {
 	Entries        map[string]*ChannelCompatEntry        `json:"entries"`
 	ContextWindows map[string]*ContextWindowLearnedState `json:"contextWindows,omitempty"`
+	LatencyPenalty map[string]*LatencyPenaltyState       `json:"latencyPenalties,omitempty"`
 }
 
 // load 从磁盘读取记忆，跳过已过期条目。
@@ -286,12 +358,27 @@ func (c *ChannelCompatCache) load() error {
 		}
 		c.contextWindows[key] = state
 	}
+	nowLoad := time.Now()
+	for key, state := range stored.LatencyPenalty {
+		if state == nil || !latencyPenaltyFresh(state, nowLoad) {
+			continue
+		}
+		if c.latencyPenalties == nil {
+			c.latencyPenalties = make(map[string]*LatencyPenaltyState)
+		}
+		c.latencyPenalties[key] = state
+	}
 	return nil
 }
 
 // Flush 将当前记忆原子落盘（tmp + rename）。无变化时为空操作。
+// 同步落盘会取消已安排的防抖落盘，避免紧跟着重复写一次。
 func (c *ChannelCompatCache) Flush() error {
 	c.mu.Lock()
+	if c.flushTimer != nil {
+		c.flushTimer.Stop()
+		c.flushTimer = nil
+	}
 	if c.path == "" || !c.dirty {
 		c.mu.Unlock()
 		return nil
@@ -315,6 +402,15 @@ func (c *ChannelCompatCache) Flush() error {
 			snapshot.ContextWindows[key] = state
 		}
 	}
+	for key, state := range c.latencyPenalties {
+		if state == nil || !latencyPenaltyFresh(state, now) {
+			continue
+		}
+		if snapshot.LatencyPenalty == nil {
+			snapshot.LatencyPenalty = make(map[string]*LatencyPenaltyState, len(c.latencyPenalties))
+		}
+		snapshot.LatencyPenalty[key] = state
+	}
 	path := c.path
 	c.dirty = false
 	data, err := json.MarshalIndent(snapshot, "", "  ")
@@ -331,6 +427,88 @@ func (c *ChannelCompatCache) Flush() error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// scheduleFlushLocked 安排一次防抖落盘（调用时需持 c.mu）。
+// 供 latency 证据等高频统计样本使用：记录只置 dirty，窗口内多次样本合并为一次写盘；
+// 窗口不重置，持续有样本时至多每 channelCompatFlushDebounce 落盘一次，滞后时间有界。
+// 纯内存模式（path 为空）不安排，避免测试产生无用定时器。
+func (c *ChannelCompatCache) scheduleFlushLocked() {
+	if c.path == "" || c.flushTimer != nil {
+		return
+	}
+	c.flushTimer = time.AfterFunc(channelCompatFlushDebounce, func() {
+		c.mu.Lock()
+		c.flushTimer = nil
+		c.mu.Unlock()
+		if err := c.Flush(); err != nil {
+			log.Printf("[ChannelCompat-Flush] 防抖落盘失败: %v", err)
+		}
+	})
+}
+
+// rejectedBetaTokenPattern 从上游错误文案/合并态证据中提取被拒 anthropic-beta token 名。
+// 覆盖格式：
+//
+//	中文：尚未验证或不支持的 anthropic-beta：context-1m-2025-08-07
+//	英文：anthropic-beta `context-1m-2025-08-07` is not enabled
+//	英文：unsupported anthropic-beta header: context-1m-2025-08-07
+//	合并态：rejected anthropic-beta: token-a; anthropic-beta: token-b
+//
+// 允许跨 "header:"/"named:" 等中介词（(?:\w+[\s:：]+)* 匹配 0 次或多次"单词+分隔符"序列）。
+// token 名必含至少一个 `-`，避免把 "header"/"configuration" 等通用词误提取为 token。
+var rejectedBetaTokenPattern = regexp.MustCompile(
+	`(?i)anthropic-beta[\s:：'"` + "`" + `「『]*\s*(?:\w+[\s:：]+)*([a-z0-9][a-z0-9_-]*-[a-z0-9_-]{2,40})`,
+)
+
+// ExtractRejectedBetaTokens 从证据文案提取全部被拒 anthropic-beta token（去重、保序）。
+// 返回 nil 表示文案里没有可识别的 token；视为格式不符，调用方不学。
+// 上游一次只点名一个 token，多 token 场景拆成多次报错；合并态证据可含多个。
+func ExtractRejectedBetaTokens(evidence string) []string {
+	if evidence == "" {
+		return nil
+	}
+	var tokens []string
+	seen := make(map[string]bool)
+	for _, m := range rejectedBetaTokenPattern.FindAllStringSubmatch(evidence, -1) {
+		if len(m) >= 2 && !seen[m[1]] {
+			seen[m[1]] = true
+			tokens = append(tokens, m[1])
+		}
+	}
+	return tokens
+}
+
+// mergeRejectedBetaEvidence 合并新旧被拒 beta token 证据：新证据含旧集合之外的 token
+// 时按规范形态重写（每 token 一段，均可被 ExtractRejectedBetaTokens 解析）并报告 changed。
+// 合并保证发送前剥离覆盖全部已知被拒 token，而不是只剥第一次学到的那个。
+func mergeRejectedBetaEvidence(prevEvidence, newEvidence string) (string, bool) {
+	prevTokens := ExtractRejectedBetaTokens(prevEvidence)
+	newTokens := ExtractRejectedBetaTokens(newEvidence)
+	if len(newTokens) == 0 {
+		return prevEvidence, false
+	}
+	seen := make(map[string]bool, len(prevTokens))
+	for _, t := range prevTokens {
+		seen[t] = true
+	}
+	all := append([]string{}, prevTokens...)
+	changed := false
+	for _, t := range newTokens {
+		if !seen[t] {
+			seen[t] = true
+			all = append(all, t)
+			changed = true
+		}
+	}
+	if !changed {
+		return prevEvidence, false
+	}
+	parts := make([]string, len(all))
+	for i, t := range all {
+		parts[i] = "anthropic-beta: " + t
+	}
+	return "rejected " + strings.Join(parts, "; "), true
 }
 
 // Record 记录一条学习到的兼容性事实。返回该 trait 是否为新增结论（此前未记录或结论翻转）。
@@ -356,6 +534,15 @@ func (c *ChannelCompatCache) Record(channelUID, keyHash, model string, trait Com
 	prev, exists := entry.Traits[trait]
 	// 已有相同结论时不重复记录；结论翻转（如探测后被真实报错纠正）则覆盖并视为新增。
 	isNew := !exists || prev.Enabled != enabled
+	if !isNew && trait == TraitUnsupportedBetaHeader {
+		// beta 拒绝是集合语义：上游逐个点名拒绝不同 token，已有记录不代表新 token
+		// 已学会。合并进 evidence 并视为新增（调用方据此同 Key 重试剥离），否则发送前
+		// 剥离永远停在第一个 token，后续 token 反复 400 直至模型熔断。
+		if merged, changed := mergeRejectedBetaEvidence(prev.Evidence, evidence); changed {
+			evidence = merged
+			isNew = true
+		}
+	}
 	if isNew {
 		entry.Traits[trait] = CompatTraitState{
 			Enabled:   enabled,
@@ -375,6 +562,69 @@ func (c *ChannelCompatCache) Record(channelUID, keyHash, model string, trait Com
 		log.Printf("[ChannelCompat-Flush] 落盘渠道兼容性记忆失败: %v", err)
 	}
 	return true
+}
+
+// verifiedToolCallPseudoMissRevokeThreshold 白名单伪标记负反馈的撤销阈值：
+// 连续 N 次「auto 模式干净 2xx + 零真实工具调用 + 输出命中伪标记」即撤销 verified。
+const verifiedToolCallPseudoMissRevokeThreshold = 3
+
+// RecordVerifiedToolCallPseudoMiss 白名单负反馈计数：该 (路由,Key,模型) 上又出现
+// 一次伪标记未命中。返回当前连续计数与是否已触发撤销。无 verified 记录（或已
+// 禁用）时无可撤销，直接返回。计数变更不落盘（易失信号），仅撤销（结论翻转）
+// 时持久化；真实工具调用成功经 ClearVerifiedToolCallPseudoMiss 重置计数。
+func (c *ChannelCompatCache) RecordVerifiedToolCallPseudoMiss(routeIdentity, keyHash, model string) (int, bool) {
+	c.mu.Lock()
+	key := GenerateCacheKey(routeIdentity, keyHash, model)
+	entry, ok := c.cache[key]
+	if !ok || time.Since(entry.DetectedAt) > channelCompatTTL {
+		c.mu.Unlock()
+		return 0, false
+	}
+	state, ok := entry.Traits[TraitVerifiedToolCalls]
+	if !ok || !state.Enabled {
+		c.mu.Unlock()
+		return 0, false
+	}
+	state.AutoMissStreak++
+	streak := state.AutoMissStreak
+	revoked := false
+	if streak >= verifiedToolCallPseudoMissRevokeThreshold {
+		state.Enabled = false
+		state.AutoMissStreak = 0
+		state.Source = CompatSourceRuntimeSignal
+		state.Evidence = truncateCompatEvidence("auto 模式连续伪工具调用标记文本（零真实工具调用），撤销正向白名单")
+		state.LearnedAt = time.Now()
+		revoked = true
+	}
+	entry.Traits[TraitVerifiedToolCalls] = state
+	c.mu.Unlock()
+
+	if revoked {
+		c.mu.Lock()
+		c.dirty = true
+		c.mu.Unlock()
+		if err := c.Flush(); err != nil {
+			log.Printf("[ChannelCompat-Flush] 落盘渠道兼容性记忆失败: %v", err)
+		}
+	}
+	return streak, revoked
+}
+
+// ClearVerifiedToolCallPseudoMiss 真实工具调用成功时重置伪标记连续计数
+// （MaybeLearnVerifiedToolCalls 的配套，保证撤销语义是「连续」而非「累计」）。
+func (c *ChannelCompatCache) ClearVerifiedToolCallPseudoMiss(routeIdentity, keyHash, model string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.cache[GenerateCacheKey(routeIdentity, keyHash, model)]
+	if !ok {
+		return
+	}
+	state, ok := entry.Traits[TraitVerifiedToolCalls]
+	if !ok || state.AutoMissStreak == 0 {
+		return
+	}
+	state.AutoMissStreak = 0
+	entry.Traits[TraitVerifiedToolCalls] = state
 }
 
 // Trait 返回该组合上某个兼容性事实的学习结论。条目过期或未学习过时第二个返回值为 false。
@@ -788,6 +1038,109 @@ func (c *ChannelCompatCache) IsDocumentUnsupportedForChannelModel(channelUID, mo
 // 任一 Key 已知不支持就按不支持处理。无学习记录 = false（fail-open）。
 func (c *ChannelCompatCache) IsToolCallUnsupportedForChannelModel(channelUID, model string) bool {
 	return c.isTraitEnabledForChannelModel(channelUID, model, TraitNoToolCallSupport)
+}
+
+// VerifiedToolCallModelsForChannel 返回该路由上实测产生过真实 function_call
+// 事件的模型集合（任一 Key 验证过即纳入，键为小写模型名）。
+// channelUID 参数应传 ToolRouteIdentity 的返回值（逻辑渠道×协议的稳定身份）；
+// 传入裸渠道 UID 只会命中同形态的历史键，视为无证据 fail-open。
+// onlyRuntime=true 时仅聚合运行期证据（带 tools 的真实流量 2xx 完成且流中
+// 有真实 function_call 事件，覆盖 tool_choice=auto 场景）——探针只验证强制
+// tool_choice（协议层），「强制通过、auto 下文本化工具调用」的组合实测存在
+// （qwen3.7-max），探针正向结论不得单独作为 agentic 白名单依据。
+func (c *ChannelCompatCache) VerifiedToolCallModelsForChannel(channelUID string, onlyRuntime bool) map[string]bool {
+	if channelUID == "" {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var verified map[string]bool
+	for key, entry := range c.cache {
+		if entry == nil {
+			continue
+		}
+		parts := strings.SplitN(key, ":", 3)
+		if len(parts) != 3 || parts[0] != channelUID {
+			continue
+		}
+		if time.Since(entry.DetectedAt) > channelCompatTTL {
+			continue
+		}
+		if state, ok := entry.Traits[TraitVerifiedToolCalls]; ok && state.Enabled {
+			if onlyRuntime && state.Source != CompatSourceRuntimeSignal {
+				continue
+			}
+			if verified == nil {
+				verified = make(map[string]bool)
+			}
+			verified[strings.ToLower(parts[2])] = true
+		}
+	}
+	return verified
+}
+
+// IsToolCallVerifiedForChannelModel 返回该渠道-模型是否有任一 Key 实测产生过
+// 真实 function_call 事件（含探针来源；正向白名单判定请用
+// VerifiedToolCallModelsForChannel(uid, true) 只认运行期证据）。
+func (c *ChannelCompatCache) IsToolCallVerifiedForChannelModel(channelUID, model string) bool {
+	if channelUID == "" || model == "" {
+		return false
+	}
+	return c.VerifiedToolCallModelsForChannel(channelUID, false)[strings.ToLower(model)]
+}
+
+// VerifiedToolCallRoutes 返回指定执行协议上存在实测真实工具调用组合的路由身份集合
+// （键为 ToolRouteIdentity 形态的复合身份，即缓存键的 channelUID 段原样值）。
+// onlyRuntime 语义同 VerifiedToolCallModelsForChannel。渠道间排他的判定依据：
+// 该协议的集合非空时，带工具请求的候选池中非成员路由不再承接（硬约束剔除），
+// 该协议无任何成员时 fail-open（冷启动不堵）。按协议独立判定集合——messages 流量
+// 不被 responses 证据锁死，反之亦然。历史裸键（无 #kind 段，重铸前旧格式）不参与
+// 任何协议的集合，TTL 内自然淘汰。
+func (c *ChannelCompatCache) VerifiedToolCallRoutes(kind string, onlyRuntime bool) map[string]bool {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind == "" {
+		return nil
+	}
+	suffix := "#" + kind
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var routes map[string]bool
+	for key, entry := range c.cache {
+		if entry == nil {
+			continue
+		}
+		parts := strings.SplitN(key, ":", 3)
+		if len(parts) != 3 || parts[0] == "" {
+			continue
+		}
+		if !strings.HasSuffix(parts[0], suffix) {
+			continue
+		}
+		if time.Since(entry.DetectedAt) > channelCompatTTL {
+			continue
+		}
+		if state, ok := entry.Traits[TraitVerifiedToolCalls]; ok && state.Enabled {
+			if onlyRuntime && state.Source != CompatSourceRuntimeSignal {
+				continue
+			}
+			if routes == nil {
+				routes = make(map[string]bool)
+			}
+			routes[parts[0]] = true
+		}
+	}
+	return routes
+}
+
+// IsProtocolUnsupportedForChannelModel 返回该渠道-模型在指定执行协议端点是否有任一
+// 已知 Key 学到过「不可用」结论（no_protocol_support:<protocol>）。
+//
+// 写入方是 failover 错误路径（上游 400 明确报模型不支持该协议端点），读取方是
+// ModelResolver 的候选过滤——协议是画像 ChannelKind 之外按需校验的独立维度，
+// 同模型 chat 端点可用不代表 responses 端点可用。口径与工具调用记忆一致：
+// 任一 Key 已知不可用即按不可用处理（保守）；无学习记录 = false（fail-open）。
+func (c *ChannelCompatCache) IsProtocolUnsupportedForChannelModel(channelUID, protocol, model string) bool {
+	return c.isTraitEnabledForChannelModel(channelUID, model, ProtocolUnsupportedTrait(protocol))
 }
 
 // IsSeverityClassUnsupportedForChannelModel 返回该渠道-模型是否有任一已知 Key 学到过

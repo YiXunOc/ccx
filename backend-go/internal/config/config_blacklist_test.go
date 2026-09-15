@@ -1191,7 +1191,7 @@ func newGroupModelTestConfigManager(t *testing.T) *ConfigManager {
 func TestDisableAndRestoreGroupModel(t *testing.T) {
 	cm := newGroupModelTestConfigManager(t)
 
-	group, affected, err := cm.DisableGroupModel("Messages", 0, "sk-a1", "gpt-5.6", "质量异常")
+	group, affected, err := cm.DisableGroupModel("Messages", 0, "sk-a1", "gpt-5.6")
 	if err != nil {
 		t.Fatalf("DisableGroupModel() error = %v", err)
 	}
@@ -1210,7 +1210,7 @@ func TestDisableAndRestoreGroupModel(t *testing.T) {
 	}
 
 	// 重复禁用保持幂等。
-	if _, _, err := cm.DisableGroupModel("Messages", 0, "sk-a2", "gpt-5.6", "质量异常"); err != nil {
+	if _, _, err := cm.DisableGroupModel("Messages", 0, "sk-a2", "gpt-5.6"); err != nil {
 		t.Fatalf("second DisableGroupModel() error = %v", err)
 	}
 	if got := len(cm.GetConfig().Upstream[0].DisabledGroupModels); got != 1 {
@@ -1235,7 +1235,7 @@ func TestDisableAndRestoreGroupModel(t *testing.T) {
 
 func TestDisableGroupModel_EmptyGroupTargetsSingleKey(t *testing.T) {
 	cm := newGroupModelTestConfigManager(t)
-	group, affected, err := cm.DisableGroupModel("Messages", 0, "sk-single", "gpt-5.6", "")
+	group, affected, err := cm.DisableGroupModel("Messages", 0, "sk-single", "gpt-5.6")
 	if err != nil {
 		t.Fatalf("DisableGroupModel() error = %v", err)
 	}

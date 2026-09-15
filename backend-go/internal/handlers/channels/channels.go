@@ -166,41 +166,66 @@ func (h *Handler) Create(c *gin.Context) {
 
 // UpdateRequest 统一渠道更新请求体。
 type UpdateRequest struct {
-	Kind                     *string                                   `json:"kind"`
-	Name                     *string                                   `json:"name"`
-	ServiceType              *string                                   `json:"serviceType"`
-	BaseURL                  *string                                   `json:"baseUrl"`
-	BaseURLs                 []string                                  `json:"baseUrls"`
-	APIKeys                  []string                                  `json:"apiKeys"`
-	APIKeyConfigs            []config.APIKeyConfig                     `json:"apiKeyConfigs"`
-	ModelMapping             map[string]string                         `json:"modelMapping"`
-	ModelCapabilities        map[string]config.UpstreamModelCapability `json:"modelCapabilities"`
-	ReasoningMapping         map[string]string                         `json:"reasoningMapping"`
-	SupportedModels          []string                                  `json:"supportedModels"`
-	CustomHeaders            map[string]string                         `json:"customHeaders"`
-	ProxyURL                 *string                                   `json:"proxyUrl"`
-	ProxyPreferDirect        *bool                                     `json:"proxyPreferDirect"`
-	RoutePrefix              *string                                   `json:"routePrefix"`
-	Status                   *string                                   `json:"status"`
-	Priority                 *int                                      `json:"priority"`
-	AuthHeader               *string                                   `json:"authHeader"`
-	InsecureSkipVerify       *bool                                     `json:"insecureSkipVerify"`
-	RequestTimeoutMs         *int                                      `json:"requestTimeoutMs"`
-	ResponseHeaderTimeoutMs  *int                                      `json:"responseHeaderTimeoutMs"`
-	NoVision                 *bool                                     `json:"noVision"`
-	FastMode                 *bool                                     `json:"fastMode"`
-	Remark                   *string                                   `json:"remark"`
-	Description              *string                                   `json:"description"`
-	Website                  *string                                   `json:"website"`
-	Tags                     []string                                  `json:"tags"`
-	NoVisionModels           []string                                  `json:"noVisionModels"`
-	VisionFallbackModel      *string                                   `json:"visionFallbackModel"`
-	RateLimitRPM             *int                                      `json:"rateLimitRpm"`
-	RateLimitBurst           *int                                      `json:"rateLimitBurst"`
-	RateLimitMaxConcurrent   *int                                      `json:"rateLimitMaxConcurrent"`
-	ConvertImageURLToB64JSON *bool                                     `json:"convertImageUrlToB64Json"`
-	StripCodexClientTools    *bool                                     `json:"stripCodexClientTools"`
-	CodexToolCompat          *bool                                     `json:"codexToolCompat"`
+	Kind                          *string                                   `json:"kind"`
+	Name                          *string                                   `json:"name"`
+	ServiceType                   *string                                   `json:"serviceType"`
+	BaseURL                       *string                                   `json:"baseUrl"`
+	BaseURLs                      []string                                  `json:"baseUrls"`
+	APIKeys                       []string                                  `json:"apiKeys"`
+	APIKeyConfigs                 []config.APIKeyConfig                     `json:"apiKeyConfigs"`
+	ModelMapping                  map[string]string                         `json:"modelMapping"`
+	ModelCapabilities             map[string]config.UpstreamModelCapability `json:"modelCapabilities"`
+	ReasoningMapping              map[string]string                         `json:"reasoningMapping"`
+	SupportedModels               []string                                  `json:"supportedModels"`
+	CustomHeaders                 map[string]string                         `json:"customHeaders"`
+	ProxyURL                      *string                                   `json:"proxyUrl"`
+	ProxyPreferDirect             *bool                                     `json:"proxyPreferDirect"`
+	RoutePrefix                   *string                                   `json:"routePrefix"`
+	Status                        *string                                   `json:"status"`
+	Priority                      *int                                      `json:"priority"`
+	AuthHeader                    *string                                   `json:"authHeader"`
+	InsecureSkipVerify            *bool                                     `json:"insecureSkipVerify"`
+	RequestTimeoutMs              *int                                      `json:"requestTimeoutMs"`
+	ResponseHeaderTimeoutMs       *int                                      `json:"responseHeaderTimeoutMs"`
+	NoVision                      *bool                                     `json:"noVision"`
+	FastMode                      *bool                                     `json:"fastMode"`
+	Remark                        *string                                   `json:"remark"`
+	Description                   *string                                   `json:"description"`
+	Website                       *string                                   `json:"website"`
+	Tags                          []string                                  `json:"tags"`
+	NoVisionModels                []string                                  `json:"noVisionModels"`
+	VisionFallbackModel           *string                                   `json:"visionFallbackModel"`
+	RateLimitRPM                  *int                                      `json:"rateLimitRpm"`
+	RateLimitBurst                *int                                      `json:"rateLimitBurst"`
+	RateLimitMaxConcurrent        *int                                      `json:"rateLimitMaxConcurrent"`
+	ConvertImageURLToB64JSON      *bool                                     `json:"convertImageUrlToB64Json"`
+	StripCodexClientTools         *bool                                     `json:"stripCodexClientTools"`
+	CodexToolCompat               *bool                                     `json:"codexToolCompat"`
+	EmbeddingCapabilities         map[string]config.EmbeddingCapability     `json:"embeddingCapabilities"`
+	DefaultCapability             *config.UpstreamModelCapability           `json:"defaultCapability"`
+	AllowUnknownContext           *bool                                     `json:"allowUnknownContext"`
+	ReasoningParamStyle           *string                                   `json:"reasoningParamStyle"`
+	TextVerbosity                 *string                                   `json:"textVerbosity"`
+	Racing                        *config.ChannelRacingConfig               `json:"racing"`
+	LowQuality                    *bool                                     `json:"lowQuality"`
+	AutoBlacklistBalance          *bool                                     `json:"autoBlacklistBalance"`
+	NormalizeMetadataUserID       *bool                                     `json:"normalizeMetadataUserId"`
+	StripBillingHeader            *bool                                     `json:"stripBillingHeader"`
+	NormalizeSystemRoleToTopLevel *bool                                     `json:"normalizeSystemRoleToTopLevel"`
+	InjectDummyThoughtSignature   *bool                                     `json:"injectDummyThoughtSignature"`
+	StripThoughtSignature         *bool                                     `json:"stripThoughtSignature"`
+	StreamFirstContentTimeoutMs   *int                                      `json:"streamFirstContentTimeoutMs"`
+	StreamInactivityTimeoutMs     *int                                      `json:"streamInactivityTimeoutMs"`
+	StreamToolCallIdleTimeoutMs   *int                                      `json:"streamToolCallIdleTimeoutMs"`
+	RateLimitWindowMinutes        *int                                      `json:"rateLimitWindowMinutes"`
+	RateLimitAutoFromHeaders      *bool                                     `json:"rateLimitAutoFromHeaders"`
+	CostMultiplier                *float64                                  `json:"costMultiplier"`
+	ChannelPaymentCurrency        *string                                   `json:"channelPaymentCurrency"`
+	ChannelPaymentAmount          *float64                                  `json:"channelPaymentAmount"`
+	ChannelCreditCurrency         *string                                   `json:"channelCreditCurrency"`
+	ChannelCreditAmount           *float64                                  `json:"channelCreditAmount"`
+	MaxGroupMultiplier            *float64                                  `json:"maxGroupMultiplier"`
+	HistoricalImageTurnLimit      *int                                      `json:"historicalImageTurnLimit"`
 }
 
 // Update 更新渠道（按 ChannelUID 寻址，内部按 kind 路由）。
@@ -219,40 +244,65 @@ func (h *Handler) Update(c *gin.Context) {
 	}
 
 	updates := config.UpstreamUpdate{
-		Name:                     req.Name,
-		ServiceType:              req.ServiceType,
-		BaseURL:                  req.BaseURL,
-		BaseURLs:                 req.BaseURLs,
-		APIKeys:                  req.APIKeys,
-		APIKeyConfigs:            req.APIKeyConfigs,
-		ModelMapping:             req.ModelMapping,
-		ModelCapabilities:        req.ModelCapabilities,
-		ReasoningMapping:         req.ReasoningMapping,
-		SupportedModels:          req.SupportedModels,
-		CustomHeaders:            req.CustomHeaders,
-		ProxyURL:                 req.ProxyURL,
-		ProxyPreferDirect:        req.ProxyPreferDirect,
-		RoutePrefix:              req.RoutePrefix,
-		Status:                   req.Status,
-		Priority:                 req.Priority,
-		AuthHeader:               req.AuthHeader,
-		InsecureSkipVerify:       req.InsecureSkipVerify,
-		RequestTimeoutMs:         req.RequestTimeoutMs,
-		ResponseHeaderTimeoutMs:  req.ResponseHeaderTimeoutMs,
-		NoVision:                 req.NoVision,
-		FastMode:                 req.FastMode,
-		Remark:                   req.Remark,
-		Description:              req.Description,
-		Website:                  req.Website,
-		Tags:                     req.Tags,
-		NoVisionModels:           req.NoVisionModels,
-		VisionFallbackModel:      req.VisionFallbackModel,
-		RateLimitRPM:             req.RateLimitRPM,
-		RateLimitBurst:           req.RateLimitBurst,
-		RateLimitMaxConcurrent:   req.RateLimitMaxConcurrent,
-		ConvertImageURLToB64JSON: req.ConvertImageURLToB64JSON,
-		StripCodexClientTools:    req.StripCodexClientTools,
-		CodexToolCompat:          req.CodexToolCompat,
+		Name:                          req.Name,
+		ServiceType:                   req.ServiceType,
+		BaseURL:                       req.BaseURL,
+		BaseURLs:                      req.BaseURLs,
+		APIKeys:                       req.APIKeys,
+		APIKeyConfigs:                 req.APIKeyConfigs,
+		ModelMapping:                  req.ModelMapping,
+		ModelCapabilities:             req.ModelCapabilities,
+		ReasoningMapping:              req.ReasoningMapping,
+		SupportedModels:               req.SupportedModels,
+		CustomHeaders:                 req.CustomHeaders,
+		ProxyURL:                      req.ProxyURL,
+		ProxyPreferDirect:             req.ProxyPreferDirect,
+		RoutePrefix:                   req.RoutePrefix,
+		Status:                        req.Status,
+		Priority:                      req.Priority,
+		AuthHeader:                    req.AuthHeader,
+		InsecureSkipVerify:            req.InsecureSkipVerify,
+		RequestTimeoutMs:              req.RequestTimeoutMs,
+		ResponseHeaderTimeoutMs:       req.ResponseHeaderTimeoutMs,
+		NoVision:                      req.NoVision,
+		FastMode:                      req.FastMode,
+		Remark:                        req.Remark,
+		Description:                   req.Description,
+		Website:                       req.Website,
+		Tags:                          req.Tags,
+		NoVisionModels:                req.NoVisionModels,
+		VisionFallbackModel:           req.VisionFallbackModel,
+		RateLimitRPM:                  req.RateLimitRPM,
+		RateLimitBurst:                req.RateLimitBurst,
+		RateLimitMaxConcurrent:        req.RateLimitMaxConcurrent,
+		ConvertImageURLToB64JSON:      req.ConvertImageURLToB64JSON,
+		StripCodexClientTools:         req.StripCodexClientTools,
+		CodexToolCompat:               req.CodexToolCompat,
+		EmbeddingCapabilities:         req.EmbeddingCapabilities,
+		DefaultCapability:             req.DefaultCapability,
+		AllowUnknownContext:           req.AllowUnknownContext,
+		ReasoningParamStyle:           req.ReasoningParamStyle,
+		TextVerbosity:                 req.TextVerbosity,
+		Racing:                        req.Racing,
+		LowQuality:                    req.LowQuality,
+		AutoBlacklistBalance:          req.AutoBlacklistBalance,
+		NormalizeMetadataUserID:       req.NormalizeMetadataUserID,
+		StripBillingHeader:            req.StripBillingHeader,
+		NormalizeSystemRoleToTopLevel: req.NormalizeSystemRoleToTopLevel,
+		InjectDummyThoughtSignature:   req.InjectDummyThoughtSignature,
+		StripThoughtSignature:         req.StripThoughtSignature,
+		StreamFirstContentTimeoutMs:   req.StreamFirstContentTimeoutMs,
+		StreamInactivityTimeoutMs:     req.StreamInactivityTimeoutMs,
+		StreamToolCallIdleTimeoutMs:   req.StreamToolCallIdleTimeoutMs,
+		RateLimitWindowMinutes:        req.RateLimitWindowMinutes,
+		RateLimitAutoFromHeaders:      req.RateLimitAutoFromHeaders,
+		CostMultiplier:                req.CostMultiplier,
+		ChannelPaymentCurrency:        req.ChannelPaymentCurrency,
+		ChannelPaymentAmount:          req.ChannelPaymentAmount,
+		ChannelCreditCurrency:         req.ChannelCreditCurrency,
+		ChannelCreditAmount:           req.ChannelCreditAmount,
+		MaxGroupMultiplier:            req.MaxGroupMultiplier,
+		HistoricalImageTurnLimit:      req.HistoricalImageTurnLimit,
 	}
 
 	shouldResetMetrics, err := config.UpdateUpstreamByKind(h.cm, loc, updates)

@@ -361,9 +361,17 @@ func BuiltinAgentModelProfiles() map[string]AgentModelProfile {
 			MaxContextWindowTokens: 262144,
 			ReasoningEfforts:       []string{"low", "high", "max"},
 		},
-		"kimi-for-coding*": {
-			DisplayName:         "Kimi K2.7 Code",
+		// kimi-for-coding 已于 2026-09 全量升级为 K2.8 Preview（模型 ID 不变）：1M 上下文、
+		// low/high/max 三档思考（默认 max）；highspeed 变体仍是 K2.7 Code HighSpeed（256K）。
+		// pattern 更长者优先，highspeed 条目先命中。
+		"kimi-for-coding-highspeed*": {
+			DisplayName:         "Kimi K2.7 Code HighSpeed",
 			ContextWindowTokens: 262144,
+		},
+		"kimi-for-coding*": {
+			DisplayName:         "Kimi K2.8 Preview",
+			ContextWindowTokens: 1048576,
+			ReasoningEfforts:    []string{"low", "high", "max"},
 		},
 		"fable": {
 			DisplayName:         "Claude Fable alias",

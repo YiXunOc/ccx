@@ -19,6 +19,7 @@ import (
 	"github.com/BenedictKing/ccx/internal/metrics"
 	"github.com/BenedictKing/ccx/internal/middleware"
 	"github.com/BenedictKing/ccx/internal/providers"
+	"github.com/BenedictKing/ccx/internal/racing"
 	"github.com/BenedictKing/ccx/internal/ratelimit"
 	"github.com/BenedictKing/ccx/internal/scheduler"
 	"github.com/BenedictKing/ccx/internal/types"
@@ -565,8 +566,23 @@ func TryUpstreamWithAllKeys(
 			return false, "", 0, nil, nil, fmt.Errorf("execution model rewrite failed: %w", rewriteErr)
 		}
 		requestBody = rewritten
-		RestoreRequestBody(c, requestBody)
-		c.Set("requestBodyBytes", requestBody)
+		// 跨模型改写后，客户端按原模型窗口注入的上下文预算提醒必然失真，
+		// 按请求协议剥离（统一语义见 providers/client_budget_reminders.go）。
+		// 转换路径后续会再剔一次，幂等无害；此处兜住直通执行协议的缺口。
+		switch kind {
+		case scheduler.ChannelKindMessages:
+			if stripped := providers.StripCCBudgetRemindersFromBody(requestBody); string(stripped) != string(requestBody) {
+				requestBody = stripped
+				RestoreRequestBody(c, requestBody)
+				c.Set("requestBodyBytes", requestBody)
+			}
+		case scheduler.ChannelKindResponses:
+			if stripped := providers.StripCodexBudgetRemindersFromResponsesBody(requestBody); string(stripped) != string(requestBody) {
+				requestBody = stripped
+				RestoreRequestBody(c, requestBody)
+				c.Set("requestBodyBytes", requestBody)
+			}
+		}
 		RequestLogf(c, "[%s-Federation] 请求协议 %s 走执行协议 %s，模型改写: %s -> %s",
 			apiType, kind, executionKind, originalModel, tryOpts.executionModel)
 		model = tryOpts.executionModel
@@ -815,10 +831,31 @@ func TryUpstreamWithAllKeys(
 					}
 				}
 				if target != nil && target.Model != "" {
+					// 白名单终审：override target 可能来自 policy 构建期的预解析缓存
+					// （targetByUID/ModelByUID 等 map，其构建时机与评分来源不经本次请求的
+					// ResolveModel 过滤）。带工具请求的 override 目标必须在路由白名单内
+					// （该路由存在运行期验证组合时），否则放弃 override 按原始模型透传——
+					// 后续 404/不支持走正常 failover，优于把流量交给未验证组合交付伪工具标记。
+					// 白名单按稳定路由身份（逻辑渠道×执行协议）查询。
+					if BodyHasTools(requestBody) {
+						if wlCache := config.SharedChannelCompatCache(); wlCache != nil {
+							routeIdentity := config.ToolRouteIdentity(upstream, string(executionKind))
+							if routes := wlCache.VerifiedToolCallRoutes(string(executionKind), true); len(routes) > 0 && routes[routeIdentity] {
+								if verified := wlCache.VerifiedToolCallModelsForChannel(routeIdentity, true); len(verified) > 0 && !verified[strings.ToLower(target.Model)] {
+									RequestLogf(c, "[%s-AutoModel] override %s -> %s 不在工具白名单内，放弃 override 按原始模型透传（渠道 %s 白名单 %d 组合）",
+										apiType, model, target.Model, upstream.Name, len(verified))
+									target = nil
+									// 外层 else-if 只在未进入本块时消费 mappingFailReason，
+									// 冲突原因须直接落 context 才不会静默丢失。
+									c.Set("mappingFailReason", "tool_whitelist_conflict")
+								}
+							}
+						}
+					}
 					// 五元组调度 pin：binding 解析未决档（passthrough）时用调度选中档填充。
 					// 拷贝填充，勿改 policy 缓存中的共享 target；模型以 per-key 解析为准
 					//（与调度同源 resolver，冲突时信任执行近实时结论）。
-					if target.Effort == "" && tryOpts.executionEffort != "" {
+					if target != nil && target.Effort == "" && tryOpts.executionEffort != "" {
 						pinnedTarget := *target
 						pinnedTarget.Effort = autopilot.EffortLevel(tryOpts.executionEffort)
 						pinnedTarget.EffortDecided = true
@@ -839,8 +876,9 @@ func TryUpstreamWithAllKeys(
 							apiType, euid, model, target.Model, target.Effort, target.EffortDecided)
 					}
 
-					// 记录 effort 决策来源与钳位状态，供 ChannelLog 可观测性字段使用
-					if target.EffortDecided {
+					// 记录 effort 决策来源与钳位状态，供 ChannelLog 可观测性字段使用。
+					// target 可能已被上方白名单终审置 nil（放弃 override 透传），须判空。
+					if target != nil && target.EffortDecided {
 						c.Set("effortDecisionSource", "autopilot")
 						// 注意：ExtractClientEffortExplicit 按 scheduler.ChannelKind（小写 messages/chat/...）
 						// 分支判断协议字段，而非 apiType 显示名（Messages/Chat/...），此处须传入 kind。
@@ -947,7 +985,7 @@ func TryUpstreamWithAllKeys(
 						channelCompatCache.MarkApplied(upstream.ChannelUID, keyHash, attemptModel, trait)
 						// TraitUnsupportedBetaHeader 附带被拒 token 名列表，provider 按 token 粒度剥离
 						if trait == config.TraitUnsupportedBetaHeader && state.Enabled {
-							if tokens := ExtractRejectedBetaTokens(state.Evidence); len(tokens) > 0 {
+							if tokens := config.ExtractRejectedBetaTokens(state.Evidence); len(tokens) > 0 {
 								upstreamCopy.SetLearnedRejectedBetaTokens(tokens)
 							}
 						}
@@ -1059,9 +1097,19 @@ func TryUpstreamWithAllKeys(
 				logOpts = append(logOpts, WithProxyKeyMask(proxyKeyMask))
 			}
 
-			// 提取请求关联 ID（multi_channel_failover 生成，写入 gin context）
+			// 竞速角色（编排器写入分支 gin context）：影子分支日志带 shadow 标记
+			if role, ok := c.Get(racing.ContextKeyRole); ok {
+				if roleStr, ok := role.(string); ok && roleStr != "" {
+					logOpts = append(logOpts, WithRacingRole(roleStr))
+				}
+			}
+
+			// 提取请求关联 ID（multi_channel_failover 生成，写入 gin context）；
+			// 同时挂到 metrics pending 记录（真实用户请求数聚合口径）。
+			requestCorrelationID := ""
 			if correlationID, ok := c.Get("ccx.request_correlation_id"); ok {
 				if cid, ok := correlationID.(string); ok && cid != "" {
+					requestCorrelationID = cid
 					logOpts = append(logOpts, WithRequestCorrelationID(cid))
 				}
 			}
@@ -1129,6 +1177,9 @@ func TryUpstreamWithAllKeys(
 			// TCP 建连开始即计数：将活跃度统计提前到发起上游请求之前；同时关联 proxyKeyMask 用于成本报表持久化
 			costContext := buildRequestCostContext(cfgManager, upstream, selection, actualAttemptModel, consumptionPolicy)
 			requestID := metricsManager.RecordRequestConnectedWithCostContext(currentBaseURL, apiKey, metricsServiceType, upstream.ChannelUID, actualAttemptModel, model, proxyKeyMask, costContext)
+			// 用户请求关联 ID 随 pending 记录落 SQLite：聚合侧 COUNT(DISTINCT correlation_id)
+			// 得出真实用户请求数，与上游尝试数对照可见竞速/failover 放大倍数。
+			metricsManager.RecordRequestCorrelationID(currentBaseURL, apiKey, metricsServiceType, requestID, requestCorrelationID)
 			// 压缩遥测随 pending 记录传播：压缩发生在进入 attempt 循环之前，
 			// 每个 attempt 的记录都要补挂，否则 SQLite 压缩列长期为零（成本报表统计失真）。
 			if compCtx := GetCompressionContext(c); compCtx != nil {
@@ -1186,6 +1237,15 @@ func TryUpstreamWithAllKeys(
 			resp, err := SendRequestWithLifecycleTrace(req, requestUpstream, envCfg, isStream, apiType, lifecycleTrace)
 			if err != nil {
 				lastError = err
+				// 竞速败出：被赢家取消（SendRequest 阶段），不计失败不 failover。
+				if isRacingSuperseded(c, err) {
+					metricsManager.RecordRequestFinalizeIgnored(currentBaseURL, apiKey, metricsServiceType, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, metricsServiceType, executionKind)
+					MarkChannelLogRacingLost(channelLogStore, metricsKey, logRequestID)
+					CompleteLog(channelLogStore, metricsKey, logRequestID, 0, false, racing.ErrRacingSuperseded.Error(), isRetryAttempt)
+					RequestLogf(c, "[Racing] 分支败出（%s SendRequest 阶段，key=%s）", apiType, utils.MaskAPIKey(apiKey))
+					return false, "", 0, nil, nil, err
+				}
 				// 区分客户端取消和真实渠道故障（统一口径）
 				if isClientSideError(err) {
 					// 客户端取消：不计入失败，不触发 failover
@@ -1470,10 +1530,27 @@ func TryUpstreamWithAllKeys(
 				if (resp.StatusCode == 400 || resp.StatusCode == 422) && upstream.ChannelUID != "" {
 					if signal := ToolUnsupportedFromError(resp.StatusCode, respBodyBytes, BodyHasTools(attemptBody)); signal != nil {
 						keyHash := autopilot.KeyHashFromAPIKey(apiKey)
-						if channelCompatCache.Record(upstream.ChannelUID, keyHash, attemptModel,
+						if channelCompatCache.Record(config.ToolRouteIdentity(upstream, string(executionKind)), keyHash, attemptModel,
 							config.TraitNoToolCallSupport, true, config.CompatSourceErrorSignal, signal.Evidence) {
 							RequestLogf(c, "[%s-ToolCallCompat] 渠道 %s 模型 %s 拒绝工具调用（%s），已记忆并将在后续路由中规避",
 								apiType, upstream.Name, attemptModel, signal.Evidence)
+						}
+					}
+				}
+
+				// 协议端点能力自学习（被动侧）：上游 400 明确报「该模型不支持当前执行协议
+				// 端点」时，记忆该 渠道-Key-模型-协议 组合不可用，供 ModelResolver 在替代
+				// 映射候选中剔除——画像协议维与端点协议发现是两套数据源，跨模型替代可能
+				// 把请求映射到该协议下从未验证过的模型（chat-only 模型被推上 responses
+				// 端点即此形态）。协议端点是持久事实：只记录不重试，TTL 过期前后续映射
+				// 直接避开；同模型在其他协议端点的可用性不受影响。
+				if resp.StatusCode == 400 && upstream.ChannelUID != "" {
+					if signal := ProtocolEndpointUnsupportedFromError(resp.StatusCode, respBodyBytes); signal != nil {
+						keyHash := autopilot.KeyHashFromAPIKey(apiKey)
+						if channelCompatCache.Record(upstream.ChannelUID, keyHash, attemptModel,
+							ProtocolUnsupportedLearningTrait(string(executionKind)), true, config.CompatSourceErrorSignal, signal.Evidence) {
+							RequestLogf(c, "[%s-ProtocolCompat] 渠道 %s 模型 %s 不支持 %s 协议端点（%s），已记忆并将在模型映射中规避",
+								apiType, upstream.Name, attemptModel, executionKind, signal.Evidence)
 						}
 					}
 				}
@@ -1616,45 +1693,65 @@ func TryUpstreamWithAllKeys(
 			// 必须在 handleSuccess 写出响应体之前设置：流式首包/非流式 JSON 一旦写出，
 			// 再补 header 就会静默丢失（旧实现挂在完成后即有此 bug）。
 			// 每次 attempt 覆盖/清除，防止映射失败的 attempt failover 后残留旧值。
-			{
-				echoMapping := appliedMappedModel != "" && cfgManager.GetAutopilotRouting().ModelMapping.EchoMappedModel
-				if echoMapping {
-					c.Header("X-CCX-Mapped-Model", actualAttemptModel)
-					c.Header("X-CCX-Original-Model", model)
-					c.Header("X-CCX-Mapping-Source", "auto_resolve")
-				} else {
-					c.Writer.Header().Del("X-CCX-Mapped-Model")
-					c.Writer.Header().Del("X-CCX-Original-Model")
-					c.Writer.Header().Del("X-CCX-Mapping-Source")
-				}
-			}
+			// 竞速场景分支响应头经分支 writer 隔离（racingBranchWriter），无并发写
+			// 竞争；claim 败者的头随 Discard 丢弃，不会并入真实客户端 writer。
+			writeEchoMappingHeaders(c, cfgManager, appliedMappedModel, actualAttemptModel, model)
 			usage, err = handleSuccess(c, resp, upstreamCopy, apiKey, attemptBody)
 			// 上下文窗口自学习（放宽侧）：2xx 完成即实证该渠道×协议×模型可承载本次输入，
 			// 棘轮只升不降。失败/取消/空响应不学习（err 非 nil 时内部直接返回）。
 			MaybeRecordContextWindowProven(c, apiType, upstreamCopy, executionKind, attemptModel, usage, err)
+			// 竞速败出分支不参与任何自学习（部分流的部分标记不代表渠道真实能力）。
+			racingSuperseded := isRacingSuperseded(c, err)
 			if isStream {
 				FinishStreamTimeoutObservation(c)
 				// 工具调用能力自学习（被动侧·成功路径）：强制 tool_choice 的请求 2xx
 				// 完成但流式全程零工具调用块，说明上游不会执行工具（假模型/剥离 tools）。
 				// 仅 messages/responses：只有这两条流式路径接了工具活动标记，
 				// 其他协议 sawToolCall=false 无法区分"没调用"与"没观测"，不得学习。
-				if executionKind == scheduler.ChannelKindMessages || executionKind == scheduler.ChannelKindResponses {
+				MaybeLearnLatencyDegradation(c, upstream.ChannelUID, apiKey, attemptModel, racingSuperseded)
+				if !racingSuperseded && (executionKind == scheduler.ChannelKindMessages || executionKind == scheduler.ChannelKindResponses) {
 					MaybeLearnForcedToolChoiceMiss(c, upstream, apiKey, attemptModel, attemptBody,
-						GetStreamTimeoutObserver(c).SawToolCall())
+						GetStreamTimeoutObserver(c).SawToolCall(), string(executionKind))
+					// 正向证据学习：带工具请求 2xx 完成且流中有真实 function_call
+					// 事件 → 记入正向白名单（覆盖 tool_choice=auto 场景，强于探针）。
+					MaybeLearnVerifiedToolCalls(c, upstream, apiKey, attemptModel, attemptBody,
+						GetStreamTimeoutObserver(c).SawToolCall(), string(executionKind))
+					// 白名单负反馈补盲：auto 模式干净 2xx 但零真实工具调用且输出命中
+					// 伪工具调用标记文本（模型纯文本"扮演"工具调用）→ 连续计数撤销 verified。
+					MaybeCountPseudoToolCallMiss(c, upstream, apiKey, attemptModel, attemptBody,
+						GetStreamTimeoutObserver(c).SawToolCall(), GetStreamTimeoutObserver(c).SawPseudoToolCallMarker(),
+						err, string(executionKind))
 					// 安全分类能力自学习（被动侧·成功路径）：分类形状请求 2xx 完成但
 					// 输出无 <severity> 标记，说明该渠道×模型不遵循格式约束。
 					// 同样仅 messages/responses（只有这两条流式路径接了标记扫描）。
 					MaybeLearnSeverityClassOutcome(c, upstream, apiKey, attemptModel, attemptBody,
 						GetStreamTimeoutObserver(c).SawSeverityTag(), err)
 				}
-			} else if scanned, found := NonStreamSeverityOutcome(c); scanned {
-				// 安全分类能力自学习（被动侧·成功路径，非流式）：CC 安全分类器子请求
-				// 是非流式的（stream=false），只挂流式会漏掉全部此类请求。扫描结论由
-				// messages/responses 的非流式成功处理写入（MarkNonStreamSeverityScan）；
-				// 未接线路径不置位、不学习。
-				MaybeLearnSeverityClassOutcome(c, upstream, apiKey, attemptModel, attemptBody, found, err)
+			} else if !racingSuperseded {
+				if scanned, found := NonStreamSeverityOutcome(c); scanned {
+					// 安全分类能力自学习（被动侧·成功路径，非流式）：CC 安全分类器子请求
+					// 是非流式的（stream=false），只挂流式会漏掉全部此类请求。扫描结论由
+					// messages/responses 的非流式成功处理写入（MarkNonStreamSeverityScan）；
+					// 未接线路径不置位、不学习。
+					MaybeLearnSeverityClassOutcome(c, upstream, apiKey, attemptModel, attemptBody, found, err)
+				}
 			}
 			if err != nil {
+				// 竞速败出最先裁决：另一分支更快交付，本分支的失败不是渠道故障。
+				// 不计失败指标、不熔断、不拉黑、不标记 URL 失败，仅完成日志终态。
+				if racingSupersededOrCanceledEmptyStream(c, err) {
+					metricsManager.RecordRequestFinalizeIgnored(currentBaseURL, apiKey, metricsServiceType, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, metricsServiceType, executionKind)
+					MarkChannelLogRacingLost(channelLogStore, metricsKey, logRequestID)
+					CompleteLog(channelLogStore, metricsKey, logRequestID, http.StatusOK, false, racing.ErrRacingSuperseded.Error(), isRetryAttempt)
+					// 慢证据信号一：primary 被影子击败（非取消空流连带），主组合记慢证据。
+					if !racingIsShadow(c) {
+						RecordLatencySupersededEvidence(c, upstream.ChannelUID, apiKey, actualAttemptModel)
+					}
+					RequestLogf(c, "[Racing] 分支败出（%s key=%s），由更快分支接管响应", apiType, utils.MaskAPIKey(apiKey))
+					// Handled=false：外层竞速编排据闸门赢家返回实际服务分支的结果。
+					return false, "", 0, nil, usage, err
+				}
 				if isStream && streamingUserID != "" {
 					channelScheduler.UpdateConversationStatus(kind, streamingUserID, "active")
 				}
@@ -1692,6 +1789,9 @@ func TryUpstreamWithAllKeys(
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, metricsServiceType, executionKind)
 					// 空响应 / 无效响应体 / 首字超时 / 断流都是该渠道-模型确实不可用的表现。
 					recordModelCircuitFailure(c, metricsManager, upstream, apiKey, model, err.Error(), apiType)
+					// 白名单失败撤销：带工具请求的无效响应撤销该组合的 verified 记录，
+					// 渠道摘牌后排他 fail-open 放开候选（白名单渠道故障时无路可退的兜底）。
+					MaybeForgetVerifiedToolCalls(c, upstream, apiKey, attemptModel, attemptBody, string(executionKind))
 					if markURLFailure != nil {
 						markURLFailure(currentBaseURL)
 					}
@@ -1755,7 +1855,8 @@ func TryUpstreamWithAllKeys(
 				metricsManager.ReleaseProbe(currentBaseURL, apiKey, metricsServiceType)
 				delete(probeAcquired, probeKey)
 			}
-			// 记录渠道日志
+			// 记录渠道日志（竞速赢家补记 won 标记，未参与竞速时无操作）
+			CompleteChannelLogWithRacingOutcome(channelLogStore, metricsKey, logRequestID, c)
 			CompleteLog(channelLogStore, metricsKey, logRequestID, http.StatusOK, true, "", isRetryAttempt)
 			recordAttemptCompleted(c, logRequestID, upstream.ChannelUID, "success", http.StatusOK, time.Since(attemptStartedAt).Milliseconds())
 

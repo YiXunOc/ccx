@@ -160,7 +160,7 @@ func TestExpandChannelCandidatesExplicitMultiKey(t *testing.T) {
 	}
 	ch := scheduler.ChannelInfo{Index: 0, Name: up.Name, Status: "active"}
 	var got []channelScoreEntry
-	got = router.expandChannelCandidates(ch, &up, "messages", scheduler.ChannelRouteRef{}, resolutions, nil, got, nil)
+	got = router.expandChannelCandidates(ch, &up, "messages", scheduler.ChannelRouteRef{}, resolutions, nil, got, nil, "")
 	if len(got) != 2 {
 		t.Fatalf("2 key 应展开 2 行, got %d", len(got))
 	}
@@ -210,7 +210,7 @@ func TestExpandChannelCandidatesRowLimit(t *testing.T) {
 	resolutions := router.resolveChannelModels(&profile, &up, cfgManager.GetConfig().UpstreamModelCapabilities)
 	ch := scheduler.ChannelInfo{Index: 0, Name: up.Name, Status: "active"}
 	var got []channelScoreEntry
-	got = router.expandChannelCandidates(ch, &up, "messages", scheduler.ChannelRouteRef{}, resolutions, nil, got, nil)
+	got = router.expandChannelCandidates(ch, &up, "messages", scheduler.ChannelRouteRef{}, resolutions, nil, got, nil, "")
 	if len(got) != routingCandidateRowsPerChannelLimit {
 		t.Fatalf("81 组合应截断到 %d 行, got %d", routingCandidateRowsPerChannelLimit, len(got))
 	}
@@ -240,7 +240,7 @@ func TestExpandChannelCandidatesNoKeysFailOpen(t *testing.T) {
 	}
 	ch := scheduler.ChannelInfo{Index: 0, Name: up.Name, Status: "active"}
 	var got []channelScoreEntry
-	got = router.expandChannelCandidates(ch, &up, "messages", scheduler.ChannelRouteRef{}, resolutions, nil, got, nil)
+	got = router.expandChannelCandidates(ch, &up, "messages", scheduler.ChannelRouteRef{}, resolutions, nil, got, nil, "")
 	if len(got) != 1 {
 		t.Fatalf("fail-open 应产 1 行, got %d", len(got))
 	}
@@ -301,7 +301,7 @@ func TestBuildChannelEntryForKeyPerKeyCost(t *testing.T) {
 		KeyHash:     KeyHashFromAPIKey("sk-dear"),
 		Config:      up.APIKeyConfigs[1],
 	}
-	dearEntry := router.buildChannelEntryForKey(ch, &up, "messages", "claude-opus-4-8", caps, &dear, nil, "")
+	dearEntry := router.buildChannelEntryForKey(ch, &up, "messages", "claude-opus-4-8", caps, &dear, nil, "", "")
 	if dearEntry.EstimatedCost != legacy.EstimatedCost {
 		t.Errorf("dear key(×2) 行成本 %v 应等于旧口径 min %v（dear 是唯一计价 key）", dearEntry.EstimatedCost, legacy.EstimatedCost)
 	}
@@ -312,7 +312,7 @@ func TestBuildChannelEntryForKeyPerKeyCost(t *testing.T) {
 		KeyHash:     KeyHashFromAPIKey("sk-cheap"),
 		Config:      up.APIKeyConfigs[0],
 	}
-	cheapEntry := router.buildChannelEntryForKey(ch, &up, "messages", "claude-opus-4-8", caps, &cheap, nil, "")
+	cheapEntry := router.buildChannelEntryForKey(ch, &up, "messages", "claude-opus-4-8", caps, &cheap, nil, "", "")
 	if cheapEntry.EstimatedCost >= legacy.EstimatedCost {
 		t.Errorf("cheap key 行成本 %v 应低于旧口径 min %v（per-key 计价不再被高倍率 key 掩盖）", cheapEntry.EstimatedCost, legacy.EstimatedCost)
 	}
@@ -432,7 +432,7 @@ func TestExpandChannelCandidatesAutoManagedEffortSegment(t *testing.T) {
 	}
 	ch := scheduler.ChannelInfo{Index: 0, Name: up.Name, Status: "active"}
 	var got []channelScoreEntry
-	got = router.expandChannelCandidates(ch, &up, "messages", scheduler.ChannelRouteRef{}, resolutions, nil, got, nil)
+	got = router.expandChannelCandidates(ch, &up, "messages", scheduler.ChannelRouteRef{}, resolutions, nil, got, nil, "")
 	if len(got) == 0 {
 		t.Fatal("展开行数不应为 0")
 	}
@@ -490,7 +490,7 @@ func TestBuildChannelEntryForKeyProfileMatch(t *testing.T) {
 	}
 
 	dead := routingKeyCandidate{APIKey: "sk-dead", KeyHash: deadHash, KeyIdentity: "kh_" + deadHash, Config: config.APIKeyConfig{Key: "sk-dead"}}
-	deadEntry := router.buildChannelEntryForKey(ch, &up, "messages", "claude-opus-4-8", caps, &dead, keyProfiles, "")
+	deadEntry := router.buildChannelEntryForKey(ch, &up, "messages", "claude-opus-4-8", caps, &dead, keyProfiles, "", "")
 	if deadEntry.HealthState != HealthStateDead {
 		t.Errorf("dead key 行 HealthState = %q, want dead（key 级不再被聚合平均）", deadEntry.HealthState)
 	}
@@ -502,7 +502,7 @@ func TestBuildChannelEntryForKeyProfileMatch(t *testing.T) {
 	// 新 key/未探测 key 保守继承渠道状态；per-key 收益只给"有画像的 key"。
 	healthyHash := KeyHashFromAPIKey("sk-healthy")
 	healthy := routingKeyCandidate{APIKey: "sk-healthy", KeyHash: healthyHash, KeyIdentity: "kh_" + healthyHash, Config: config.APIKeyConfig{Key: "sk-healthy"}}
-	healthyEntry := router.buildChannelEntryForKey(ch, &up, "messages", "claude-opus-4-8", caps, &healthy, keyProfiles, "")
+	healthyEntry := router.buildChannelEntryForKey(ch, &up, "messages", "claude-opus-4-8", caps, &healthy, keyProfiles, "", "")
 	if healthyEntry.HealthState != HealthStateDead {
 		t.Errorf("无画像 key 行应回退渠道聚合先验 dead, got %q", healthyEntry.HealthState)
 	}

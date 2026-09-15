@@ -298,7 +298,7 @@
                       {{ get15mStats(element)?.successRate?.toFixed(0) }}%
                     </v-chip>
                     <span class="request-summary ml-2 mr-1">
-                      {{ get15mStats(element)?.requestCount }} {{ t('orchestration.requests') }}
+                      {{ formatRequestSummary(get15mStats(element)) }}
                     </span>
                     <v-chip
                       v-if="shouldShowCacheHitRate(get15mStats(element))"
@@ -346,6 +346,7 @@
                         <span>{{ t('orchestration.hours24') }}:</span>
                         <span>{{ formatStats(get24hStats(element)) }}</span>
                       </div>
+                      <div class="text-caption text-medium-emphasis mt-1">{{ t('orchestration.attemptsNote') }}</div>
 
                       <template v-if="getChannelMetrics(element)?.consumptionPolicyDistribution">
                         <div class="text-caption font-weight-bold mt-2 mb-1">{{ t('orchestration.policyStats') }}</div>
@@ -1365,6 +1366,17 @@ const formatPromotionRemaining = (until?: string): string => {
 const formatStats = (stats?: TimeWindowStats): string => {
   if (!stats || !stats.requestCount) return '--'
   return `${stats.requestCount} ${t('orchestration.requests')} (${stats.successRate?.toFixed(0)}%)`
+}
+
+// 卡片请求摘要：userRequestCount 与 requestCount 不一致时展示双口径「X 请求 / Y 次尝试」，否则只显示尝试数
+const formatRequestSummary = (stats?: TimeWindowStats): string => {
+  if (!stats) return '--'
+  const attempts = stats.requestCount
+  const users = stats.userRequestCount
+  if (users !== undefined && users !== attempts) {
+    return t('orchestration.requestsVsAttempts', { users, attempts })
+  }
+  return `${attempts} ${t('orchestration.requests')}`
 }
 
 const formatTokens = (num?: number): string => {

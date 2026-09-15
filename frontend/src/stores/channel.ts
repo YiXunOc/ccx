@@ -18,6 +18,7 @@ import {
   normalizeChannelStatus,
   type LlmChannelKind,
 } from '@/utils/unifiedChannels'
+import { buildManagedChannelPatch, buildStagedKeyMultiplierConfigs, listDroppedManagedChannelFields } from '@/utils/managedChannelPatch'
 
 /**
  * 渠道数据管理 Store
@@ -429,6 +430,28 @@ export const useChannelStore = defineStore('channel', () => {
           await updateChannelByType(targetTab, editingChannelIndex, {
             remark: (channel.remark ?? '').trim(),
           })
+        }
+        // 渠道级字段（计费倍率/充值到账/代理/自定义请求头）账号接口不承载；
+        // 变化时合并为一次单卡更新下发（0/空=清除，与 CostMultiplier 惯例一致），
+        // 由后端整组同步到逻辑渠道与兄弟卡。
+        const channelPatch = buildManagedChannelPatch(original, channel)
+        // Key 级倍率（apiKeyConfigs 的 groupMultiplier/consumptionPolicy）随主保存暂存于表单，
+        // 托管账号接口不承载：有差异时补进同一次单卡更新（后端按 KeyUID/CredentialUID/Key
+        // 定位 merge，仅发定位+倍率字段避免覆盖托管凭证元数据）。
+        const stagedKeyMultiplierConfigs = buildStagedKeyMultiplierConfigs(original, channel)
+        if (stagedKeyMultiplierConfigs) {
+          channelPatch.apiKeyConfigs = stagedKeyMultiplierConfigs
+        }
+        if (Object.keys(channelPatch).length > 0) {
+          await updateChannelByType(targetTab, editingChannelIndex, channelPatch)
+        }
+        // 静默丢弃兜底：编辑前后变化但未被任何保存链路承载的字段输出 debug 日志，
+        // 防止再次出现「保存后丢」无感知（新增可编辑字段时据此补 channelPatch 白名单）。
+        const droppedFields = listDroppedManagedChannelFields(original, channel)
+        if (droppedFields.length > 0) {
+          console.debug(
+            `[ManagedChannelSave] 以下字段编辑后发生变化，但托管账号保存链路未持久化（如需支持请在 buildManagedChannelPatch 白名单补充）: ${droppedFields.join(', ')}（渠道: ${channel.name}）`,
+          )
         }
       } else if (isChat) {
         await updateChannelByType('chat', editingChannelIndex, channel)

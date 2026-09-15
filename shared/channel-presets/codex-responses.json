@@ -3,9 +3,9 @@
   "providers": {
     "deepseek": {
       "modelMapping": {
-        "codex": "deepseek-v4-flash",
+        "codex": "deepseek-flash",
         "gpt": "deepseek-v4-pro",
-        "mini": "deepseek-v4-flash"
+        "mini": "deepseek-flash"
       },
       "reasoningMapping": {
         "gpt": "max"
@@ -13,7 +13,7 @@
       "reasoningParamStyle": "reasoning",
       "codexToolCompat": false,
       "stripCodexClientTools": false,
-      "noVision": true
+      "noVisionModels": ["deepseek-v4-pro"]
     },
     "mimo": {
       "modelMapping": {

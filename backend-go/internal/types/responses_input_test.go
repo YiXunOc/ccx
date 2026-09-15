@@ -1,7 +1,9 @@
 package types
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -172,5 +174,39 @@ func TestNormalizeResponsesItem_NormalizesNestedLegacyToolCall(t *testing.T) {
 	}
 	if item.Arguments == "" {
 		t.Fatalf("nested legacy tool_call arguments not preserved: %#v", item)
+	}
+}
+
+func TestParseResponsesInput_PreservesEncryptedFunctionArgs(t *testing.T) {
+	items, err := ParseResponsesInput([]interface{}{
+		map[string]interface{}{
+			"type":      "function_call",
+			"name":      "read_item",
+			"namespace": "history",
+			"call_id":   "call-1",
+			"encrypted_function_args": []interface{}{
+				"seg-alpha",
+				"seg-beta",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ParseResponsesInput failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	got := items[0].EncryptedFunctionArgs
+	if len(got) != 2 || got[0] != "seg-alpha" || got[1] != "seg-beta" {
+		t.Fatalf("encrypted_function_args not preserved: %#v", got)
+	}
+
+	// 序列化 roundtrip：json tag 必须与 wire 字段名一致
+	data, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(data), `"encrypted_function_args":["seg-alpha","seg-beta"]`) {
+		t.Fatalf("wire field name mismatch: %s", data)
 	}
 }

@@ -3,11 +3,13 @@ package autopilot
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"github.com/BenedictKing/ccx/internal/errutil"
 	"github.com/BenedictKing/ccx/internal/httpclient"
 	"io"
+	"math/big"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -85,8 +87,8 @@ type NewApiCreateTokenRequest struct {
 	Group              string `json:"group"`
 }
 
-// DefaultNewApiProvisionKeyName 是 CCX 自动建 key 的默认名称。
-const DefaultNewApiProvisionKeyName = "ccx-autopilot"
+// DefaultNewApiProvisionKeyName 是 CCX 自动建 key 的默认名称（分组名作后缀，如 ccx-surprise）。
+const DefaultNewApiProvisionKeyName = "ccx"
 
 // NewApiAuthTokenMode 定义令牌注入 Authorization 头的方式。
 const (
@@ -453,31 +455,42 @@ func (a *NewApiAdapter) resolveMaskedPlaintextKey(ctx context.Context, baseURL, 
 // new-api 建 key 成功后部分 fork 直接在响应里带明文 key，部分需要再查列表；
 // 此处优先取创建响应的 data.key，为空则回退查列表按 name 取。
 // 新版 new-api 三处都可能只回掩码 key（中段 "*"），出口统一经揭示端点换回明文。
-func (a *NewApiAdapter) ProvisionKey(ctx context.Context, baseURL, accessToken, userID, authTokenMode string, opts NewApiProvisionOptions) (tokenID int, keyPlainText string, reused bool, err error) {
-	tokenID, keyPlainText, reused, err = a.provisionKey(ctx, baseURL, accessToken, userID, authTokenMode, opts)
+func (a *NewApiAdapter) ProvisionKey(ctx context.Context, baseURL, accessToken, userID, authTokenMode string, opts NewApiProvisionOptions) (tokenID int, keyPlainText string, reused bool, finalName string, err error) {
+	tokenID, keyPlainText, reused, finalName, err = a.provisionKey(ctx, baseURL, accessToken, userID, authTokenMode, opts)
 	if err == nil {
 		keyPlainText, err = a.resolveMaskedPlaintextKey(ctx, baseURL, accessToken, userID, authTokenMode, tokenID, keyPlainText)
 	}
-	return tokenID, normalizeNewApiPlaintextKey(keyPlainText), reused, err
+	return tokenID, normalizeNewApiPlaintextKey(keyPlainText), reused, finalName, err
 }
 
 // provisionKey 是 ProvisionKey 的具体实现，返回 new-api 原始形式的 key（可能不带 "sk-" 前缀）。
-func (a *NewApiAdapter) provisionKey(ctx context.Context, baseURL, accessToken, userID, authTokenMode string, opts NewApiProvisionOptions) (tokenID int, keyPlainText string, reused bool, err error) {
+// finalName 带出实际使用的 key 名（同名冲突避让时会追加 2 位后缀），调用方必须记录该名字。
+func (a *NewApiAdapter) provisionKey(ctx context.Context, baseURL, accessToken, userID, authTokenMode string, opts NewApiProvisionOptions) (tokenID int, keyPlainText string, reused bool, finalName string, err error) {
 	name := strings.TrimSpace(opts.Name)
 	if name == "" {
 		name = DefaultNewApiProvisionKeyName
 	}
+	finalName = name
 
-	// 1. 查重：已有同名 key 则直接复用（不重复创建，也无法取回旧 key 明文——new-api 不支持明文回显）。
+	// 1. 查重：同名同组直接复用（不重复创建）；同名异组换 2 位随机后缀重试，
+	//    避免误绑不属于目标分组的同名 key（new-api 不支持明文回显，复用必须确认分组）。
 	existing, err := a.FindTokenByName(ctx, baseURL, accessToken, userID, authTokenMode, name)
 	if err != nil {
-		return 0, "", false, fmt.Errorf("[NewApiAdapter-ProvisionKey] 查重失败: %w", err)
+		return 0, "", false, name, fmt.Errorf("[NewApiAdapter-ProvisionKey] 查重失败: %w", err)
 	}
-	if existing != nil {
-		if expectedGroup := strings.TrimSpace(opts.Group); expectedGroup != "" && existing.Group != expectedGroup {
-			return existing.ID, "", true, &NewApiProvisionKeyConflictError{err: fmt.Errorf("[NewApiAdapter-ProvisionKey] 同名 key=%s 的分组为 %q，无法确认其属于目标分组 %q", name, existing.Group, expectedGroup)}
+	for attempt := 0; existing != nil; attempt++ {
+		expectedGroup := strings.TrimSpace(opts.Group)
+		if expectedGroup == "" || existing.Group == expectedGroup {
+			return existing.ID, existing.Key, true, name, nil
 		}
-		return existing.ID, existing.Key, true, nil
+		if attempt >= 3 {
+			return existing.ID, "", true, name, &NewApiProvisionKeyConflictError{err: fmt.Errorf("[NewApiAdapter-ProvisionKey] 同名 key=%s 的分组为 %q，无法确认其属于目标分组 %q", name, existing.Group, strings.TrimSpace(opts.Group))}
+		}
+		name = name + "-" + newApiRandomSuffix2()
+		existing, err = a.FindTokenByName(ctx, baseURL, accessToken, userID, authTokenMode, name)
+		if err != nil {
+			return 0, "", false, name, fmt.Errorf("[NewApiAdapter-ProvisionKey] 查重失败: %w", err)
+		}
 	}
 
 	// 2. 新建。
@@ -501,36 +514,50 @@ func (a *NewApiAdapter) provisionKey(ctx context.Context, baseURL, accessToken, 
 	var created NewApiToken
 	createErr := a.doRequest(ctx, http.MethodPost, baseURL, "/api/token/", accessToken, userID, authTokenMode, createReq, &created)
 	if createErr != nil {
-		return 0, "", false, fmt.Errorf("[NewApiAdapter-ProvisionKey] 创建失败: %w", createErr)
+		return 0, "", false, name, fmt.Errorf("[NewApiAdapter-ProvisionKey] 创建失败: %w", createErr)
 	}
 
 	if expectedGroup := strings.TrimSpace(opts.Group); expectedGroup != "" {
 		if created.Group == expectedGroup && created.Key != "" {
-			return created.ID, created.Key, false, nil
+			return created.ID, created.Key, false, name, nil
 		}
 		fresh, findErr := a.FindTokenByName(ctx, baseURL, accessToken, userID, authTokenMode, name)
 		if findErr != nil || fresh == nil || fresh.Group != expectedGroup {
-			return created.ID, "", false, fmt.Errorf("[NewApiAdapter-ProvisionKey] 创建后无法确认 key=%s 属于目标分组 %q", name, expectedGroup)
+			return created.ID, "", false, name, fmt.Errorf("[NewApiAdapter-ProvisionKey] 创建后无法确认 key=%s 属于目标分组 %q", name, expectedGroup)
 		}
 		if fresh.Key != "" {
-			return fresh.ID, fresh.Key, false, nil
+			return fresh.ID, fresh.Key, false, name, nil
 		}
 		if created.Key != "" {
-			return fresh.ID, created.Key, false, nil
+			return fresh.ID, created.Key, false, name, nil
 		}
-		return fresh.ID, "", false, fmt.Errorf("[NewApiAdapter-ProvisionKey] 创建成功但无法取回 key 明文，请到站点后台手动核对 name=%s", name)
+		return fresh.ID, "", false, name, fmt.Errorf("[NewApiAdapter-ProvisionKey] 创建成功但无法取回 key 明文，请到站点后台手动核对 name=%s", name)
 	}
 
 	if created.Key != "" {
-		return created.ID, created.Key, false, nil
+		return created.ID, created.Key, false, name, nil
 	}
 
 	// 3. 容错：部分上游创建响应不带明文 key，回查列表按 name 取。
 	fresh, findErr := a.FindTokenByName(ctx, baseURL, accessToken, userID, authTokenMode, name)
 	if findErr != nil || fresh == nil {
-		return created.ID, "", false, fmt.Errorf("[NewApiAdapter-ProvisionKey] 创建成功但无法取回 key 明文，请到站点后台手动核对 name=%s", name)
+		return created.ID, "", false, name, fmt.Errorf("[NewApiAdapter-ProvisionKey] 创建成功但无法取回 key 明文，请到站点后台手动核对 name=%s", name)
 	}
-	return fresh.ID, fresh.Key, false, nil
+	return fresh.ID, fresh.Key, false, name, nil
+}
+
+// newApiRandomSuffix2 生成 2 位 [a-z0-9] 随机后缀，用于同名冲突时的 key 名避让。
+func newApiRandomSuffix2() string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	out := make([]byte, 2)
+	for i := range out {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		if err != nil {
+			return "x0"
+		}
+		out[i] = alphabet[n.Int64()]
+	}
+	return string(out)
 }
 
 // DeleteToken 删除本次 provision 新建但尚未绑定到渠道的远端 Key，用于失败补偿。

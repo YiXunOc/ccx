@@ -28,7 +28,7 @@
 - 添加 API 密钥对话框 — `App.vue:610`
 - 通用确认对话框 — `App.vue:636`
 - 认证登录对话框 + 自动认证 overlay — `App.vue:18` / `App.vue:4`
-- 分组模型策略 / Key 倍率对话框 — `ApiKeyManagementSection.vue:1290` / `:1342`
+- 分组模型排除 / Key 倍率：已行内展开化（非对话框），见 §13 — `ApiKeyManagementSection.vue`（`toggleGroupModelEditor` / `toggleMultiplierEditor`）
 - 计费条款编辑 / 订阅关联渠道 / 同步结果对话框 — `SubscriptionsView.vue:49` / `:64` / `:102`
 
 > 载入点：`AddChannelModal`、`EditChannelModal`、`UpdateDialog`、`UserGuideDialog` 均在 `App.vue` 挂载并由 `useAppController.ts` 驱动；`ChannelLogsDialog`、`SchedulerDiagnoseDialog` 挂载在 `ChannelOrchestration.vue`；`AutopilotTraceDetailDialog` 同时挂载在 `AutopilotView.vue` 与 `ChannelLogsDialog.vue`。
@@ -82,8 +82,8 @@
   - emits：`update:show`、`save(channel, options?, onComplete?)`、`error`、`success`、`updated`、`update:api-key-configs`
 - 分区（`useEditChannelSectionNav.ts`，侧导航固定三项：basic/auth/custom）：
   1. basic（基础信息）— `BasicInfoSection`（多行 baseUrls（条件可编辑，见下）、官网 website + 快捷按钮、渠道备注输入（12e52cf9 恢复，≤10 字符，与渠道名称解耦））+ `ProtocolModelAvailability`（协议模型清单/重新发现）
-  2. auth（认证管理）— `ApiKeyManagementSection`（密钥增删、**拖拽排序与置顶/置底**、复制、暂停/恢复、拉黑恢复、**每 Key 模型数 chip**、分组模型策略、Key 倍率、provider 凭证如 volcengine/kimi/mimo/compshare/minimax、copilot OAuth）
-  3. custom（自定义参数）— 代理服务器 `form.proxyUrl`（v-text-field，clearable，`mdi-vpn` 前置图标）+ **代理直连优先开关 `form.proxyPreferDirect`**（876eaf7e，仅填写代理后有意义）+ `CustomHeadersSection` + **渠道计费四字段**（充值币种/充值金额/渠道币种/到账金额）
+  2. auth（认证管理）— `ApiKeyManagementSection`（密钥增删、**拖拽排序与置顶/置底**、复制、暂停/恢复、拉黑恢复、**每 Key 模型数 chip**、Key 统一详情（倍率+模型排除，行内展开）、provider 凭证如 volcengine/kimi/mimo/compshare/minimax、copilot OAuth）
+  3. custom（自定义参数）— 代理服务器 `form.proxyUrl`（v-text-field，clearable，`mdi-vpn` 前置图标）+ **代理直连优先开关 `form.proxyPreferDirect`**（876eaf7e，仅填写代理后有意义）+ **竞速参与开关 `form.racing.enabled`**（mdi-flag-checkered 卡片式行，参与=可作主触发也可作影子目标，全局竞速开启时生效）+ `CustomHeadersSection` + **渠道计费四字段**（充值币种/充值金额/渠道币种/到账金额）
   - accounts 区（仅 new-api / generic 托管，`EditChannelModal.vue:107` 的 `v-if`）仍在 DOM 中渲染 `NewApiAccountPanel`，但**不进侧导航**
   - redirect / advanced 分区已随 09c4996d「白名单字段精简」删除：`ModelMappingSection`、`ModelCapabilitySection`、`EmbeddingCompatibilitySection`、`SupportedModelsFilter`、`AdvancedOptionsSection`、`TransportConfigGroup`、`StreamTimeoutSection`、`RateLimitGroup` 共 8 个子组件整体移除
 - 编辑副标题按渠道来源三选一：官方直连 `managed.editSubtitle`（"{provider} 官方渠道 · 管理账号凭证"）、provider 模板 `providerEditSubtitle`、自定义托管 `customEditSubtitle`
@@ -91,7 +91,7 @@
 - 渠道计费四字段（4ab0b99e → 49f28b3e → 5e976904 最终形态）：`channelPaymentCurrency`（充值币种，如 LDC/CNY/USD）、`channelPaymentAmount`（充值金额）、`channelCreditCurrency`（渠道币种，如 USD）、`channelCreditAmount`（到账金额）；空值/非正数归 0（不参与计算），后端按全局汇率图计算 `EffectiveMultiplier = (充值金额×充值币价)/(到账金额×渠道币价)` 并复用 `ResolveEffectiveCostUSD`
 - 主要状态流转：
   - `watch(props.show)`：打开时 `dialogMode = channel ? 'edit' : 'create'`，编辑走 `loadChannelData(channel)`，新建走 `resetForm()`；`nextTick(attachScrollListener)` 绑定滚动高亮。
-  - 编辑打开且渠道有任何 Key（含禁用 Key）即 `nextTick(fetchTargetModels())` 预拉上游模型（eee81e0b，恢复每 Key 模型数 chip 展示）；分组模型对话框打开时经 `ensure-models-loaded` 懒加载兜底。
+  - 编辑打开且渠道有任何 Key（含禁用 Key）即 `nextTick(fetchTargetModels())` 预拉上游模型（eee81e0b，恢复每 Key 模型数 chip 展示）；Key 统一详情面板展开时经 `ensure-models-loaded` 懒加载兜底。
   - `baseUrlsText` watch → `syncBaseUrlsFormState` 去重 + `extractChannelNamePrefix` 自动派生渠道名。去重语义经 6cda4596/d300b2bb 修正：转义路径保留原样，带 `#` 的完整路径 URL 不与域名根条目去重合并（`utils/base-url-semantics.test.ts`）。
   - `handleSubmit`：`formRef.validate()` → `buildSubmitPayload` → `emit('save', …, onComplete)`。
 - 校验规则：`isFormValid` 只综合三项——serviceType 非空、baseUrls（仅 `isEditableBaseUrlsChannel` 时要求非空且逐行合法 URL）、apiKeys（copilot 免除）；模型能力错误不再参与。
@@ -127,7 +127,7 @@
 
 - **Key 列表拖拽排序与置顶/置底**（85f362ba，`vuedragnable`）：活跃 Key 多于 1 个（`canReorderKeys`）时，列表用 `<draggable>` 包裹，仅行首 `mdi-drag-vertical` 把手可拖；被拉黑（disabled）Key 不可拖、固定展示。每行另有置顶/置底按钮（`moveKeyToTop/moveKeyToBottom`，首/末位置禁用）。顺序即 `APIKeys`/`APIKeyConfigs` 的 slice 顺序（无显式 sort 字段），重排后同步 emit `update:apiKeys` 与 `update:apiKeyConfigs` 保证 Key 与配置项一一对应。
 - **每 Key 模型数 chip**（eee81e0b）：每个活跃 Key 行标题区、Key 掩码右侧三个互斥状态 chip——加载中 / 成功（「models {statusCode} ({count} 个)」）/ 失败（「models {code}」+ error tooltip），数据源 `useTargetModelFetch` 的 `keyModelsStatus` Map。
-- **分组模型策略 / Key 倍率**：见 §13 内联对话框。new-api key 的 groupMultiplier 由远端同步，手动修改被后端 409 拒绝。
+- **分组模型排除 / Key 倍率**：均已行内展开（见 §13）。new-api key 的 groupMultiplier 由远端同步，手动修改被后端 409 拒绝。
 
 ## 3. QuickAddChannelForm（AddChannelModal 快速模式子表单）
 
@@ -252,27 +252,29 @@
 ## 6. ChannelLogsDialog（渠道请求日志）
 
 - 路径：`frontend/src/components/ChannelLogsDialog.vue`
-- 用途：查看单渠道最近 50 条请求日志（状态码、协议、reasoning effort、时延、熔断依据），3s 轮询。
+- 用途：查看单渠道最近 50 组请求日志（状态码、协议、reasoning effort、时延、熔断依据），3s 轮询；日志按最终用户请求折叠——同一 `requestCorrelationId` 的多次上游尝试（竞速影子/failover 重试）归为一组。
 - 触发入口：`ChannelOrchestration.vue:457` 行操作「历史」按钮 → `openLogsDialog(channel)`。
 - props：`modelValue`、`channelIndex`、`channelName`、`channelType`、`protocolRoutes?`；emit `update:modelValue`。
-- 主要内容：加载态 spinner、空态（含熔断依据 alert）、日志列表（状态码 chip、请求状态、interfaceType、agentRole、operation、requestSource、模型映射、reasoning、keyMask、baseUrl、时延分解、可展开 errorInfo、复制单条、autopilotTrace chip）。
+- 主要内容：加载态 spinner、空态（含熔断依据 alert；过滤无结果时另有 `channelLogs.noMatch` 空态）、日志列表（状态码 chip、请求状态、**「N 次尝试」徽章**（组行，组内条数 >1 时显示）、interfaceType、agentRole、operation、requestSource、**竞速徽章 `racingStatus`（won=竞速获胜 flag-checkered / lost=竞速败出）+ 请求状态 `racing_lost`**、模型映射、reasoning、keyMask、baseUrl、时延分解、可展开 errorInfo、复制单条、autopilotTrace chip）。
+- 折叠与过滤（eff5fa7e）：`groupLogs` 按 `requestCorrelationId` 分组（无 ID 条目以 `requestId/timestamp` 自成一组）；组行显示「最终结局」（成功交付 > 最新非竞速败出 > 最新一条），chevron 展开尝试明细（明细行复用同一渲染、缩进区分）；标题栏三态过滤 `logViewMode`：**全部**（组可展开）/ **仅最终交付**（组不可展开，只看组行）/ **含竞速放大**（仅显示组内任一条目 `racingRole`/`racingStatus` 非空或 `selectionReason` 含 racing 的组）；展开态以稳定 key（correlationId/requestId）记录，轮询刷新重排不错位；切换过滤模式时收起展开态。
 - 状态流转：`watch(modelValue)` 打开时清空并 `fetchLogs` + 开启轮询（`useGlobalTick(3000)`）；切换 channel/type/routes 重新拉取；关闭停止轮询。
-- 后端调用：`api.getChannelLogs(kind, index)`（对每条 protocolRoute `Promise.allSettled`，合并去重取前 50）。
+- 后端调用：`api.getChannelLogs(kind, index)`（对每条 protocolRoute `Promise.allSettled`，合并按时间倒序；原 50 条截断改为作用于折叠后的 50 组）。
 - 联动：日志 autopilotTrace chip → `openAutopilotTrace` 打开内嵌 `AutopilotTraceDetailDialog`。
 
 布局示意图：
 
 ```
 ┌───────────────────────────────────────────────────────────┐
-│ 渠道日志 - {channel}                                 [×]   │ ← max-width 800，内部滚动
+│ 渠道日志 - {channel}  [全部|仅最终交付|含竞速放大]   [×]    │ ← max-width 800，内部滚动
 ├───────────────────────────────────────────────────────────┤
 │ (加载态: 居中 ◌)                                           │
 │ (空态: [format-list-bulleted] 暂无日志记录                  │
 │       + (⚠) 熔断依据 alert: open/half-open·失败说明·       │
 │         最近失败时间·下次探测·退避层级)                      │
-│ 日志列表 v-list（3s 轮询；失败行浅红底；点击行展开错误详情）：│
+│ 日志列表 v-list（3s 轮询；按 correlationId 折叠为组；失败行  │
+│   浅红底；组行点击展开尝试明细，单条点击展开错误详情）：      │
 │ ┌───────────────────────────────────────────────────┐     │
-│ │ [200] 23:14:02 ·messages·MAIN·chat·〔能力测试〕     │     │
+│ │ [200] 23:14:02 ·completed·〔2 次尝试〕·messages·MAIN ⌄│   │
 │ │ gpt-5.6→gpt-5.6 ·reasoning(high→high) ·sk-F9M***   │     │
 │ │ ·seekai.cc ·重试1 ·12ms(连3/首字8/总12)             │     │
 │ │ 〔调度〕〔决策 tr_… chip → AutopilotTraceDetail〕[⧉] │     │
@@ -447,7 +449,7 @@
 
 - 路径：`frontend/src/components/AutopilotModePanel.vue`、`AutopilotDiagnosePanel.vue`
 - 触发入口：均由 `AutopilotView.vue` 直接内嵌渲染。
-- AutopilotModePanel：props `config: SmartRoutingConfig`、`saving`；emit `update:config`。字段：killSwitch(只读开关+警告 alert)、costPreference(select)。
+- AutopilotModePanel：props `config: SmartRoutingConfig`、`saving`；emit `update:config`。字段：killSwitch(只读开关+警告 alert)、costPreference(select)、**竞速模式开关 `racingEnabled`（随 `GET/PUT /smart-routing/config` 整卡读取/保存，改动后点亮「保存配置」按钮一并提交；hint 说明影子数随价格策略自动搭配：质量优先 3 / 均衡 1 / 价格优先仅更便宜渠道 1）**。
 - AutopilotDiagnosePanel：无 props；本地 `form`（model/channelKind/agentRole/estTokens/toolUseNeed/reasoningNeed/hasImage）。结果：mode/taskClass/candidates 表（候选行为 (渠道, 模型) 粒度并展示 CandidateKey/模型名，78ed757f）。
 
 布局示意图（两面板均为内嵌 outlined 卡，由 AutopilotView 堆叠渲染）：
@@ -461,6 +463,7 @@ AutopilotModePanel:
 │ 场景模式 [select·停用时禁用] + 描述 caption│
 │   (非 auto 场景追加: 预设参数摘要)         │
 │ 价格偏好 [select·条件禁用] + 描述 caption  │
+│ 竞速模式 [switch·随保存配置提交] + 策略说明    │
 │                     [保存配置][重置]       │ ← 无改动均禁用
 └──────────────────────────────────────────┘
 
@@ -488,7 +491,9 @@ AutopilotDiagnosePanel:
 - 添加 API 密钥（`App.vue:610`）：`newApiKey` 输入，Enter 添加。
 - 通用确认对话框（`App.vue:636`）：`dialogStore.confirm({message,confirmText,cancelText,color})` 返回 Promise。
 - 认证登录（`App.vue:18`）+ 自动认证 overlay（`App.vue:4`）：`showAuthDialog` computed。
-- 分组模型策略 / Key 倍率（`ApiKeyManagementSection.vue:1295`/`:1347`）：`openGroupModelEditor`/`submitGroupModelDisable`；`openMultiplierEditor`/`saveMultiplier`。倍率编辑入口对全部可编辑 key 可见（未设置倍率时仅显示设置按钮，不产生空 chips）。倍率输入经 `parseMultiplierInput` 安全转 JSON 数字（`Number()` 转换支持常见小数倍率，非有限/负值抛错阻断提交，241de1f5）；两对话框取消/确认按钮带 Esc 与 ⌘/Ctrl+Enter 快捷键提示 chip（同提交，快捷键本身走 §15 全局栈）。
+- 分组模型排除 / Key 倍率（`ApiKeyManagementSection.vue`）：合并为 **Key 行统一详情面板**——行尾 chevron 按钮（渠道列表同款下箭头，带 aria-label）toggle 展开，一次一行（`expandedDetailKey`），同块承载两组输入（倍率在上、divider、排除在下），展开时初始化倍率表单并 `ensure-models-loaded` 懒拉模型。**两组输入均不即时落盘——随渠道主保存一并提交**：倍率改动写入表单 `apiKeyConfigs`（行 chips 经 props 回流即时反映），主保存时自定义渠道随渠道 PUT 的 apiKeyConfigs merge 落盘、托管渠道由 `buildStagedKeyMultiplierConfigs` diff 后并入单卡更新补发；排除暂存于 `useDisabledApiKeys.pendingGroupModelDisables`（面板中列 warning chips 可移除），主保存成功（对话框经保存链路关闭）后 `flushStagedGroupModelDisables` 逐个提交，取消编辑则丢弃暂存（handleCancel 显式清空+抑制标记区分）。
+  - **Key 倍率（去按钮化，随主保存）**：统一面板上半区，仅消耗策略下拉 + 分组倍率数字框：策略选择（`@update:model-value`）与倍率失焦/回车定稿（`@change`）均 `applyMultiplierToConfigs` 写入外层表单 `apiKeyConfigs`（定位 keyUid/credentialUid/key，非法输入跳过暂存保留上次合法值）；输入经 `parseMultiplierInput` 安全转 JSON 数字（非有限/负值抛错，241de1f5）。面板 caption「改动随渠道保存一并生效」。渠道上限仅启用时作数字框 hint（`channelMaxGroupMultiplierHint`，未启用不显示）；「标记公开 Key」按钮已删，语义由用户自选「优先消耗」策略表达。倍率 PATCH 端点（即时保存链路）已从编辑面板移除，仅保留给订阅页等直连场景。
+  - **分组模型排除（模型定稿即暂存，随主保存提交）**：统一面板下半区（divider 隔开），上下文 caption（key 掩码·分组 chip·同组影响 key 数）提到面板顶部共享。模型 combobox + 备注 input；模型**选定/手输定稿即** emit `stage-group-model-disable` 暂存（备注需先于模型填写，清空不触发），暂存条目以 warning chips（可点移除）列于面板内；面板保持展开继续编辑。主保存成功后逐个调 `disableGroupModel` 端点提交；误排可在暂存期移除，保存后经下方记录列表恢复按钮撤销。无取消/确认按钮。
 - 计费条款 / 订阅关联渠道 / 同步结果（`SubscriptionsView.vue:49`/`:64`/`:102`）：`billingDialog`（四字段 paymentAmount/paymentUnit/creditAmount/creditUnit，a96098da 统一币种/金额模型）、`linkDialog`（v-select 选 `linkableChannels` + 已关联 channelUid chips 逐个解绑 `unlinkChannel`，入口 SubscriptionPlanTable 行操作）、`syncDialog`。
 
 布局示意图（按出现顺序，宽度标注在图右下）：
@@ -517,23 +522,27 @@ AutopilotDiagnosePanel:
 └───────────────────────────────┘     ┌──────────────────────┐
   三组原生 range 滑块+当前值+刻度      │ [alert-circle 动态色] │
                                       │ 请确认                │
-分组模型策略（520）:                   │ {confirmDialogMessage}│
-┌────────────────────────────┐        ├──────────────────────┤
-│ [tune-variant] 分组模型策略 │        │[取消 Esc][确认 ⌘⏎]   │
-│ sk-xx*** 〔分组 chip〕同组 n │        └──────────────────────┘  文案/色可覆盖
-│ 模型 [combobox·autofocus]   │
-│ 备注（可选）[text]           │       Key 倍率（520）:
-│      [取消][禁用模型 warning]│       ┌────────────────────────┐
-└────────────────────────────┘        │ Key 倍率设置            │
-                                      │ 消耗策略 [select·clearable]│
-billingDialog 到账规则（560）:         │ 分组倍率 [num·new_api 禁用]│
-┌────────────────────────────┐        │ 倍率上限 [num]           │
-│ 到账规则 {displayName}      │        │ (⚠ opportunistic 提示)   │
-│ 支付金额│支付单位│到账金额│到账单位│  │ (error alert)            │
-│ (error alert·409 版本冲突)   │        ├────────────────────────┤
-├────────────────────────────┤        │[标记公开/临时][取消][保存]│
-│[重置规则 error][取消][保存] │        └────────────────────────┘
-└────────────────────────────┘         左下「标记公开/临时」仅非 new_api 来源
+Key 行统一详情面板（行内展开，单一入口）:
+┌────────────────────────────────────┐
+│ sk-xx*** 〔分组chip〕同组影响n个key  │
+│ ── Key 倍率（随渠道保存生效）──     │
+│ 消耗策略[select]  分组倍率[num]      │
+│  num框hint:渠道上限x,超出自动退出    │
+│  调度;未启用时不显示                 │
+│  (⚠ opportunistic 提示) (error)     │
+│  (⏲ 改动随渠道保存一并生效)         │
+│ ── divider ──                       │
+│ ── 分组模型排除（定稿即暂存)──      │
+│ 模型[combobox]  备注[input]         │
+│  (hint:选定即暂存,随渠道保存提交,  │
+│   备注先填;chips可移除)            │
+└────────────────────────────────────┘
+ 行尾 chevron 按钮(带aria-label,渠道列
+ 表同款下箭头)toggle 再点收起;策略选择
+ /数字定稿写表单apiKeyConfigs(随主保存);模型
+ 定稿即stage暂存(面板不收起,可继续添
+ 加);主保存成功后逐个提交;误排可移除
+ 或保存后走记录「恢复」;无确认按钮
 
 linkDialog 绑定渠道（560）:            syncDialog 同步结果（760）:
 ┌────────────────────────────┐        ┌──────────────────────────────┐
@@ -554,7 +563,7 @@ App.vue ─┬─ openAddChannelModal ─▶ AddChannelModal
          │        └─(quick模式)─▶ QuickAddChannelForm ─(选new-api)─▶ NewApiQuickAddDialog ─▶ NewApiSubscriptionForm
          │                                                                      │ created
          │                                                                      ▼ 刷新渠道
-         ├─ editChannel ─▶ EditChannelModal ─┬─ ApiKeyManagementSection ─▶ [分组模型/Key倍率对话框]
+         ├─ editChannel ─▶ EditChannelModal ─┬─ ApiKeyManagementSection ─▶ [分组模型排除/Key倍率 行内展开]
          │                                   ├─ NewApiAccountPanel (accounts区,不进侧导航)
          │                                   └─ ProtocolModelAvailability @refreshed ▶ 刷新账号模型+替换editingChannel快照
          ├─ UpdateDialog（版本徽标/检查）
@@ -573,7 +582,7 @@ SubscriptionsView ─ 内嵌 NewApiSubscriptionForm；billingDialog / syncDialog
 
 - 状态管理：`dialogStore`（`stores/dialog.ts`）持有 `showAddChannelModal`/`showEditChannelModal`/`editingChannel`/`showAddKeyModal`/确认对话框状态 + `confirm()` Promise 化封装。
 - 快捷键：对话框普遍 Esc 关闭、⌘/Ctrl+Enter 提交。
-- 多级对话框：对话框之上再展开新对话框时（如 EditChannelModal → 分组模型策略/Key 倍率、ChannelLogsDialog → AutopilotTraceDetailDialog），新对话框必须自带默认确认/取消快捷键（Esc 取消、⌘/Ctrl+Enter 确认），不得要求用户先关闭上层再操作底层；快捷键只作用于最上层对话框——全局 keydown 监听（`window`/`document`）须先确认自身处于栈顶（不存在更上层已打开的对话框）才响应，禁止一次按键同时关闭或提交多层对话框。实现：`frontend/src/composables/useDialogHotkeys.ts` 全局快捷键栈，各对话框经 `useDialogHotkeys(activeRef, { esc, confirm, plainEnter })` 注册（栈序=打开顺序，仅栈顶分发，`flush: 'sync'` 即开即用）；非 persistent 对话框的 Esc 关闭由 Vuetify overlay 栈原生处理（VOverlay `globalTop` 仅关最上层），persistent 或需自定义关闭语义的对话框才注册 `esc` 回调。已接线：AddChannelModal、EditChannelModal、熔断器/添加密钥/通用确认（useAppController）、分组模型策略/Key 倍率（⌘Enter 提交）、NewApiQuickAddDialog（persistent，Esc 取消 + ⌘Enter 触发表单当前步骤）、billingDialog/linkDialog（⌘Enter 保存/绑定）、UserGuideDialog（裸 Enter 前进）；ChannelLogsDialog/CapabilityTestDialog 的冗余自建 Esc 监听已删除，交回 Vuetify 原生。
+- 多级对话框：对话框之上再展开新对话框时（如 ChannelLogsDialog → AutopilotTraceDetailDialog），新对话框必须自带默认确认/取消快捷键（Esc 取消、⌘/Ctrl+Enter 确认），不得要求用户先关闭上层再操作底层；快捷键只作用于最上层对话框——全局 keydown 监听（`window`/`document`）须先确认自身处于栈顶（不存在更上层已打开的对话框）才响应，禁止一次按键同时关闭或提交多层对话框。实现：`frontend/src/composables/useDialogHotkeys.ts` 全局快捷键栈，各对话框经 `useDialogHotkeys(activeRef, { esc, confirm, plainEnter })` 注册（栈序=打开顺序，仅栈顶分发，`flush: 'sync'` 即开即用）；非 persistent 对话框的 Esc 关闭由 Vuetify overlay 栈原生处理（VOverlay `globalTop` 仅关最上层），persistent 或需自定义关闭语义的对话框才注册 `esc` 回调。已接线：AddChannelModal、EditChannelModal、熔断器/添加密钥/通用确认（useAppController）；分组模型排除/Key 倍率均已行内展开、不注册对话框快捷键（原分组模型弹窗的 ⌘Enter 提交随弹窗移除）、NewApiQuickAddDialog（persistent，Esc 取消 + ⌘Enter 触发表单当前步骤）、billingDialog/linkDialog（⌘Enter 保存/绑定）、UserGuideDialog（裸 Enter 前进）；ChannelLogsDialog/CapabilityTestDialog 的冗余自建 Esc 监听已删除，交回 Vuetify 原生。
 - 后端交互统一经 `services/api.ts` 与 `services/autopilot-api.ts`。
 - 校验模式：本地 computed 校验 + Vuetify `formRef.validate()` 规则 + 内联 error alert。
 

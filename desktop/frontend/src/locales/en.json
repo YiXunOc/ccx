@@ -1034,7 +1034,7 @@
   "channelLogs.status.completed": "Completed",
   "channelLogs.status.failed": "Failed",
   "channelLogs.status.cancelled": "Cancelled",
-  "channelLogs.sourceCapabilityTest": "Capability test",
+  "channelLogs.status.racingLost": "Racing lost",
   "channelLogs.copyEntry": "Copy this log",
   "channelLogs.copiedEntry": "Log copied",
   "channelLogs.reasoning.original": "Original",

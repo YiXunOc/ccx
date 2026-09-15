@@ -98,9 +98,11 @@ func TestBuildChannelEntryUsesMappedModelQualityTier(t *testing.T) {
 	if k3Entry.ScoringCandidate.QualityTier != QualityTierPremium {
 		t.Fatalf("K3 quality tier = %q, want premium", k3Entry.ScoringCandidate.QualityTier)
 	}
-	// kimi-for-coding 与 kimi-k2.7-code 共享 pattern，常规口径 30.5 < normalMin 44.25 → low（v2 固定阈值）
-	if codingEntry.ScoringCandidate.QualityTier != QualityTierLow {
-		t.Fatalf("kimi-for-coding quality tier = %q, want low", codingEntry.ScoringCandidate.QualityTier)
+	// 2026-09 起 kimi-for-coding 实际模型升级为 K2.8 Preview（性能接近 K3），已从
+	// kimi-k2.7-code 的 benchmark profile 拆出（无实测分），按族回退 high 兜底；
+	// 待第三方基准收录后再回到实测分口径。
+	if codingEntry.ScoringCandidate.QualityTier != QualityTierHigh {
+		t.Fatalf("kimi-for-coding quality tier = %q, want high", codingEntry.ScoringCandidate.QualityTier)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/BenedictKing/ccx/internal/config"
@@ -258,6 +259,87 @@ func TestResponsesProvider_NormalizeNonstandardChatRolesForOpenAIChatUpstream(t 
 			}
 			if first["role"] != tt.wantFirst {
 				t.Fatalf("message[0].role = %v, want %s", first["role"], tt.wantFirst)
+			}
+		})
+	}
+}
+
+// TestResponsesEntry_BudgetReminderStripMatrix 验证 Codex 预算提醒剔除的分支语义：
+// passthrough 命中映射才剔、未命中保留；converter 跨协议无条件剔。
+func TestResponsesEntry_BudgetReminderStripMatrix(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	reminderBody := `{"model":"gpt-5","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"You have 710 tokens left in this context window."}]},{"type":"message","role":"user","content":"hi"}]}`
+
+	tests := []struct {
+		name          string
+		serviceType   string
+		modelMapping  map[string]string
+		wantStripped  bool
+		checkField    string
+		wantRemaining int
+	}{
+		{
+			name:          "passthrough_redirect_hit_strips",
+			serviceType:   "responses",
+			modelMapping:  map[string]string{"gpt-5": "gpt-5.4"},
+			wantStripped:  true,
+			checkField:    "input",
+			wantRemaining: 1,
+		},
+		{
+			name:          "passthrough_no_mapping_keeps",
+			serviceType:   "responses",
+			modelMapping:  nil,
+			wantStripped:  false,
+			checkField:    "input",
+			wantRemaining: 2,
+		},
+		{
+			name:          "converter_chat_unconditional_strips",
+			serviceType:   "openai",
+			modelMapping:  nil,
+			wantStripped:  true,
+			checkField:    "messages",
+			wantRemaining: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newGinContext(http.MethodPost, "/v1/responses", []byte(reminderBody), context.Background())
+			upstream := &config.UpstreamConfig{
+				BaseURL:     "https://api.example.com",
+				ServiceType: tt.serviceType,
+			}
+			if tt.modelMapping != nil {
+				upstream.ModelMapping = tt.modelMapping
+			}
+
+			provider := &ResponsesProvider{}
+			req, _, err := provider.ConvertToProviderRequest(c, upstream, "sk-test")
+			if err != nil {
+				t.Fatalf("ConvertToProviderRequest() err = %v", err)
+			}
+
+			var body map[string]interface{}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			items, ok := body[tt.checkField].([]interface{})
+			if !ok {
+				t.Fatalf("field %q missing: %#v", tt.checkField, body)
+			}
+			if len(items) != tt.wantRemaining {
+				t.Fatalf("%s: got %d items, want %d (stripped=%v)", tt.name, len(items), tt.wantRemaining, tt.wantStripped)
+			}
+			// converter 分支 developer 提醒被剔后仅剩 user 消息；
+			// passthrough 未命中时 developer 提醒原样保留
+			raw, _ := json.Marshal(body[tt.checkField])
+			if tt.wantStripped && strings.Contains(string(raw), "tokens left") {
+				t.Fatalf("%s: reminder must be stripped, got %s", tt.name, raw)
+			}
+			if !tt.wantStripped && !strings.Contains(string(raw), "tokens left") {
+				t.Fatalf("%s: reminder must be preserved", tt.name)
 			}
 		})
 	}

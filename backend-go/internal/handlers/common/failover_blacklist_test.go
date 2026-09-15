@@ -634,8 +634,13 @@ func TestIsKeyModelRestrictionError(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "relay exhaustion with model_not_found code",
+			name: "group missing with model_not_found code",
 			body: `{"error":{"code":"model_not_found","message":"No available channel for model claude-sonnet-5 under group default (distributor)"}}`,
+			want: true,
+		},
+		{
+			name: "relay exhaustion without group stays transient",
+			body: `{"error":{"code":"model_not_found","message":"No available channel for model claude-sonnet-5 (distributor)"}}`,
 			want: false,
 		},
 		{

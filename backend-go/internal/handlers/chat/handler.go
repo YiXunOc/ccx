@@ -130,8 +130,9 @@ func handleMultiChannel(
 		userID,
 		model,
 		contextRequirement,
+		isStream,
 		agentRole,
-		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
+		func(c *gin.Context, selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
 			channelIndex := selection.ChannelIndex
 

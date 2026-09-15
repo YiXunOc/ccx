@@ -45,6 +45,16 @@ func redirectModelInBody(bodyBytes []byte, upstream *config.UpstreamConfig) []by
 
 	data["model"] = newModel
 
+	// 模型已改写：CC 按原模型窗口注入的 tokens-left 提醒随之失真，剔除
+	// （统一语义见 client_budget_reminders.go）。未命中时 data 零改动，保缓存。
+	if stripped, changed := StripCCBudgetRemindersFromClaudeSystem(data["system"]); changed {
+		if stripped == nil {
+			delete(data, "system")
+		} else {
+			data["system"] = stripped
+		}
+	}
+
 	// 使用 Encoder 并禁用 HTML 转义，保持原始格式
 	newBytes, err := utils.MarshalJSONNoEscape(data)
 	if err != nil {

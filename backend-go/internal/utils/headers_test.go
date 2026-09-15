@@ -463,3 +463,39 @@ func TestExtractUnifiedSessionID_ClientRequestIDIsFallback(t *testing.T) {
 		t.Fatalf("ExtractUnifiedSessionID() fallback = %q, want req_per_request", got)
 	}
 }
+
+func TestForwardResponseHeaders_SkipsContentType(t *testing.T) {
+	upstream := http.Header{}
+	upstream.Set("Content-Type", "text/plain; charset=utf-8")
+	upstream.Set("Request-Id", "req_123")
+	upstream.Set("Transfer-Encoding", "chunked")
+
+	w := httptest.NewRecorder()
+	ForwardResponseHeaders(upstream, w)
+
+	if got := w.Header().Get("Content-Type"); got != "" {
+		t.Fatalf("Content-Type = %q, want empty (决定权留给写回方式)", got)
+	}
+	if got := w.Header().Get("Request-Id"); got != "req_123" {
+		t.Fatalf("Request-Id = %q, want req_123", got)
+	}
+	if got := w.Header().Get("Transfer-Encoding"); got != "" {
+		t.Fatalf("Transfer-Encoding = %q, want empty", got)
+	}
+}
+
+func TestForwardContentType(t *testing.T) {
+	w := httptest.NewRecorder()
+	ForwardContentType(http.Header{}, w)
+	if got := w.Header().Get("Content-Type"); got != "" {
+		t.Fatalf("空上游 Content-Type 时不应写入, got %q", got)
+	}
+
+	upstream := http.Header{}
+	upstream.Set("Content-Type", "image/png")
+	w = httptest.NewRecorder()
+	ForwardContentType(upstream, w)
+	if got := w.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("Content-Type = %q, want image/png", got)
+	}
+}

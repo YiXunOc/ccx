@@ -45,6 +45,11 @@ func resolveFunctionCallItem(item types.ResponsesItem) (string, string, string, 
 	if callID == "" {
 		callID = name
 	}
+	// Codex namespace 工具的密文分段（encrypted_function_args）在 Chat/Claude/Gemini
+	// 协议无对应物、转换时丢弃，但空 arguments 会被部分上游（DeepSeek 等）拒收，补 "{}" 占位
+	if arguments == "" && len(item.EncryptedFunctionArgs) > 0 {
+		arguments = "{}"
+	}
 
 	return callID, name, arguments, nil
 }

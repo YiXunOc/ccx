@@ -131,8 +131,9 @@ func handleMultiChannel(
 		userID,
 		responsesReq.Model,
 		contextRequirement,
+		responsesReq.Stream,
 		agentRole,
-		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
+		func(c *gin.Context, selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
 			executionRoute := selection.Route
 

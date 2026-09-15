@@ -51,7 +51,6 @@ func healDesired(tokenID int64, group string) newApiDesiredKey {
 		status:    newApiSyncStatusFresh,
 		tokenID:   tokenID,
 		ratio:     1,
-		limit:     1,
 		updatedAt: time.Now(),
 	}
 }
@@ -113,7 +112,7 @@ func TestHealMissingProvisionedKeysRecoversDeletedKeys(t *testing.T) {
 	}
 	desired := []newApiDesiredKey{healDesired(11, "Surprise"), healDesired(12, "default")}
 
-	svc.healMissingProvisionedKeys(context.Background(), profile, adapter, "https://new-api.example.com", "access", "1", NewApiAuthModeBearer, desired)
+	svc.healMissingProvisionedKeys(context.Background(), profile, adapter, "https://new-api.example.com", "access", "1", NewApiAuthModeBearer, desired, "")
 
 	up := svc.cfgManager.GetConfig().Upstream[0]
 	if len(up.APIKeys) != 2 || up.APIKeys[0] != "sk-plain11" || up.APIKeys[1] != "sk-revealed12" {
@@ -143,7 +142,7 @@ func TestHealMissingProvisionedKeysSkipsRemoteDeleted(t *testing.T) {
 	}
 	desired := []newApiDesiredKey{healDesired(11, "Surprise"), healDesired(99, "default")}
 
-	svc.healMissingProvisionedKeys(context.Background(), profile, adapter, "https://new-api.example.com", "access", "1", NewApiAuthModeBearer, desired)
+	svc.healMissingProvisionedKeys(context.Background(), profile, adapter, "https://new-api.example.com", "access", "1", NewApiAuthModeBearer, desired, "")
 
 	up := svc.cfgManager.GetConfig().Upstream[0]
 	if len(up.APIKeys) != 1 || up.APIKeys[0] != "sk-plain11" {
@@ -153,6 +152,84 @@ func TestHealMissingProvisionedKeysSkipsRemoteDeleted(t *testing.T) {
 		if cfg.Key == "" {
 			t.Fatalf("不应注入空 key config: %+v", cfg)
 		}
+	}
+}
+
+// 远端已删除的 token（desired 中有但远端列表不存在）须从渠道与 profile 双向清理。
+func TestHealPrunesRemoteDeletedTokens(t *testing.T) {
+	store, err := NewSubscriptionStoreWithDB(newTestDB(t))
+	if err != nil {
+		t.Fatalf("创建 store 失败: %v", err)
+	}
+	profile := &SubscriptionProfile{
+		SubscriptionUID:   "newapi-ch-1",
+		LinkedChannelUIDs: []string{"ch-1"},
+		ProvisionedKeys: []NewApiProvisionedKey{
+			{Name: "ccx-11", Group: "default", TokenID: 11},
+			{Name: "ccx-99", Group: "default", TokenID: 99},
+		},
+	}
+	if err := store.Create(profile); err != nil {
+		t.Fatalf("创建订阅失败: %v", err)
+	}
+	// 渠道持有 11（远端仍在）与 99（远端已删）两条 key。
+	ch := healChannel("ch-1",
+		[]string{"sk-alive", "sk-stale"},
+		[]config.APIKeyConfig{
+			{Key: "sk-alive", KeyUID: StableKeyUID("newapi-ch-1", 11), SourceSubscriptionUID: "newapi-ch-1", SourceRemoteTokenID: 11},
+			{Key: "sk-stale", KeyUID: StableKeyUID("newapi-ch-1", 99), SourceSubscriptionUID: "newapi-ch-1", SourceRemoteTokenID: 99},
+		})
+	svc := &NewApiSubscriptionSyncService{cfgManager: newProxyTestConfigManager(t, ch), store: store}
+	adapter := &healFakeAdapter{
+		tokens: []NewApiToken{{ID: 11, Key: "sk-alive", Name: "ccx-11", Group: "default"}},
+	}
+	desired := []newApiDesiredKey{healDesired(11, "default"), healDesired(99, "default")}
+
+	svc.healMissingProvisionedKeys(context.Background(), profile, adapter, "https://new-api.example.com", "access", "1", NewApiAuthModeBearer, desired, "")
+
+	up := svc.cfgManager.GetConfig().Upstream[0]
+	if len(up.APIKeys) != 1 || up.APIKeys[0] != "sk-alive" {
+		t.Fatalf("期望远端已删的 sk-stale 被剔除，实际 %v", up.APIKeys)
+	}
+	for _, cfg := range up.APIKeyConfigs {
+		if cfg.SourceRemoteTokenID == 99 {
+			t.Fatalf("tokenID=99 的 config 应被剔除: %+v", cfg)
+		}
+	}
+	updated := store.Get("newapi-ch-1")
+	if len(updated.ProvisionedKeys) != 1 || updated.ProvisionedKeys[0].TokenID != 11 {
+		t.Fatalf("profile 中远端已删 token 应被移除: %+v", updated.ProvisionedKeys)
+	}
+}
+
+// 远端列表异常返回空时禁止清理（防误杀：无法区分「全删光」与「接口异常」）。
+func TestHealSkipsPruneWhenRemoteListEmpty(t *testing.T) {
+	store, err := NewSubscriptionStoreWithDB(newTestDB(t))
+	if err != nil {
+		t.Fatalf("创建 store 失败: %v", err)
+	}
+	profile := &SubscriptionProfile{
+		SubscriptionUID:   "newapi-ch-1",
+		LinkedChannelUIDs: []string{"ch-1"},
+		ProvisionedKeys:   []NewApiProvisionedKey{{Name: "ccx-11", Group: "default", TokenID: 11}},
+	}
+	if err := store.Create(profile); err != nil {
+		t.Fatalf("创建订阅失败: %v", err)
+	}
+	ch := healChannel("ch-1",
+		[]string{"sk-alive"},
+		[]config.APIKeyConfig{
+			{Key: "sk-alive", KeyUID: StableKeyUID("newapi-ch-1", 11), SourceSubscriptionUID: "newapi-ch-1", SourceRemoteTokenID: 11},
+		})
+	svc := &NewApiSubscriptionSyncService{cfgManager: newProxyTestConfigManager(t, ch), store: store}
+	adapter := &healFakeAdapter{}
+	desired := []newApiDesiredKey{healDesired(11, "default")}
+
+	svc.healMissingProvisionedKeys(context.Background(), profile, adapter, "https://new-api.example.com", "access", "1", NewApiAuthModeBearer, desired, "")
+
+	up := svc.cfgManager.GetConfig().Upstream[0]
+	if len(up.APIKeys) != 1 || up.APIKeys[0] != "sk-alive" {
+		t.Fatalf("远端列表为空时不应清理渠道 key，实际 %v", up.APIKeys)
 	}
 }
 
@@ -202,10 +279,12 @@ func TestHealMissingProvisionedKeysNoRequestWhenComplete(t *testing.T) {
 	profile := &SubscriptionProfile{SubscriptionUID: "newapi-ch-1", LinkedChannelUIDs: []string{"ch-1"}}
 	adapter := &healFakeAdapter{}
 
+	// 渠道没有任何本订阅 key 时（如已解绑），不发起远端请求。
+	profile.LinkedChannelUIDs = nil
 	svc.healMissingProvisionedKeys(context.Background(), profile, adapter, "https://new-api.example.com", "access", "1", NewApiAuthModeBearer,
-		[]newApiDesiredKey{healDesired(11, "Surprise"), healDesired(12, "default")})
+		[]newApiDesiredKey{healDesired(11, "Surprise"), healDesired(12, "default")}, "")
 
 	if adapter.listCalls != 0 {
-		t.Fatalf("渠道 key 完整时不应拉远端 token 列表，实际调用 %d 次", adapter.listCalls)
+		t.Fatalf("无关联渠道时不应拉远端 token 列表，实际调用 %d 次", adapter.listCalls)
 	}
 }

@@ -85,6 +85,13 @@ func BuildChannelView(up config.UpstreamConfig, index int) gin.H {
 		"rateLimitAutoFromHeaders":      up.IsRateLimitAutoFromHeadersEnabled(),
 		"logicalChannelUid":             up.LogicalChannelUID,
 		"logicalName":                   up.LogicalName,
+		// 渠道级计费与分组倍率：编辑表单从 view 回读，缺登记会导致保存成功但重开丢显示
+		"costMultiplier":         up.CostMultiplier,
+		"maxGroupMultiplier":     up.MaxGroupMultiplier,
+		"channelPaymentCurrency": up.ChannelPaymentCurrency,
+		"channelPaymentAmount":   up.ChannelPaymentAmount,
+		"channelCreditCurrency":  up.ChannelCreditCurrency,
+		"channelCreditAmount":    up.ChannelCreditAmount,
 	}
 	for _, keyConfig := range up.APIKeyConfigs {
 		if uid := strings.TrimSpace(keyConfig.SourceSubscriptionUID); uid != "" {

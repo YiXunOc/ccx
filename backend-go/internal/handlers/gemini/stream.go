@@ -372,6 +372,15 @@ func handleStreamSuccess(
 		return nil, common.ErrEmptyStreamResponse
 	}
 
+	// 竞速提交闸门：preflight 确认首字有效后才裁决——赢家 claim 并写出，
+	// 败者在此返回 ErrRacingSuperseded（Header 未写，零字节污染）。
+	// 流式路径漏掉此裁决时，分支 writer 的缓冲内容永远不会 Commit 到
+	// 真实客户端 writer，客户端只会拿到空 200。ForStream 版带伪工具调用
+	// 标记软校验（tool_choice=auto 文本化工具调用的分支让出提交权）。
+	if !common.RacingClaimClientCommitForStream(c, strings.Join(bufferedLines, "\n")) {
+		return nil, common.ErrRacingSuperseded
+	}
+
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")

@@ -60,6 +60,28 @@ func (s *ChannelScheduler) UpdateTraceAffinity(userID string, kind ChannelKind) 
 	}
 }
 
+// PreferredChannelNameForUserSweep 按 kind:userID 无桶与各上下文桶扫描 Trace 亲和，
+// 返回首个命中渠道的名称。供记忆层等无模型语义的侧端点做跨端点粘性 pin：
+// 推理请求带 ContextRequirement 时按上下文桶写亲和（kind:user:ctx-200k 等），
+// 侧端点无 requirement 读不到桶键，需按桶回退扫描。尽力而为：未命中返回空。
+func (s *ChannelScheduler) PreferredChannelNameForUserSweep(userID string, kind ChannelKind) string {
+	if userID == "" {
+		return ""
+	}
+	suffixes := []string{"", ":ctx-200k", ":ctx-272k", ":ctx-400k", ":ctx-1m", ":ctx-over-1m"}
+	for _, suffix := range suffixes {
+		key := string(kind) + ":" + userID + suffix
+		route, ok := s.traceAffinity.GetPreferredRoute(key, string(kind))
+		if !ok {
+			continue
+		}
+		if upstream := s.getUpstreamByRoute(route); upstream != nil {
+			return upstream.Name
+		}
+	}
+	return ""
+}
+
 // TrackConversation 追踪对话（请求成功后调用）
 func (s *ChannelScheduler) TrackConversation(kind ChannelKind, userID, model string, channelIndex int, channelName, sessionID, lastUserMessage string, userMessageCount int, agentRole string, agentCtx *types.AgentContext) {
 	s.TrackConversationWithMessages(kind, userID, model, channelIndex, channelName, sessionID, lastUserMessage, nil, userMessageCount, agentRole, agentCtx)
@@ -379,7 +401,7 @@ func (s *ChannelScheduler) GetFederatedCandidateCount(kind ChannelKind) int {
 	for _, ch := range s.getActiveChannelsWithTrace(context.Background(), kind, "", newSelectionTrace(SelectionOptions{Kind: kind})) {
 		seen[ch.Route.Key()] = struct{}{}
 	}
-	if !s.protocolFederationEnabled(kind) {
+	if !s.protocolFederationApplicable(kind) {
 		return len(seen)
 	}
 	cfg := s.configManager.GetConfig()
@@ -559,4 +581,9 @@ func urlManagerChannelKeyOrdinal(kind ChannelKind) int {
 	default:
 		return 0
 	}
+}
+
+// GetConfigManager 返回调度器持有的配置管理器（供 failover 外壳的竞速编排读取配置快照）。
+func (s *ChannelScheduler) GetConfigManager() *config.ConfigManager {
+	return s.configManager
 }

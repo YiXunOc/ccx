@@ -796,7 +796,7 @@ func (r *SmartRouter) executeFilter(
 		// 五元组展开：模型行 × 全量 key × effort 档（已决档+相邻降档），逐行独立评分。
 		// 同名承接语义（MappedModel 判空防质量档折算误判）由 applyResolutionIdentity 保持。
 		entries = r.expandChannelCandidates(ch, upstream, executionKind, route, modelResolutions,
-			upstreamModelCapabilities, entries, costMap)
+			upstreamModelCapabilities, entries, costMap, profile.TaskClass)
 	}
 	// AFP 路由：为火山 Agent Plan 渠道填充 AFP 成本（含折扣），开启时用分组归一化
 	// 替代扁平 USD 归一化，使 GLM-5.2 ×0.25 等折扣真正影响 SavingsScore。
@@ -1294,8 +1294,10 @@ func federatedRoute(ch scheduler.ChannelInfo, requestKind string) scheduler.Chan
 
 // channelScoreEntry 渠道评分输入条目。
 type channelScoreEntry struct {
-	ChannelUID        string
-	ChannelName       string // 渠道显示名（来自 upstream.Name）
+	ChannelUID  string
+	ChannelName string // 渠道显示名（来自 upstream.Name）
+	// LatencyDegraded 延迟负反馈学习结论（渠道×模型×任务类连续慢），进 ScoringCandidate 软降权。
+	LatencyDegraded   bool
 	ChannelKind       string
 	Route             scheduler.ChannelRouteRef
 	ProtocolFidelity  string
@@ -1531,9 +1533,10 @@ func (r *SmartRouter) exactModelRuntimeViable(upstream *config.UpstreamConfig, p
 	}
 
 	deps := EndpointPolicyDeps{
-		ProfileStore:  r.profileStore,
-		ModelResolver: r.modelResolver,
-		APIKeyConfigs: config.NormalizeAPIKeyConfigsForView(*upstream),
+		ProfileStore:              r.profileStore,
+		ModelResolver:             r.modelResolver,
+		APIKeyConfigs:             config.NormalizeAPIKeyConfigsForView(*upstream),
+		ChannelMaxGroupMultiplier: upstream.MaxGroupMultiplier,
 	}
 	if r.configManager != nil {
 		deps.GetRoutingCfg = func() config.AutopilotRoutingConfig { return r.configManager.GetAutopilotRouting() }
@@ -1605,7 +1608,7 @@ func (r *SmartRouter) resolveChannelModel(
 			resolution.MappingSource = "explicit_mapping"
 			resolution.MappingReason = "matched configured model mapping"
 		} else if upstream.AutoManaged &&
-			ClassifyModelRoutingIntent(profile.ChannelKind, requestModel).AllowsSubstitution() &&
+			ClassifyModelRoutingIntent(profile.ChannelKind).AllowsSubstitution() &&
 			!r.exactModelRuntimeViable(upstream, profile, resolution.ActualModel) {
 			// AutoManaged 同名承接（无显式映射）被运行期负信号否决：
 			// 改取最佳非精确候选，与复数版 resolveChannelModels 的否决展开一致。
@@ -1633,7 +1636,7 @@ func (r *SmartRouter) resolveChannelModel(
 			// 精确命中但被运行期负信号否决：自适应意图下改取最佳非精确候选，
 			// 与复数版 resolveChannelModels 的否决展开保持一致。
 			if normalizeRoutingModelID(target.Model) == normalizeRoutingModelID(requestModel) &&
-				ClassifyModelRoutingIntent(profile.ChannelKind, requestModel).AllowsSubstitution() &&
+				ClassifyModelRoutingIntent(profile.ChannelKind).AllowsSubstitution() &&
 				!r.exactModelRuntimeViable(upstream, profile, target.Model) {
 				if substitute, ok := r.bestSubstituteModel(profile, upstream, requestModel); ok {
 					target.Model = substitute
@@ -1696,7 +1699,7 @@ func (r *SmartRouter) resolveChannelModels(
 		// 被否决的精确模型本身不再产行，让位替代模型。
 		exactVetoed := false
 		if exactModel != "" &&
-			ClassifyModelRoutingIntent(profile.ChannelKind, requestModel).AllowsSubstitution() &&
+			ClassifyModelRoutingIntent(profile.ChannelKind).AllowsSubstitution() &&
 			!r.exactModelRuntimeViable(upstream, profile, exactModel) {
 			log.Printf("[SmartRouter-ExactVeto] 渠道 %s: 精确模型 %q 被运行期负信号否决，展开替代模型行", channelUID, requestModel)
 			exactModel = ""
@@ -1704,7 +1707,7 @@ func (r *SmartRouter) resolveChannelModels(
 		}
 		// 非自适应入口禁止跨模型替代：无精确/等价命中且意图要求精确时，
 		// 交由单数版返回 Supported=false（该渠道不产生候选行）。
-		if exactModel == "" && !exactVetoed && !ClassifyModelRoutingIntent(profile.ChannelKind, requestModel).AllowsSubstitution() {
+		if exactModel == "" && !exactVetoed && !ClassifyModelRoutingIntent(profile.ChannelKind).AllowsSubstitution() {
 			return nil
 		}
 		resolutions := make([]channelModelResolution, 0, len(ranked))
@@ -1812,7 +1815,7 @@ func (r *SmartRouter) buildChannelEntry(
 	model string,
 	upstreamModelCapabilities map[string]config.UpstreamModelCapability,
 ) channelScoreEntry {
-	return r.buildChannelEntryForKey(ch, upstream, channelKind, model, upstreamModelCapabilities, nil, nil, "")
+	return r.buildChannelEntryForKey(ch, upstream, channelKind, model, upstreamModelCapabilities, nil, nil, "", "")
 }
 
 // buildChannelEntryForKey 从 ChannelInfo + UpstreamConfig 构建五元组候选行的评分输入。
@@ -1829,6 +1832,7 @@ func (r *SmartRouter) buildChannelEntryForKey(
 	keyCand *routingKeyCandidate,
 	keyProfiles map[string]*KeyEndpointProfile,
 	effort EffortLevel,
+	taskClass TaskClass,
 ) channelScoreEntry {
 	channelUID := upstream.ChannelUID
 	if channelUID == "" {
@@ -1886,7 +1890,28 @@ func (r *SmartRouter) buildChannelEntryForKey(
 	}
 	// 工具调用同款：能力测试探针/运行期负信号实测不能执行工具调用的渠道×模型，
 	// 带工具请求经工具硬约束自动规避（docs/specs/tool-call-capability.md）。
-	if learnedToolCallUnsupported(channelUID, actualModel) {
+	// 工具能力记忆按稳定路由身份存取（逻辑渠道×协议，物理 UID 重铸不失效）。
+	toolRoute := config.ToolRouteIdentity(upstream, channelKind)
+	if learnedToolCallUnsupported(toolRoute, actualModel) {
+		entry.SupportsToolCalls = false
+	}
+	// 工具调用正向白名单（两级收紧，经既有工具硬约束剔除）：
+	// 1) 渠道间排他——该协议上全局存在任一「运行期 auto 实测真实工具调用」路由时，
+	//    非白名单路由的候选行不再承接带工具请求。伪工具标记方言是开放长尾
+	//    （qwen/deepseek/glm/atc 各族 auto 下文本化），负向清单打地鼠，
+	//    白名单路由排他才是根治；该协议无任何白名单路由时 fail-open（冷启动不堵）。
+	//    按协议独立判定——messages 流量不被 responses 证据锁死，反之亦然。
+	// 2) 路由内白名单——白名单路由内只放行验证过的模型组合。
+	// 影子候选行直接携带模型（不经 resolver 过滤），必须在此收紧。
+	if routes := verifiedToolCallRoutes(channelKind); len(routes) > 0 && !routes[toolRoute] {
+		entry.SupportsToolCalls = false
+	} else if verified := verifiedToolCallModels(toolRoute); len(verified) > 0 && !verified[strings.ToLower(actualModel)] {
+		entry.SupportsToolCalls = false
+	}
+	// 协议端点学习同款收紧：已学到「渠道×模型×此执行协议端点不可用」的组合，
+	// 带工具请求同样规避——竞速影子候选行直接携带模型，不经 resolver 的
+	// probedModelsAnyEndpoint 过滤，须在候选行构建处同步收紧。
+	if learnedProtocolUnsupported(channelUID, channelKind, actualModel) {
 		entry.SupportsToolCalls = false
 	}
 	// 安全分类同款：实测无法完成 </severity> 格式分类的渠道×模型，
@@ -1894,6 +1919,10 @@ func (r *SmartRouter) buildChannelEntryForKey(
 	if learnedSeverityClassUnsupported(channelUID, actualModel) {
 		entry.SupportsSeverityClass = false
 	}
+	// 延迟负反馈学习：渠道×模型×任务类组合连续慢证据（竞速被击败/触发/首字超家族
+	// p90），软降权（calcPenalty -15），非硬排除——延迟差不是能力缺失，
+	// 快样本乐观翻转即回升（docs/specs/racing.md）。
+	entry.LatencyDegraded = learnedLatencyDegraded(channelUID, actualModel, taskClass)
 	if modelPricing != nil {
 		listCost := metrics.CalculateTokenCostUSDWithPricing(modelPricing, 1_000_000, 1_000_000, 1_000_000, 1_000_000)
 		entry.EstimatedCost = listCost
@@ -1939,7 +1968,7 @@ func (r *SmartRouter) buildChannelEntryForKey(
 			keyCfgs = config.NormalizeAPIKeyConfigsForView(*upstream)
 		}
 		for _, cfg := range keyCfgs {
-			eligibility := config.EvaluateAPIKeyMultiplierEligibility(cfg, r.currentTime())
+			eligibility := config.EvaluateAPIKeyMultiplierEligibility(cfg, upstream.MaxGroupMultiplier, r.currentTime())
 			if !eligibility.Eligible {
 				continue
 			}
@@ -2003,7 +2032,8 @@ func (r *SmartRouter) buildChannelEntryForKey(
 					stability = kp.EffectiveStabilityTier
 				}
 				entry.ScoringCandidate = ScoringCandidate{
-					ChannelUID: channelUID, QualityTier: kp.QualityTier, StabilityTier: stability,
+					LatencyDegraded: entry.LatencyDegraded,
+					ChannelUID:      channelUID, QualityTier: kp.QualityTier, StabilityTier: stability,
 					SpeedTier: kp.SpeedTier, CostTier: kp.CostTier, HealthState: kp.HealthState,
 					ProviderQualityScore: 0.5, ProviderQualityConfidence: 0.3,
 					ModelFamily: modelFamily, SavingsScore: 0.5, DomainStrengthScore: 0.5,
@@ -2038,7 +2068,8 @@ func (r *SmartRouter) buildChannelEntryForKey(
 			entry.SupportsToolCalls = entry.SupportsToolCalls || agg.SupportsToolCalls
 			entry.SupportsReasoning = entry.SupportsReasoning || agg.SupportsReasoning
 			entry.ScoringCandidate = ScoringCandidate{
-				ChannelUID: channelUID, QualityTier: agg.QualityTier, StabilityTier: agg.StabilityTier,
+				LatencyDegraded: entry.LatencyDegraded,
+				ChannelUID:      channelUID, QualityTier: agg.QualityTier, StabilityTier: agg.StabilityTier,
 				SpeedTier: agg.SpeedTier, CostTier: agg.CostTier, HealthState: agg.HealthState,
 				ProviderQualityScore: 0.5, ProviderQualityConfidence: 0.3,
 				ModelFamily: modelFamily, SavingsScore: 0.5, DomainStrengthScore: 0.5,
@@ -2061,7 +2092,8 @@ func (r *SmartRouter) buildChannelEntryForKey(
 			entry.SupportsToolCalls = entry.SupportsToolCalls || agg.SupportsToolCalls
 			entry.SupportsReasoning = entry.SupportsReasoning || agg.SupportsReasoning
 			entry.ScoringCandidate = ScoringCandidate{
-				ChannelUID: channelUID, QualityTier: agg.QualityTier, StabilityTier: agg.StabilityTier,
+				LatencyDegraded: entry.LatencyDegraded,
+				ChannelUID:      channelUID, QualityTier: agg.QualityTier, StabilityTier: agg.StabilityTier,
 				SpeedTier: agg.SpeedTier, CostTier: agg.CostTier, HealthState: agg.HealthState,
 				ProviderQualityScore: 0.5, ProviderQualityConfidence: 0.3,
 				ModelFamily: modelFamily, SavingsScore: 0.5, DomainStrengthScore: 0.5,
@@ -2073,7 +2105,8 @@ func (r *SmartRouter) buildChannelEntryForKey(
 		}
 	}
 	entry.ScoringCandidate = ScoringCandidate{
-		ChannelUID: channelUID, QualityTier: QualityTierNormal, StabilityTier: StabilityTierNormal,
+		LatencyDegraded: entry.LatencyDegraded,
+		ChannelUID:      channelUID, QualityTier: QualityTierNormal, StabilityTier: StabilityTierNormal,
 		SpeedTier: SpeedTierNormal, CostTier: CostTierNormal, HealthState: HealthStateUnknown,
 		ProviderQualityScore: 0.5, ProviderQualityConfidence: 0.3,
 		ModelFamily: modelFamily, SavingsScore: 0.5, DomainStrengthScore: 0.5,
@@ -2651,7 +2684,7 @@ func (r *SmartRouter) collectChannelEntries(profile *RequestProfile) []channelSc
 		// 五元组展开与真实路径同构（模型 × 全量 key × effort 档）；预览标记后置处理。
 		before := len(entries)
 		entries = r.expandChannelCandidates(ch, &upstream, channelKind, scheduler.ChannelRouteRef{},
-			modelResolutions, cfg.UpstreamModelCapabilities, entries, nil)
+			modelResolutions, cfg.UpstreamModelCapabilities, entries, nil, "")
 		for i := before; i < len(entries); i++ {
 			if entries[i].MappingSource == "auto_resolve" {
 				entries[i].MappingSource = "auto_resolve_preview"

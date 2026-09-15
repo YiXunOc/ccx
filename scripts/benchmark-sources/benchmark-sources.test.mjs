@@ -821,6 +821,22 @@ test('benchmark chart script carries low-sample marking logic', () => {
   assert.match(html, /tierOf/)
 })
 
+test('benchmark chart script carries log/linear x-scale switching', () => {
+  const html = renderBenchmarkChart([
+    { model: 'm', source: 'CodexRadar', effort: 'low', pass_rate: .5, quality_score: 50, mean_cost: .03, median_cost: .03 },
+    { model: 'm', source: 'CodexRadar', effort: 'high', pass_rate: .8, quality_score: 70, mean_cost: 9, median_cost: 9 },
+  ], [], null)
+  // 横轴刻度切换控件随 HTML 内联分发，对数刻度为默认档
+  assert.match(html, /id="scale-control"/)
+  assert.match(html, /data-value="log"[^>]*aria-pressed="true"/)
+  assert.match(html, /data-value="linear"[^>]*aria-pressed="false"/)
+  // 对数 1-2-5 刻度序列、零成本钳制与自适应小数标签随脚本分发
+  assert.match(html, /logTicks/)
+  assert.match(html, /niceLogFloor/)
+  assert.match(html, /costTickLabel/)
+  assert.match(html, /Math\.max\(value, xMin\)/)
+})
+
 test('dradar per-effort evidence carries each effort own cell count', () => {
   // hy4-preview 现场：最佳档是 low（1 格），max 有 6 格；
   // 展开遗漏曾把最佳档格子数写进所有档位的 taskCount

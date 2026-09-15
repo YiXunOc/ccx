@@ -160,7 +160,13 @@ func normalizeAutopilotOperation(kind scheduler.ChannelKind, operation string, c
 }
 
 func autopilotRequestUsesTools(req map[string]interface{}) bool {
-	return hasNonEmptyAutopilotFeature(req["tools"])
+	// codex 等客户端不发送明文 tools 数组（工具定义经协议内置/加密协商），
+	// 顶层 tool_choice 字段的存在即声明工具语义（与 common.BodyHasTools 同口径）。
+	if hasNonEmptyAutopilotFeature(req["tools"]) {
+		return true
+	}
+	_, hasChoice := req["tool_choice"]
+	return hasChoice
 }
 
 func autopilotRequestNeedsReasoning(req map[string]interface{}) bool {

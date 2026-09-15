@@ -93,7 +93,9 @@ type SubscriptionProfile struct {
 	ProvisionGroup string `json:"provisionGroup,omitempty"`
 	// ProvisionGroupRatio 是建 key 时经服务端校验的分组倍率。
 	ProvisionGroupRatio *float64 `json:"provisionGroupRatio,omitempty"`
-	// MaxGroupMultiplier 是允许自动建 key 与调用的最高分组倍率。
+	// MaxGroupMultiplier 记录接入时选定的初始渠道级分组倍率上限。
+	// 运行时真源是渠道级 UpstreamConfig.MaxGroupMultiplier；本字段仅作接入初始值
+	// 的记录与建 key 阈值回退，不参与调度判定。
 	MaxGroupMultiplier *float64 `json:"maxGroupMultiplier,omitempty"`
 	// ProvisionModels 建 key 时的 model_limits 白名单，空=不限制。
 	ProvisionModels []string `json:"provisionModels,omitempty"`

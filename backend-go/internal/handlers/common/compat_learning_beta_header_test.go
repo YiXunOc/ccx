@@ -191,6 +191,11 @@ func TestExtractRejectedBetaTokens(t *testing.T) {
 			want:     nil,
 		},
 		{
+			name:     "合并态证据（多 token）",
+			evidence: "rejected anthropic-beta: context-1m-2025-08-07; anthropic-beta: interleaved-thinking-2025-05-14",
+			want:     []string{"context-1m-2025-08-07", "interleaved-thinking-2025-05-14"},
+		},
+		{
 			name:     "空 Evidence",
 			evidence: "",
 			want:     nil,
@@ -198,7 +203,7 @@ func TestExtractRejectedBetaTokens(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ExtractRejectedBetaTokens(tt.evidence)
+			got := config.ExtractRejectedBetaTokens(tt.evidence)
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %v, want %v", got, tt.want)
 			}

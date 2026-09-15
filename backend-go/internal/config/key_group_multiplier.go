@@ -24,18 +24,21 @@ type MultiplierEligibility struct {
 }
 
 // EvaluateAPIKeyMultiplierEligibility 统一判断 Key 的倍率元数据是否允许参与调度。
-func EvaluateAPIKeyMultiplierEligibility(cfg APIKeyConfig, now time.Time) MultiplierEligibility {
+// channelMax 是渠道级分组倍率上限（唯一真源，来自 UpstreamConfig.MaxGroupMultiplier）：
+// nil 表示该渠道未启用闸门，Key 的倍率仅用于成本折算；非 nil 时倍率超过上限的 Key
+// 自动退出调度（over_group_limit），倍率回落后自动恢复。
+func EvaluateAPIKeyMultiplierEligibility(cfg APIKeyConfig, channelMax *float64, now time.Time) MultiplierEligibility {
 	status := normalizeMultiplierSyncStatus(cfg.MultiplierSyncStatus)
-	if cfg.GroupMultiplier == nil && cfg.MaxGroupMultiplier == nil {
+	if cfg.GroupMultiplier == nil {
 		return MultiplierEligibility{Eligible: true, Reason: MultiplierEligibilityReasonOK, Status: status}
 	}
-	if cfg.GroupMultiplier == nil || !isFiniteNonNegative(*cfg.GroupMultiplier) {
+	if !isFiniteNonNegative(*cfg.GroupMultiplier) {
 		return MultiplierEligibility{Reason: MultiplierEligibilityReasonInvalidMultiplier, Status: status}
 	}
-	if cfg.MaxGroupMultiplier == nil || !isFiniteNonNegative(*cfg.MaxGroupMultiplier) {
+	if channelMax != nil && !isFiniteNonNegative(*channelMax) {
 		return MultiplierEligibility{Reason: MultiplierEligibilityReasonInvalidMaxMultiplier, Status: status}
 	}
-	if *cfg.GroupMultiplier > *cfg.MaxGroupMultiplier {
+	if channelMax != nil && *cfg.GroupMultiplier > *channelMax {
 		return MultiplierEligibility{Reason: MultiplierEligibilityReasonOverGroupLimit, Status: status}
 	}
 
@@ -69,12 +72,8 @@ func EvaluateAPIKeyMultiplierEligibility(cfg APIKeyConfig, now time.Time) Multip
 	}
 }
 
-// IsAPIKeyConfigGroupMultiplierAllowed 兼容旧调用方，内部复用统一 evaluator。
-func IsAPIKeyConfigGroupMultiplierAllowed(cfg APIKeyConfig) bool {
-	return EvaluateAPIKeyMultiplierEligibility(cfg, time.Now()).Eligible
-}
-
-// IsAPIKeyGroupMultiplierAllowed 返回渠道中某个 Key 是否满足其成本安全约束。
+// IsAPIKeyGroupMultiplierAllowed 返回渠道中某个 Key 是否满足其成本安全约束
+// （渠道级 MaxGroupMultiplier 闸门 + new-api 同步状态）。
 // 找不到对应配置时按历史手工 Key 处理，保持现有配置的兼容行为。
 func (u *UpstreamConfig) IsAPIKeyGroupMultiplierAllowed(apiKey string) bool {
 	if u == nil {
@@ -82,7 +81,7 @@ func (u *UpstreamConfig) IsAPIKeyGroupMultiplierAllowed(apiKey string) bool {
 	}
 	for _, cfg := range u.APIKeyConfigs {
 		if cfg.Key == apiKey {
-			return EvaluateAPIKeyMultiplierEligibility(cfg, time.Now()).Eligible
+			return EvaluateAPIKeyMultiplierEligibility(cfg, u.MaxGroupMultiplier, time.Now()).Eligible
 		}
 	}
 	return true

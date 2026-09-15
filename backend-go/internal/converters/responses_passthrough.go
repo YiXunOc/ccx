@@ -68,6 +68,8 @@ func (c *ResponsesPassthroughConverter) FromProviderResponse(resp map[string]int
 					Arguments:        stringFromInterface(itemMap["arguments"]),
 					Output:           itemMap["output"],
 					EncryptedContent: stringFromInterface(itemMap["encrypted_content"]),
+
+					EncryptedFunctionArgs: stringSliceFromInterface(itemMap["encrypted_function_args"]),
 				})
 			}
 		}
@@ -94,4 +96,21 @@ func (c *ResponsesPassthroughConverter) GetProviderName() string {
 func stringFromInterface(value interface{}) string {
 	s, _ := value.(string)
 	return s
+}
+
+// stringSliceFromInterface 提取 []string 字段（Codex encrypted_function_args 等），非数组或含非字符串项时返回 nil。
+func stringSliceFromInterface(value interface{}) []string {
+	raw, _ := value.([]interface{})
+	if len(raw) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(raw))
+	for _, item := range raw {
+		str, ok := item.(string)
+		if !ok {
+			return nil
+		}
+		values = append(values, str)
+	}
+	return values
 }

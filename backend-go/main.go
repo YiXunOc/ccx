@@ -26,6 +26,7 @@ import (
 	"github.com/BenedictKing/ccx/internal/eventbus"
 	"github.com/BenedictKing/ccx/internal/guardrails"
 	"github.com/BenedictKing/ccx/internal/handlers"
+	"github.com/BenedictKing/ccx/internal/handlers/alpha"
 	channelsv2 "github.com/BenedictKing/ccx/internal/handlers/channels"
 	"github.com/BenedictKing/ccx/internal/handlers/chat"
 	"github.com/BenedictKing/ccx/internal/handlers/common"
@@ -42,6 +43,7 @@ import (
 	"github.com/BenedictKing/ccx/internal/middleware"
 	"github.com/BenedictKing/ccx/internal/presetstore"
 	"github.com/BenedictKing/ccx/internal/quota"
+	"github.com/BenedictKing/ccx/internal/racing"
 	"github.com/BenedictKing/ccx/internal/ratelimit"
 	"github.com/BenedictKing/ccx/internal/scheduler"
 	"github.com/BenedictKing/ccx/internal/session"
@@ -678,6 +680,8 @@ func main() {
 			} else {
 				autopilotManager = mgr
 				autopilotDB = autopilotStore.DB() // Phase B.1: 复用 SQLite 连接
+				// 共享 ProfileStore：能力测试的探测范围对齐（画像 protocolModels 优先于内置通用清单）
+				autopilot.SetSharedProfileStore(autopilotStore)
 
 				// Phase 2: 创建 TraceStore（内存环形 + 可选 SQLite 落盘）
 				traceStore, tsErr := autopilot.NewTraceStoreWithDB(autopilotStore.DB())
@@ -1738,6 +1742,37 @@ func main() {
 			})
 		}
 
+		// 竞速（影子请求）配置 API + 编排依赖注入。
+		// 候选缓存挂在 ABTestSampler 的 SmartRouter 排名回调上；采样器未初始化时
+		// 竞速仅走调度器路由级回退。
+		var racingCandidateProvider func(model, channelKind string) []autopilot.RoutingCandidate
+		if sampler := autopilotManager.ABTestSampler(); sampler != nil {
+			cache := sampler.CandidateCache()
+			racingCandidateProvider = cache.Get
+		}
+		common.SetRacingHub(&common.RacingHub{
+			Registry:          racing.NewRegistry(),
+			Sem:               racing.NewSemaphore(racing.MaxConcurrentShadows()),
+			CandidateProvider: racingCandidateProvider,
+		})
+		apiGroup.GET("/racing/config", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"enabled": cfgManager.GetRacingEnabled()})
+		})
+		apiGroup.PUT("/racing/config", func(c *gin.Context) {
+			var req struct {
+				Enabled *bool `json:"enabled"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求体，需提供 enabled 布尔值"})
+				return
+			}
+			if err := cfgManager.SetRacingEnabled(*req.Enabled); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "保存竞速配置失败"})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"enabled": *req.Enabled})
+		})
+
 		// 熔断器运行时设置
 		apiGroup.GET("/settings/circuit-breaker", handlers.GetCircuitBreaker(messagesMetricsManager.GetCircuitBreakerConfig, envCfg))
 		apiGroup.PUT("/settings/circuit-breaker", handlers.SetCircuitBreaker(cfgManager))
@@ -1813,6 +1848,12 @@ func main() {
 	}
 	r.POST("/v1/responses/compact", compactWithTemplates)
 	r.POST("/:routePrefix/v1/responses/compact", compactWithTemplates)
+
+	// 代理端点 - Codex 记忆层数据面（history/notes 透传，粘 Responses 渠道池）
+	// 路径格式：/v1/alpha/history/v2/* 或 /v1/alpha/notes/v2/*
+	alphaHandler := alpha.Handler(envCfg, cfgManager, channelScheduler)
+	r.POST("/v1/alpha/*rest", alphaHandler)
+	r.POST("/:routePrefix/v1/alpha/*rest", alphaHandler)
 
 	// 代理端点 - Gemini API (原生协议)
 	// 使用通配符捕获 model:action 格式，如 gemini-pro:generateContent

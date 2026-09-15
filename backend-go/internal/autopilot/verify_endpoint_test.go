@@ -423,6 +423,61 @@ func TestVerifyChannelKeyFailureClassification(t *testing.T) {
 	})
 }
 
+func TestVerifyChannelKeyForbiddenRecheck(t *testing.T) {
+	isModelsList := func(r *http.Request) bool {
+		return r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/v1/models")
+	}
+
+	t.Run("403 但模型列表 200 时改判通过", func(t *testing.T) {
+		// new-api 系对无权限/无可用渠道的占位模型返回 403，但同 key 拉 /v1/models 正常
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isModelsList(r) {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer srv.Close()
+		upstream := config.UpstreamConfig{BaseURL: srv.URL, BaseURLs: []string{srv.URL}}
+		if err := verifyChannelKey(t.Context(), "chat", upstream, "sk-routex"); err != nil {
+			t.Fatalf("推理探针 403 但模型列表鉴权通过时应放行: %v", err)
+		}
+	})
+
+	t.Run("403 且模型列表仍 403 时维持鉴权失败", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer srv.Close()
+		upstream := config.UpstreamConfig{BaseURL: srv.URL, BaseURLs: []string{srv.URL}}
+		err := verifyChannelKey(t.Context(), "chat", upstream, "sk-bad")
+		var kvErr *KeyVerifyError
+		if !errors.As(err, &kvErr) || !kvErr.AuthFailed {
+			t.Fatalf("复核仍 403 时应维持 AuthFailed: %+v", kvErr)
+		}
+	})
+
+	t.Run("401 是明确未认证不触发复核", func(t *testing.T) {
+		var modelsProbed bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isModelsList(r) {
+				modelsProbed = true
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer srv.Close()
+		upstream := config.UpstreamConfig{BaseURL: srv.URL, BaseURLs: []string{srv.URL}}
+		err := verifyChannelKey(t.Context(), "chat", upstream, "sk-bad")
+		var kvErr *KeyVerifyError
+		if !errors.As(err, &kvErr) || !kvErr.AuthFailed {
+			t.Fatalf("401 应维持 AuthFailed: %+v", kvErr)
+		}
+		if modelsProbed {
+			t.Fatal("401 不应触发模型列表复核")
+		}
+	})
+}
+
 func TestVerifyClaudeEndpointNetworkError(t *testing.T) {
 	// 指向一个不可达地址，期望 Err 非空、OK=false
 	res := VerifyClaudeEndpoint(context.Background(), "http://127.0.0.1:1/anthropic", "sk-test", "")

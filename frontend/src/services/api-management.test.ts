@@ -12,9 +12,9 @@ function ok(body: unknown = {}) {
 describe('management api paths and payloads', () => {
   beforeEach(() => { setActivePinia(createPinia()); fetchMock.mockReset(); fetchMock.mockImplementation(() => ok()) })
 
-  it('patches key multiplier using stable identities and preserves null/zero', async () => {
-    await new ApiService().patchKeyMultiplier('messages', 'channel/1', 'key 1', { groupMultiplier: 0, maxGroupMultiplier: null })
-    expect(fetchMock).toHaveBeenCalledWith('/api/messages/channels/channel%2F1/keys/key%201/multiplier', expect.objectContaining({ method: 'PATCH', body: '{"groupMultiplier":0,"maxGroupMultiplier":null}' }))
+  it('patches key multiplier using stable identities and preserves zero', async () => {
+    await new ApiService().patchKeyMultiplier('messages', 'channel/1', 'key 1', { groupMultiplier: 0 })
+    expect(fetchMock).toHaveBeenCalledWith('/api/messages/channels/channel%2F1/keys/key%201/multiplier', expect.objectContaining({ method: 'PATCH', body: '{"groupMultiplier":0}' }))
   })
 
   it('patches key consumption policy as a tri-state field', async () => {

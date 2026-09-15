@@ -23,6 +23,22 @@
       />
     </div>
 
+    <!-- new-api 通用接入：不额外弹窗，表单体就地切换为订阅接入表单（与订阅中心同一表单）；
+         经顶部服务商下拉或 Esc 退回常规快速添加 -->
+    <template v-if="isNewApiMode">
+      <NewApiSubscriptionForm
+        ref="newApiFormRef"
+        auto-provision
+        :default-channel-kind="channelType"
+        @created="onNewApiCreated"
+        @error="onNewApiError"
+      />
+      <v-alert v-if="submitError" color="error" variant="tonal" density="comfortable" icon="mdi-alert-circle-outline">
+        {{ submitError }}
+      </v-alert>
+    </template>
+
+    <template v-else>
     <!-- Provider 说明 -->
     <v-alert
       v-if="isProviderMode && selectedProvider?.description"
@@ -198,13 +214,7 @@
       </v-card-text>
     </v-card>
 
-    <!-- new-api 通用接入弹窗（与订阅中心同一流程） -->
-    <NewApiQuickAddDialog
-      ref="newApiDialogRef"
-      :channel-kind="channelType"
-      @created="onNewApiCreated"
-      @error="onNewApiError"
-    />
+    </template>
   </div>
 </template>
 
@@ -220,7 +230,7 @@ import {
 } from '../services/autopilot-api'
 import type { ProviderTemplate } from '../services/autopilot-api'
 import type { NewApiProvisionResponse } from '../services/api-types'
-import NewApiQuickAddDialog from './subscriptions/NewApiQuickAddDialog.vue'
+import NewApiSubscriptionForm from './NewApiSubscriptionForm.vue'
 import {
   buildQuickAddChannelName,
   findExistingQuickAddChannel,
@@ -285,7 +295,7 @@ const availableProviders = computed(() => {
 // 默认选中的服务商：当前渠道类型下排序后的第一个（即火山）；无可用模板时回退自定义模式
 const defaultProviderId = computed(() => availableProviders.value[0]?.providerId ?? '')
 
-// new-api 通用接入是独立流程（与订阅中心一致的两步接入弹窗），选中后不占用 provider 状态，直接打开弹窗
+// new-api 通用接入是独立流程（与订阅中心一致的两步接入表单）：选中后表单体就地切换，不占用 provider 模板状态
 const NEW_API_PROVIDER_VALUE = '__new_api__'
 
 // 选择项：赞助商/已知 provider 在前，其次 new-api 通用接入，「自定义」（value=''，手填地址）固定在最末
@@ -302,20 +312,13 @@ const effectiveProviderId = computed(() => providerId.value || inferredProviderI
 const displayProviderId = computed({
   get: () => effectiveProviderId.value,
   set: value => {
-    if (value === NEW_API_PROVIDER_VALUE) {
-      openNewApiDialog()
-      return
-    }
     providerId.value = value ?? ''
   }
 })
 
-// ---- new-api 通用接入弹窗 ----
-const newApiDialogRef = ref<InstanceType<typeof NewApiQuickAddDialog> | null>(null)
-
-function openNewApiDialog() {
-  newApiDialogRef.value?.openDialog()
-}
+// ---- new-api 通用接入（内嵌） ----
+const newApiFormRef = ref<InstanceType<typeof NewApiSubscriptionForm> | null>(null)
+const isNewApiMode = computed(() => providerId.value === NEW_API_PROVIDER_VALUE)
 
 function onNewApiCreated(result: NewApiProvisionResponse) {
   emit('added', result.channelIndex)
@@ -323,6 +326,14 @@ function onNewApiCreated(result: NewApiProvisionResponse) {
 
 function onNewApiError(message: string) {
   submitError.value = message
+}
+
+/** Esc 栈顶语义：new-api 模式下先退回默认服务商；返回是否消费了本次 Esc */
+function exitNewApiMode(): boolean {
+  if (!isNewApiMode.value) return false
+  providerId.value = defaultProviderId.value
+  submitError.value = ''
+  return true
 }
 const selectedProvider = computed(() => availableProviders.value.find(p => p.providerId === effectiveProviderId.value))
 
@@ -432,6 +443,11 @@ async function discoverCustomRoutes(baseUrls: string[], apiKeys: string[]) {
 }
 
 async function handleSubmit() {
+  // new-api 模式：主操作由内嵌表单按当前步骤决定（未验证→验证，已验证→接入）
+  if (isNewApiMode.value) {
+    newApiFormRef.value?.requestPrimaryAction()
+    return
+  }
   if (!isFormValid.value || submitting.value) return
 
   submitting.value = true
@@ -497,7 +513,7 @@ onMounted(() => {
 })
 
 // 暴露给父组件
-defineExpose({ handleSubmit, resetForm, isFormValid, submitting })
+defineExpose({ handleSubmit, resetForm, isFormValid, submitting, isNewApiMode, exitNewApiMode })
 </script>
 
 <style scoped>

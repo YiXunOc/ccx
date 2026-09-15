@@ -274,6 +274,28 @@ func (m *MetricsManager) RecordRequestCompression(baseURL, apiKey, serviceType s
 	record.CompressionFallbackReason = stats.FallbackReason
 }
 
+// RecordRequestCorrelationID 把最终用户请求关联 ID 附加到 pending 记录，
+// 随 RecordRequestFinalize* 写入 SQLite（v9 correlation_id 列）。
+// 同一用户请求的主/影子/failover 尝试共享该 ID，聚合侧据此得出
+// 「真实用户请求数」（COUNT DISTINCT）。找不到 pending 记录时静默跳过（fail-open）。
+func (m *MetricsManager) RecordRequestCorrelationID(baseURL, apiKey, serviceType string, requestID uint64, correlationID string) {
+	if correlationID == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	metrics := m.findPendingRequestMetricsLocked(baseURL, apiKey, serviceType, requestID)
+	if metrics == nil {
+		return
+	}
+	idx, ok := metrics.pendingHistoryIdx[requestID]
+	if !ok || idx < 0 || idx >= len(metrics.requestHistory) {
+		return
+	}
+	metrics.requestHistory[idx].CorrelationID = correlationID
+}
+
 // calculateRecordListCost 计算一次请求的标价成本（USD），用全局默认汇率换算 CNY 类标价。
 func (m *MetricsManager) calculateRecordListCost(model string, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens int64) (float64, bool) {
 	if model == "" || model == "unknown" {
@@ -371,6 +393,7 @@ func (m *MetricsManager) RecordRequestFinalizeOutcome(baseURL, apiKey, serviceTy
 				APIType:                   m.apiType,
 				Model:                     record.Model,
 				ProxyKeyMask:              record.ProxyKeyMask,
+				CorrelationID:             record.CorrelationID,
 				KeyUID:                    record.KeyUID,
 				SubscriptionUID:           record.SubscriptionUID,
 				ExchangeSnapshotVersion:   record.ExchangeSnapshotVersion,
@@ -414,6 +437,7 @@ func (m *MetricsManager) RecordRequestFinalizeOutcome(baseURL, apiKey, serviceTy
 			APIType:             m.apiType,
 			Model:               record.Model,
 			ProxyKeyMask:        record.ProxyKeyMask,
+			CorrelationID:       record.CorrelationID,
 			ConsumptionPolicy:   record.ConsumptionPolicy,
 			// 压缩统计与成败无关（压缩发生在转发前），失败记录同样保留观测
 			Compressed:                record.Compressed,

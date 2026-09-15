@@ -147,7 +147,15 @@ func (p *ResponsesProvider) buildProviderRequestBody(c *gin.Context, requestPath
 			stripImageGenerationFromTools(reqMap)
 		}
 		if model, ok := reqMap["model"].(string); ok {
-			reqMap["model"] = config.RedirectModel(model, upstream)
+			// 模型重定向：命中映射（实际换模型）时剔除 Codex 预算提醒，未命中不动
+			// （数字按客户端认知窗口核算，模型未变则准确，统一语义见 client_budget_reminders.go）
+			redirectedModel, _ := config.RedirectModelWithMatch(model, upstream)
+			reqMap["model"] = redirectedModel
+			if redirectedModel != model {
+				if stripped, changed := StripCodexBudgetRemindersFromResponsesInput(reqMap["input"]); changed {
+					reqMap["input"] = stripped
+				}
+			}
 			if effort := config.ResolveReasoningEffort(model, upstream); effort != "" {
 				config.ApplyReasoningParamStyle(reqMap, upstream.ReasoningParamStyle, effort)
 			} else if reasoning, hasReasoning := reqMap["reasoning"]; hasReasoning {
@@ -190,6 +198,11 @@ func (p *ResponsesProvider) buildProviderRequestBody(c *gin.Context, requestPath
 
 		originalModel := responsesReq.Model
 		responsesReq.Model = config.RedirectModel(responsesReq.Model, upstream)
+		// 跨协议转换必然改变模型语义，Codex 预算提醒数字失真，无条件剔除
+		// （统一语义见 client_budget_reminders.go）
+		if stripped, changed := StripCodexBudgetRemindersFromResponsesInput(responsesReq.Input); changed {
+			responsesReq.Input = stripped
+		}
 		// codexToolCompat applies to Responses -> Chat/Claude/Gemini conversion.
 		// codexNativeToolPassthrough is handled only in the Responses passthrough branch above.
 		if responsesReq.TransformerMetadata == nil {

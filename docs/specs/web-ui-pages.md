@@ -154,7 +154,7 @@ i18n key 依次为 `app.tabs.{channels,images,vectors,conversations,healthCenter
 │ ┌ 可拖拽行(点击行展开图表;行背景=150 根成功率渐变波形柱)───────┐│
 │ │ ⠿ 1 │●active+健康点│ **渠道名**(点击编辑·备注tooltip)〔促销🚀〕││
 │ │     │ 〔协议胶囊〕〔来源/池标签〕〔用户标签〕[eye-off] 描述  ⇕ ││
-│ │     │ ✔98.2% · 1.2k 请求 · 缓存 67%(tooltip 三组统计)         ││
+│ │     │ ✔98.2% · 600 请求/1.2k 次尝试 · 缓存 67%(tooltip+口径注)││
 │ │     │ RPM n/TPM n │ ⏱长延迟 chip │ 🔑3·暂停1·拉黑1            ││
 │ │     │            [⏸/▶] [🕘日志] [⋮更多]     ← 点击展开:        ││
 │ │     │   ┌ KeyTrendChart(异步,整行宽) ────────────┐            ││
@@ -169,6 +169,9 @@ i18n key 依次为 `app.tabs.{channels,images,vectors,conversations,healthCenter
   行「更多」菜单: 编辑✎ / 复制配置 / 能力测试(LLLM 类) / 抢优先级🚀 /
   置顶⤒ 置底⤓ / 恢复(重置指标) / 移至备用池 / 密钥统计 / 删除🗑(至少保留一个)
   整页空态(无渠道): 圆形头像+🚀 + 暂无渠道配置 + [添加第一个渠道]
+  卡片请求数为 15m 窗口统计: 用户请求数(userRequestCount)≠上游尝试数(requestCount)
+    时显示「X 请求 / Y 次尝试」双口径(一致时只显示尝试数); tooltip 注明口径为
+    上游尝试次数(竞速败出已豁免计数)
 ```
 
 ## 3. ConversationsView（`/conversations`）

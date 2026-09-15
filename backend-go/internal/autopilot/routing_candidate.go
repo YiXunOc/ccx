@@ -243,6 +243,7 @@ func (r *SmartRouter) expandChannelCandidates(
 	upstreamModelCapabilities map[string]config.UpstreamModelCapability,
 	out []channelScoreEntry,
 	costMap map[string]float64,
+	taskClass TaskClass,
 ) []channelScoreEntry {
 	if len(resolutions) == 0 {
 		return out
@@ -269,7 +270,7 @@ func (r *SmartRouter) expandChannelCandidates(
 		if len(keys) == 0 {
 			// fail-open：渠道无可用 key 信息时保持单行无 key 维，不因 key 维丢失渠道。
 			entry := r.buildChannelEntryForKey(ch, upstream, executionKind, res.ActualModel,
-				upstreamModelCapabilities, nil, keyProfiles, efforts[0])
+				upstreamModelCapabilities, nil, keyProfiles, efforts[0], taskClass)
 			applyResolutionIdentity(&entry, channelUID, executionKind, res, "", "", "", efforts[0], effortDecided)
 			entry.Route = route
 			entry.ProtocolFidelity = ch.ProtocolFidelity
@@ -292,7 +293,7 @@ func (r *SmartRouter) expandChannelCandidates(
 					break
 				}
 				entry := r.buildChannelEntryForKey(ch, upstream, executionKind, res.ActualModel,
-					upstreamModelCapabilities, &key, keyProfiles, effort)
+					upstreamModelCapabilities, &key, keyProfiles, effort, taskClass)
 				applyResolutionIdentity(&entry, channelUID, executionKind, res, key.KeyIdentity, key.KeyHash, key.QuotaGroup, effort, effortDecided)
 				entry.Route = route
 				entry.ProtocolFidelity = ch.ProtocolFidelity

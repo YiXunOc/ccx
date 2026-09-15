@@ -892,6 +892,117 @@ func TestTryUpstreamWithAllKeysMappedModelSurvivesSystemNormalization(t *testing
 	}
 }
 
+// TestTryUpstreamWithAllKeysToolWhitelistConflictPassthrough 白名单终审放弃 override 后
+// target 已置 nil，后续 effort 决策记录不得再解引用它（64e366de 引入的 nil deref 回归：
+// 终审冲突路径此前从未被走到，messages 流量首次踩中即整进程 SIGSEGV）。
+func TestTryUpstreamWithAllKeysToolWhitelistConflictPassthrough(t *testing.T) {
+	restore := config.SwapSharedChannelCompatCacheForTest(config.NewChannelCompatCache())
+	defer restore()
+
+	gin.SetMode(gin.TestMode)
+
+	upstreamRequests := make(chan map[string]interface{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		upstreamRequests <- request
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	cfgManager, channelScheduler, messagesMetrics, cleanup := newTestFailoverDependencies(t, config.UpstreamConfig{
+		Name:        "tool-whitelist-conflict-test",
+		ChannelUID:  "ch-tool-wl-conflict",
+		BaseURL:     server.URL,
+		APIKeys:     []string{"sk-tool-wl-conflict"},
+		Status:      "active",
+		ServiceType: "openai",
+		AutoManaged: true,
+	})
+	defer cleanup()
+
+	cfg := cfgManager.GetConfig()
+	upstream := &cfg.Upstream[0]
+
+	// 播种白名单：本路由存在运行期验证组合（kimi-k3），override 目标 glm-5.2 不在其中
+	// → 终审冲突，放弃 override 透传原始模型。executionKind 随渠道转换可能是
+	// messages 或 chat，两种身份都播（查询侧集合为空会 fail-open，模型断言会
+	// 立即暴露播种与实际查询 kind 不一致）。
+	for _, kind := range []string{"messages", "chat"} {
+		routeIdentity := config.ToolRouteIdentity(upstream, kind)
+		if routeIdentity == "" {
+			t.Fatal("route identity should not be empty")
+		}
+		config.SharedChannelCompatCache().Record(routeIdentity, "kh_test", "kimi-k3",
+			config.TraitVerifiedToolCalls, true, config.CompatSourceRuntimeSignal, "test seed")
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	originalBody := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"get_time","description":"t","input_schema":{"type":"object"}}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(originalBody))
+
+	policy := &autopilot.EndpointAttemptPolicy{
+		ResolvedTargetForBinding: func(channelUID, baseURL, apiKey string) (*autopilot.ResolvedRouteTarget, string) {
+			return &autopilot.ResolvedRouteTarget{Model: "glm-5.2"}, ""
+		},
+	}
+
+	handled, successKey, _, failoverErr, _, lastErr := TryUpstreamWithAllKeys(
+		c,
+		config.NewEnvConfig(),
+		cfgManager,
+		channelScheduler,
+		scheduler.ChannelKindMessages,
+		"Messages",
+		messagesMetrics,
+		upstream,
+		[]warmup.URLLatencyResult{{URL: server.URL, OriginalIdx: 0}},
+		originalBody,
+		nil,
+		false,
+		func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+			return cfgManager.GetNextAPIKey(upstream, failedKeys, "Messages")
+		},
+		func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+			return http.NewRequestWithContext(c.Request.Context(), http.MethodPost, upstreamCopy.BaseURL,
+				bytes.NewReader(GetEffectiveRequestBody(c, nil)))
+		},
+		func(string) {},
+		nil,
+		nil,
+		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string, actualRequestBody []byte) (*types.Usage, error) {
+			_ = resp.Body.Close()
+			return nil, nil
+		},
+		"claude-opus-4-8",
+		"",
+		0,
+		channelScheduler.GetChannelLogStore(scheduler.ChannelKindMessages),
+		WithEndpointAttemptPolicy(policy),
+	)
+
+	if !handled || successKey != "sk-tool-wl-conflict" || failoverErr != nil || lastErr != nil {
+		t.Fatalf("unexpected failover result: handled=%v key=%q failoverErr=%v lastErr=%v", handled, successKey, failoverErr, lastErr)
+	}
+
+	gotRequest := <-upstreamRequests
+	if gotRequest["model"] != "claude-opus-4-8" {
+		t.Fatalf("upstream request model = %v, want claude-opus-4-8（白名单冲突应放弃 override 透传）", gotRequest["model"])
+	}
+	if reason, _ := c.Get("mappingFailReason"); reason != "tool_whitelist_conflict" {
+		t.Fatalf("mappingFailReason = %v, want tool_whitelist_conflict", reason)
+	}
+	if src, _ := c.Get("effortDecisionSource"); src != "passthrough" {
+		t.Fatalf("effortDecisionSource = %v, want passthrough", src)
+	}
+}
+
 // TestTryUpstreamWithAllKeysLogsMappingFailReason 自动映射未命中 fail-open 透传时，
 // 未命中原因必须落到 channel log（mappingFailReason）且不设置映射回显头。
 func TestTryUpstreamWithAllKeysLogsMappingFailReason(t *testing.T) {

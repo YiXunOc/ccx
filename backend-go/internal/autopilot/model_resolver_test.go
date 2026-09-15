@@ -1645,3 +1645,22 @@ func TestBuildRankedCandidates_CodingEvidenceAnchor(t *testing.T) {
 		}
 	}
 }
+
+// 回归（生产 2026-09-08 20:34 panic）：frontier 失败 + 收益帽带过滤清空列表时
+// ranked[0] 越界。防御：band 清空回退全量；全量空回退请求模型（fail-open 透传）。
+func TestRankEligibleModels_BandFilterEmptyFallback(t *testing.T) {
+	eligible := []ModelProfile{
+		makeModelProfile("m-premium", ModelFamilyOpenAI, QualityTierPremium, 200000,
+			true, true, true, true, 50),
+	}
+	// cap=normal 会把 premium 全部过滤出带外：不得 panic，回退全量
+	best := rankTestModels(eligible, "claude-sonnet-5", CapabilityFloor{QualityBenefitCap: QualityTierNormal})
+	if best.ModelID != "m-premium" {
+		t.Fatalf("band 清空应回退全量, got %s", best.ModelID)
+	}
+	// 空 eligible：回退请求模型原样
+	best = rankTestModels(nil, "claude-sonnet-5")
+	if best.ModelID != "claude-sonnet-5" {
+		t.Fatalf("空列表应回退请求模型, got %s", best.ModelID)
+	}
+}

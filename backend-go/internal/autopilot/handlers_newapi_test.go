@@ -673,9 +673,13 @@ func TestHandleNewApiProvision_AutoCreatesOnlyEligibleGroupKeys(t *testing.T) {
 	if len(cfg.Upstream) != 1 || len(cfg.Upstream[0].APIKeys) != 2 || len(cfg.Upstream[0].APIKeyConfigs) != 2 {
 		t.Fatalf("渠道未绑定全部合格分组 key: %+v", cfg.Upstream)
 	}
+	channelMax := cfg.Upstream[0].MaxGroupMultiplier
+	if channelMax == nil || *channelMax != limit {
+		t.Fatalf("渠道未持久化接入阈值作为渠道级分组倍率上限: %+v", channelMax)
+	}
 	for _, keyConfig := range cfg.Upstream[0].APIKeyConfigs {
-		if keyConfig.QuotaGroup == "premium" || keyConfig.GroupMultiplier == nil || keyConfig.MaxGroupMultiplier == nil || *keyConfig.GroupMultiplier > *keyConfig.MaxGroupMultiplier {
-			t.Fatalf("渠道包含超限或不受保护的 key 配置: %+v", keyConfig)
+		if keyConfig.QuotaGroup == "premium" || keyConfig.GroupMultiplier == nil || keyConfig.MaxGroupMultiplier != nil || *keyConfig.GroupMultiplier > *channelMax {
+			t.Fatalf("渠道包含超限或残留 key 级上限的 key 配置: %+v", keyConfig)
 		}
 	}
 }
@@ -885,7 +889,8 @@ func TestHandleNewApiProvision_ReuseExistingKey_Succeeds(t *testing.T) {
 	}
 }
 
-func TestHandleNewApiProvision_ExistingKeyInDifferentGroupReturnsConflict(t *testing.T) {
+func TestHandleNewApiProvision_ExistingKeyInDifferentGroupSuffixesNewKey(t *testing.T) {
+	// 站点上已存在同名但分组不同的 key：加后缀避让新建，而不是报 409 阻断接入。
 	site := mockNewApiSiteWithGroups(
 		t,
 		defaultNewApiProvisionKeyNameForGroup("default"),
@@ -912,11 +917,15 @@ func TestHandleNewApiProvision_ExistingKeyInDifferentGroupReturnsConflict(t *tes
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusConflict {
-		t.Fatalf("期望 409, got %d, body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("期望 201, got %d, body=%s", w.Code, w.Body.String())
 	}
-	if store.Get("sub-group-mismatch") != nil || len(cfgManager.GetConfig().Upstream) != 0 {
-		t.Fatal("分组冲突不得创建订阅或渠道")
+	profile := store.Get("sub-group-mismatch")
+	if profile == nil {
+		t.Fatal("避让成功后应创建订阅")
+	}
+	if len(profile.ProvisionedKeys) != 1 || profile.ProvisionedKeys[0].Name == defaultNewApiProvisionKeyNameForGroup("default") {
+		t.Fatalf("新 key 应带避让后缀: %+v", profile.ProvisionedKeys)
 	}
 }
 

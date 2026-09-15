@@ -270,12 +270,12 @@ describe('useDisabledApiKeys', () => {
     }
     const { state } = createOptions({ disableGroupModel }, form)
 
-    const result = await state.disableGroupModel(activeKey, ' model-x ', 'manual')
+    const result = await state.disableGroupModel(activeKey, ' model-x ')
 
-    expect(disableGroupModel).toHaveBeenCalledWith('messages', 3, activeKey, 'model-x', 'manual')
+    expect(disableGroupModel).toHaveBeenCalledWith('messages', 3, activeKey, 'model-x')
     expect(result?.affectedKeyCount).toBe(2)
     expect(state.visibleDisabledGroupModels.value).toEqual([
-      expect.objectContaining({ quotaGroup: 'coding', key: activeKey, model: 'model-x', note: 'manual' }),
+      expect.objectContaining({ quotaGroup: 'coding', key: activeKey, model: 'model-x' }),
     ])
   })
 

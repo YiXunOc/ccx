@@ -74,3 +74,24 @@ func TestBuildChannelView_RateLimitDefaults(t *testing.T) {
 		t.Errorf("expected rateLimitRpm=0 when unset, got %v", v)
 	}
 }
+
+func TestBuildChannelViewExposesBillingAndGroupMultiplierFields(t *testing.T) {
+	ratio, limit := 0.5, 1.25
+	up := config.UpstreamConfig{
+		Name:               "ch",
+		CostMultiplier:     &ratio,
+		MaxGroupMultiplier: &limit,
+	}
+	view := BuildChannelView(up, 0)
+	if view["costMultiplier"] != &ratio {
+		t.Fatalf("渠道视图应回传 costMultiplier，got %v", view["costMultiplier"])
+	}
+	if view["maxGroupMultiplier"] != &limit {
+		t.Fatalf("渠道视图应回传 maxGroupMultiplier，got %v", view["maxGroupMultiplier"])
+	}
+	for _, key := range []string{"channelPaymentCurrency", "channelPaymentAmount", "channelCreditCurrency", "channelCreditAmount"} {
+		if _, ok := view[key]; !ok {
+			t.Fatalf("渠道视图应包含计费字段 %s", key)
+		}
+	}
+}

@@ -11,6 +11,7 @@
 | [logical-channel.md](./logical-channel.md) | 同站多协议合一 | 数据模型、归组逻辑、CRUD、Dashboard、删除原子性 |
 | [new-api-integration.md](./new-api-integration.md) | New-API 多账号集成 | 账号/Key/凭证模型、verify/provision、渠道纳入调度 |
 | [healthcheck.md](./healthcheck.md) | 火山 Plan 健康探针 | L1/L2 探针、动态频率、稀疏模型、恢复、凭证回填 |
+| [racing.md](./racing.md) | 竞速模式（影子请求） | 策略表、阈值注册表、五元组候选、提交闸门、败者治理、配置面 |
 | [channel-data-model-v2.md](./channel-data-model-v2.md) | 渠道粒度重构 | Channel→Key→Endpoint→Model、能力/凭证边界、new-api 分组共享、三步迁移 |
 | [public-key-routing.md](./public-key-routing.md) | 公开与临时 Key 优先消耗 | Key 级零成本、机会性消耗策略、FastDecay 回退、API/UI 与迁移 |
 | [web-ui-dialogs.md](./web-ui-dialogs.md) | Web 管理界面 | 所有对话框/弹窗布局、交互、状态流转、跳转关系 |
@@ -75,6 +76,7 @@ Channels   (Claude/OpenAI/Gemini/...)
 | new-api-integration.md | ✅ 完成 | 覆盖数据模型、接口、同步、边界、待补充项详解 |
 | public-key-routing.md | ✅ 完成 | Key 级零成本与机会性优先消耗已落地，前后端已配套 |
 | healthcheck.md | ✅ 完成 | 覆盖 L1/L2、稀疏探针、恢复、凭证回填、待补充项详解 |
+| racing.md | ✅ 完成 | 覆盖策略自动搭配、阈值、候选、闸门裁决、败者治理、前后端接线 |
 | channel-data-model-v2.md | ✅ 完成 | 覆盖 Channel→Key→Endpoint→Model 模型、Phase 2/3 落地状态、渠道级计费/指纹机制 |
 | web-ui-dialogs.md | ✅ 完成 | 覆盖所有对话框布局、交互、状态流转、跳转关系 |
 | web-ui-pages.md | ✅ 完成 | 覆盖 8 个 View、导航 IA、全局区块显隐、ego-browser 实测、IA 问题清单 |

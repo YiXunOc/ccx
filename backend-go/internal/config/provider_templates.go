@@ -144,11 +144,13 @@ var builtinProviderTemplates = []ProviderTemplate{
 			{
 				ChannelKind: "responses",
 				ServiceType: "responses",
-				Description: "OpenAI Responses 原生入口（支持 deepseek-v4-flash 与 deepseek-v4-pro）",
+				Description: "OpenAI Responses 原生入口（支持 deepseek-flash、deepseek-v4.1-flash、deepseek-v4-flash、deepseek-v4-pro 与 deepseek-v4-flash-vision-exp）",
 				Candidates:  deepseekResponsesCandidates(),
 				// 上游对不支持的模型返回 400 而非忽略，因此在渠道层就限定为正向白名单：
 				// 未知新模型不会被误放进该端点；确认上游支持后再追加白名单。
-				SupportedModels: []string{"deepseek-v4-flash", "deepseek-v4-pro"},
+				// V4.1 Flash（deepseek-flash）官方明确支持 Chat Completions / Messages / Responses 三协议
+				// （https://api-docs.deepseek.com/quick_start/pricing）。
+				SupportedModels: []string{"deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"},
 			},
 		},
 	},

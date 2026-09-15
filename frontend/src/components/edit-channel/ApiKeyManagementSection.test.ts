@@ -59,6 +59,11 @@ const listItemStub = defineComponent({
   emits: ['click'],
   template: '<div v-bind="$attrs" @click="$emit(\'click\')"><slot name="prepend" /><slot /><slot name="append" /></div>',
 })
+const comboboxStub = defineComponent({
+  props: ['modelValue', 'items', 'label'],
+  emits: ['update:modelValue'],
+  template: '<div><input class="combobox-stub-input" :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)" /></div>',
+})
 
 const mountSection = (props: Record<string, unknown> = {}) => mount(ApiKeyManagementSection, {
   props: {
@@ -81,7 +86,10 @@ const mountSection = (props: Record<string, unknown> = {}) => mount(ApiKeyManage
       VCardActions: passthroughStub,
       VIcon: passthroughStub,
       VChip: passthroughStub,
-      VTooltip: passthroughStub,
+      VTooltip: defineComponent({
+        // 渲染 activator slot（scope 提供 props 空对象），使 tooltip 内按钮可被定位
+        template: '<div><slot name="activator" :props="{}" /><slot /></div>',
+      }),
       VProgressCircular: passthroughStub,
       VProgressLinear: passthroughStub,
       VAlert: passthroughStub,
@@ -103,7 +111,7 @@ const mountSection = (props: Record<string, unknown> = {}) => mount(ApiKeyManage
       VBtn: buttonStub,
       VExpandTransition: passthroughStub,
       VDivider: passthroughStub,
-      VCombobox: passthroughStub,
+      VCombobox: comboboxStub,
       UsageQuotaRows: passthroughStub,
     },
   },
@@ -155,7 +163,7 @@ describe('ApiKeyManagementSection', () => {
       channelKind: 'messages',
     })
     await nextTick()
-    await wrapper.find('button').trigger('click')
+    await wrapper.find('[aria-label="channelCard.keyDetail"]').trigger('click')
     await nextTick()
 
     const select = wrapper.findComponent(selectStub)
@@ -163,7 +171,7 @@ describe('ApiKeyManagementSection', () => {
     expect(select.props('modelValue')).toBe('normal')
   })
 
-  it('mark public key shortcut prefills zero and opportunistic', async () => {
+  it('saves multiplier with consumption policy on policy change (no save button)', async () => {
     const wrapper = mountSection({
       apiKeyConfigs: [
         { key: 'sk-1', keyUid: 'uid-1', groupMultiplier: 1, maxGroupMultiplier: 2 },
@@ -172,47 +180,21 @@ describe('ApiKeyManagementSection', () => {
       channelKind: 'messages',
     })
     await nextTick()
-    await wrapper.find('button').trigger('click')
+    await wrapper.find('[aria-label="channelCard.keyDetail"]').trigger('click')
     await nextTick()
 
-    const markButton = wrapper.findAllComponents(buttonStub)
-      .find(b => b.text().includes('subscription.keyMultiplier.markPublic'))
-    expect(markButton).toBeTruthy()
-    await markButton!.trigger('click')
-    await nextTick()
-
-    expect(wrapper.findComponent(selectStub).props('modelValue')).toBe('opportunistic')
-  })
-
-  it('saves multiplier with consumption policy and applies response fields', async () => {
-    const wrapper = mountSection({
-      apiKeyConfigs: [
-        { key: 'sk-1', keyUid: 'uid-1', groupMultiplier: 1, maxGroupMultiplier: 2 },
-      ],
-      channelUid: 'ch-1',
-      channelKind: 'messages',
-    })
-    await nextTick()
-    await wrapper.find('button').trigger('click')
-    await nextTick()
-
+    // 消耗策略选择即暂存进表单 apiKeyConfigs（随渠道主保存），不再即时 PATCH
     const select = wrapper.findComponent(selectStub)
     await select.find('select').setValue('opportunistic')
 
-    const saveButton = wrapper.findAllComponents(buttonStub)
-      .find(b => b.text().includes('app.actions.save'))
-    await saveButton!.trigger('click')
-    await vi.waitFor(() => expect(apiMocks.patchKeyMultiplier).toHaveBeenCalled())
-
-    expect(apiMocks.patchKeyMultiplier).toHaveBeenCalledWith(
-      'messages',
-      'ch-1',
-      'uid-1',
-      expect.objectContaining({ groupMultiplier: 1, maxGroupMultiplier: 2, consumptionPolicy: 'opportunistic' }),
-    )
+    const events = wrapper.emitted('update:apiKeyConfigs')
+    expect(events).toBeTruthy()
+    const lastConfig = events![events!.length - 1][0] as Array<Record<string, unknown>>
+    expect(lastConfig[0]).toMatchObject({ key: 'sk-1', keyUid: 'uid-1', groupMultiplier: 1, consumptionPolicy: 'opportunistic' })
+    expect(apiMocks.patchKeyMultiplier).not.toHaveBeenCalled()
   })
 
-  it('converts decimal multiplier inputs to JSON numbers before saving', async () => {
+  it('converts decimal multiplier inputs to JSON numbers on field commit', async () => {
     const wrapper = mountSection({
       apiKeyConfigs: [
         { key: 'sk-1', keyUid: 'uid-1', groupMultiplier: 1, maxGroupMultiplier: 2 },
@@ -221,31 +203,27 @@ describe('ApiKeyManagementSection', () => {
       channelKind: 'messages',
     })
     await nextTick()
-    await wrapper.find('button').trigger('click')
+    await wrapper.find('[aria-label="channelCard.keyDetail"]').trigger('click')
     await nextTick()
 
     const multiplierInputs = wrapper.findAllComponents(inputStub)
       .filter(input => input.props('type') === 'number')
-    expect(multiplierInputs).toHaveLength(2)
+    // 倍率上限已统一为渠道级：Key 倍率编辑只剩分组倍率一个数字输入。
+    expect(multiplierInputs).toHaveLength(1)
     await multiplierInputs[0].vm.$emit('update:modelValue', '0.15')
-    await multiplierInputs[1].vm.$emit('update:modelValue', '1.25')
     await nextTick()
+    // 数字框失焦/回车定稿（change 事件）即暂存为表单数字
+    await multiplierInputs[0].vm.$emit('change', '0.15')
 
-    const saveButton = wrapper.findAllComponents(buttonStub)
-      .find(b => b.text().includes('app.actions.save'))
-    await saveButton!.trigger('click')
-    await vi.waitFor(() => expect(apiMocks.patchKeyMultiplier).toHaveBeenCalled())
-
-    expect(apiMocks.patchKeyMultiplier).toHaveBeenCalledWith(
-      'messages',
-      'ch-1',
-      'uid-1',
-      expect.objectContaining({ groupMultiplier: 0.15, maxGroupMultiplier: 1.25 }),
-    )
-    expect(apiMocks.patchKeyMultiplier.mock.calls[0][3].groupMultiplier).toBeTypeOf('number')
+    const events = wrapper.emitted('update:apiKeyConfigs')
+    expect(events).toBeTruthy()
+    const lastConfig = events![events!.length - 1][0] as Array<Record<string, unknown>>
+    expect(lastConfig[0].groupMultiplier).toBe(0.15)
+    expect(lastConfig[0].groupMultiplier).toBeTypeOf('number')
+    expect(apiMocks.patchKeyMultiplier).not.toHaveBeenCalled()
   })
 
-  it('shows consistent shortcuts on the multiplier dialog', async () => {
+  it('expands multiplier editor inline without save/cancel/mark-public buttons', async () => {
     const wrapper = mountSection({
       apiKeyConfigs: [
         { key: 'sk-1', keyUid: 'uid-1', groupMultiplier: 1, maxGroupMultiplier: 2 },
@@ -254,28 +232,19 @@ describe('ApiKeyManagementSection', () => {
       channelKind: 'messages',
     })
     await nextTick()
-    await wrapper.find('button').trigger('click')
+    // 倍率设置从弹窗改为行下展开：点击倍率按钮出现内联面板
+    const detailBtn = wrapper.find('[aria-label="channelCard.keyDetail"]')
+    expect(detailBtn.exists()).toBe(true)
+    await detailBtn.trigger('click')
     await nextTick()
 
-    expect(wrapper.text()).toContain('Esc')
-    expect(wrapper.text()).toMatch(/⌘Enter|Ctrl\+Enter/)
-  })
-
-  it('does not show mark-public shortcut for new_api keys', async () => {
-    const wrapper = mountSection({
-      apiKeyConfigs: [
-        { key: 'sk-1', keyUid: 'uid-1', multiplierSource: 'new_api', groupMultiplier: 0.5, maxGroupMultiplier: 1 },
-      ],
-      channelUid: 'ch-1',
-      channelKind: 'messages',
-    })
-    await nextTick()
-    await wrapper.find('button').trigger('click')
-    await nextTick()
-
-    const markButton = wrapper.findAllComponents(buttonStub)
-      .find(b => b.text().includes('subscription.keyMultiplier.markPublic'))
-    expect(markButton).toBeFalsy()
+    expect(wrapper.text()).toContain('subscription.keyMultiplier.policy')
+    expect(wrapper.text()).toContain('subscription.keyMultiplier.value')
+    // 变更即保存：无保存/取消/标记公开按钮，展示自动保存提示
+    const actionButtons = wrapper.findAllComponents(buttonStub)
+      .filter(b => ['app.actions.save', 'app.actions.cancel', 'subscription.keyMultiplier.markPublic'].some(k => b.text().includes(k)))
+    expect(actionButtons).toHaveLength(0)
+    expect(wrapper.text()).toContain('subscription.keyMultiplier.stagedHint')
   })
 
   it('keeps Kimi credential bound to the correct key row after save and reload with reversed credential order', async () => {
@@ -425,5 +394,65 @@ describe('ApiKeyManagementSection', () => {
     expect(reloadedAlphaRow.html()).toContain('kimiConsoleToken.configured')
     expect(reloadedAlphaRow.html()).toContain('kimiConsoleToken.validatedAt')
     expect(reloadedBetaRow.html()).not.toContain('kimiConsoleToken.configured')
+  })
+})
+
+describe('分组模型排除行内化', () => {
+  it('统一详情按钮行内展开，模型选定即提交且无对话框按钮', async () => {
+    const wrapper = mountSection({
+      apiKeyConfigs: [
+        { key: 'sk-1', keyUid: 'uid-1', quotaGroup: 'g1' },
+      ],
+      channelUid: 'ch-1',
+      channelKind: 'messages',
+    })
+    await nextTick()
+
+    const tuneBtn = wrapper.find('[aria-label="channelCard.keyDetail"]')
+    expect(tuneBtn.exists()).toBe(true)
+    await tuneBtn.trigger('click')
+    await nextTick()
+
+    // 行内面板展开：上下文 caption + 自动提交提示；无取消/禁用对话框按钮
+    expect(wrapper.text()).toContain('channelCard.affectedGroupKeys')
+    expect(wrapper.text()).toContain('channelCard.groupModelInlineHint')
+    const dialogButtons = wrapper.findAllComponents(buttonStub)
+      .filter(b => b.text().includes('channelCard.disableGroupModel') || b.text().includes('app.actions.cancel'))
+    expect(dialogButtons).toHaveLength(0)
+
+    // 模型定稿（combobox change）即暂存排除事件，面板保持展开（随主保存提交）
+    const comboInput = wrapper.find('input.combobox-stub-input')
+    expect(comboInput.exists()).toBe(true)
+    await comboInput.setValue('kimi-k3')
+    await comboInput.trigger('change')
+    await nextTick()
+
+    const events = wrapper.emitted('stage-group-model-disable')
+    expect(events).toBeTruthy()
+    expect(events![0]).toEqual(['sk-1', 'kimi-k3'])
+    // 不再即时提交（旧 disable-group-model 事件随暂存化移除），面板保持展开
+    expect(wrapper.emitted('disable-group-model')).toBeFalsy()
+    expect(wrapper.text()).toContain('channelCard.groupModelInlineHint')
+  })
+
+  it('再次点击统一详情按钮收起面板（toggle）', async () => {
+    const wrapper = mountSection({
+      apiKeyConfigs: [
+        { key: 'sk-1', keyUid: 'uid-1' },
+      ],
+      channelUid: 'ch-1',
+      channelKind: 'messages',
+    })
+    await nextTick()
+
+    const tuneBtn = wrapper.find('[aria-label="channelCard.keyDetail"]')
+    await tuneBtn.trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('channelCard.groupModelInlineHint')
+
+    await tuneBtn.trigger('click')
+    await nextTick()
+    expect(wrapper.text()).not.toContain('channelCard.groupModelInlineHint')
+    expect(wrapper.emitted('stage-group-model-disable')).toBeFalsy()
   })
 })

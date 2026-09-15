@@ -155,7 +155,11 @@ func handleAddSubscriptionAccount(deps *NewApiRouteDeps) gin.HandlerFunc {
 				c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("无法获取该账号分组倍率，已阻止建 key: %v", gErr)})
 				return
 			}
+			// 建 key 阈值：请求显式携带优先，缺省用渠道级上限（真源），最后回退订阅接入初始值。
 			maxGroupMultiplier := req.MaxGroupMultiplier
+			if maxGroupMultiplier == nil && deps != nil && deps.SyncService != nil {
+				maxGroupMultiplier = deps.SyncService.linkedChannelMaxGroupMultiplier(profile)
+			}
 			if maxGroupMultiplier == nil {
 				maxGroupMultiplier = profile.MaxGroupMultiplier
 			}
@@ -177,9 +181,9 @@ func handleAddSubscriptionAccount(deps *NewApiRouteDeps) gin.HandlerFunc {
 				ProvisionModels:            provisionModels,
 				MaxGroupMultiplier:         maxGroupMultiplier,
 			}
-			// key 名加账号前缀，避免与主账号/其他账号在同站点下的同名 key 被误复用。
-			namePrefix := accountUID + "-"
-			provisioned, pErr := provisionNewApiGroupKeys(ctx, adapter, provisionReq, derivedUserID, resolved, namePrefix)
+			// key 名直接用 ccx-{分组名}：FindTokenByName 按各账号自己的 token 列表查重，
+			// 跨账号同名天然隔离，同名同组自动复用。
+			provisioned, pErr := provisionNewApiGroupKeys(ctx, adapter, provisionReq, derivedUserID, resolved, "")
 			if pErr != nil {
 				var conflict *newApiProvisionConflictError
 				if errors.As(pErr, &conflict) {

@@ -690,7 +690,7 @@ func buildChatProbeRequest(profile *KeyEndpointProfile, apiKey string) *ProbeReq
 		"messages": []map[string]string{
 			{"role": "user", "content": "hi"},
 		},
-		"max_tokens": 1,
+		"max_tokens": 16,
 	})
 
 	headers := map[string]string{
@@ -719,7 +719,7 @@ func buildResponsesProbeRequest(profile *KeyEndpointProfile, apiKey string) *Pro
 				"content": []map[string]string{{"type": "input_text", "text": "hi"}},
 			},
 		},
-		"max_output_tokens": 1,
+		"max_output_tokens": 16,
 	})
 
 	headers := map[string]string{
@@ -748,7 +748,7 @@ func buildGeminiProbeRequest(profile *KeyEndpointProfile, apiKey string) *ProbeR
 			},
 		},
 		"generationConfig": map[string]interface{}{
-			"maxOutputTokens": 1,
+			"maxOutputTokens": 16,
 		},
 	})
 

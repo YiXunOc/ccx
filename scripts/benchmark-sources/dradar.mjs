@@ -60,6 +60,12 @@ export const DRADAR_MODEL_MAP = {
   'dsh-deepseek-v4-flash': 'deepseek-v4-flash',
   'dsh-deepseek-v4-flash-vision-exp': 'deepseek-v4-flash-vision',
   'dsh-deepseek-v4-pro': 'deepseek-v4-pro',
+  // DeepSeek V4.1 Flash（2026-09-10 发布）：dradar 混用点号与连字符，两种形态及 dsh- 前缀均预映射
+  'deepseek-v4.1-flash': 'deepseek-v4.1-flash',
+  'deepseek-v4-1-flash': 'deepseek-v4.1-flash',
+  'deepseek-flash': 'deepseek-v4.1-flash',
+  'dsh-deepseek-v4-1-flash': 'deepseek-v4.1-flash',
+  'dsh-deepseek-flash': 'deepseek-v4.1-flash',
   // 腾讯混元 Hy4 Preview：dradar 榜上 slug 与 canonical 同名
   'hy4-preview': 'hy4-preview',
 }

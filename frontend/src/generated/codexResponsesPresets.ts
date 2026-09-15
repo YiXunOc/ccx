@@ -19,9 +19,9 @@ export interface CodexResponsesPreset {
 export const codexResponsesPresets: Record<string, CodexResponsesPreset> = {
   "deepseek": {
     "modelMapping": {
-      "codex": "deepseek-v4-flash",
+      "codex": "deepseek-flash",
       "gpt": "deepseek-v4-pro",
-      "mini": "deepseek-v4-flash"
+      "mini": "deepseek-flash"
     },
     "reasoningMapping": {
       "gpt": "max"
@@ -29,8 +29,10 @@ export const codexResponsesPresets: Record<string, CodexResponsesPreset> = {
     "reasoningParamStyle": "reasoning",
     "codexToolCompat": false,
     "stripCodexClientTools": false,
-    "noVision": true,
-    "noVisionModels": [],
+    "noVision": false,
+    "noVisionModels": [
+      "deepseek-v4-pro"
+    ],
     "visionFallbackModel": ""
   },
   "mimo": {

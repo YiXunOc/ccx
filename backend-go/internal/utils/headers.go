@@ -361,7 +361,9 @@ func EnsureCompatibleUserAgent(headers http.Header, serviceType string) {
 }
 
 // ForwardResponseHeaders 转发上游响应头到客户端
-// 作为透明代理，应该转发所有响应头，只过滤框架自动处理的头部
+// 作为透明代理，应该转发所有响应头，只过滤框架自动处理的头部。
+// content-type 不转发：网关会重新序列化或转换响应体，内容类型必须由写回方式决定；
+// 直接透传原始字节的调用方须用 ForwardContentType 显式补回上游 Content-Type。
 func ForwardResponseHeaders(upstreamHeaders http.Header, clientWriter http.ResponseWriter) {
 	// 不应转发的头部列表（由框架或代理层自动处理）
 	skipHeaders := map[string]bool{
@@ -369,6 +371,7 @@ func ForwardResponseHeaders(upstreamHeaders http.Header, clientWriter http.Respo
 		"content-length":    true, // 由框架自动处理
 		"connection":        true, // 代理层控制
 		"content-encoding":  true, // 如果已解压则不应转发
+		"content-type":      true, // 由写回方式决定（见函数注释）
 	}
 
 	// 复制所有上游响应头到客户端
@@ -384,5 +387,13 @@ func ForwardResponseHeaders(upstreamHeaders http.Header, clientWriter http.Respo
 		for _, value := range values {
 			clientWriter.Header().Add(key, value)
 		}
+	}
+}
+
+// ForwardContentType 将上游 Content-Type 显式写到客户端响应头，
+// 仅供转发原始字节、不做任何转换的透传路径使用。
+func ForwardContentType(upstreamHeaders http.Header, clientWriter http.ResponseWriter) {
+	if ct := upstreamHeaders.Get("Content-Type"); ct != "" {
+		clientWriter.Header().Set("Content-Type", ct)
 	}
 }

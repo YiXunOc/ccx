@@ -126,14 +126,14 @@ func TestExactHitHealthyBindingKeepsShortCircuit(t *testing.T) {
 	}
 }
 
-// 非自适应意图（exact_only）即使被否决也不展开，维持精确短路。
+// 非自适应协议（chat，exact_only）即使被否决也不展开，维持精确短路。
 func TestExactVetoNonAdaptiveIntentNoExpansion(t *testing.T) {
 	cfg, modelStore := vetoTestConfig()
-	upsertProfiles(t, modelStore, ModelProfile{
-		ChannelUID: "ch_veto", ChannelKind: "messages", MetricsKey: "m1",
-		ModelID: "gpt-5.2", ModelFamily: ModelFamilyOpenAI, QualityTier: QualityTierPremium,
-		ContextTokens: 1_000_000, SupportsToolCalls: true, ProbeSuccess: true,
-	}, vetoSubstituteProfile())
+	exact := vetoExactProfile()
+	exact.ChannelKind = "chat"
+	substitute := vetoSubstituteProfile()
+	substitute.ChannelKind = "chat"
+	upsertProfiles(t, modelStore, exact, substitute)
 	profileStore := newTestProfileStore(t)
 	upsertBindingHealth(t, profileStore, HealthStateDead)
 
@@ -142,11 +142,13 @@ func TestExactVetoNonAdaptiveIntentNoExpansion(t *testing.T) {
 	router := NewSmartRouter(profileStore, nil, nil, cfgManager)
 	router.SetModelResolver(NewModelResolver(modelStore, cfgManager))
 
-	profile := vetoRequestProfile("gpt-5.2")
+	profile := BuildRequestProfile(RequestProfileFeatures{
+		Model: "claude-opus-4-8", ChannelKind: "chat", Operation: "completion", EstTokens: 1000,
+	})
 	up := cfgManager.GetConfig().Upstream[0]
-	resolutions := router.resolveChannelModels(profile, &up, cfgManager.GetConfig().UpstreamModelCapabilities)
+	resolutions := router.resolveChannelModels(&profile, &up, cfgManager.GetConfig().UpstreamModelCapabilities)
 
-	if len(resolutions) != 1 || resolutions[0].ActualModel != "gpt-5.2" {
+	if len(resolutions) != 1 || resolutions[0].ActualModel != "claude-opus-4-8" {
 		t.Fatalf("非自适应意图被否决时不应展开, got %+v", resolutions)
 	}
 }

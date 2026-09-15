@@ -10,6 +10,7 @@ import (
 	"github.com/BenedictKing/ccx/internal/metrics"
 	"github.com/BenedictKing/ccx/internal/types"
 	"github.com/BenedictKing/ccx/internal/utils"
+	"github.com/gin-gonic/gin"
 )
 
 // GenerateRequestID 生成唯一的请求标识
@@ -98,6 +99,73 @@ func WithEffortClampedByClient(clamped bool) ChannelLogOption {
 		}
 		log.EffortClampedByClient = true
 	}
+}
+
+// racingLostErrorPrefix 竞速败出错误的日志前缀（与 racing.ErrRacingSuperseded 消息一致）。
+const racingLostErrorPrefix = "racing superseded"
+
+// WithRacingRole 标记本次渠道尝试的竞速角色（primary/shadow）。
+// 由竞速编排器写入分支 gin context，CreatePendingLog 组装处读取。
+func WithRacingRole(role string) ChannelLogOption {
+	return func(log *metrics.ChannelLog) {
+		if log == nil || role == "" {
+			return
+		}
+		log.RacingRole = role
+	}
+}
+
+// racingOutcomeKey 记录竞速分支在提交闸门上的结果（won）。
+// 由 claim 成功点写入 gin context，成功路径 CompleteLog 前读取补记。
+const racingOutcomeKey = "ccx.racing.outcome"
+
+// SetChannelLogRacingWon 在提交闸门 claim 成功时标记本分支获胜。
+func SetChannelLogRacingWon(c *gin.Context) {
+	if c != nil {
+		c.Set(racingOutcomeKey, metrics.RacingStatusWon)
+	}
+}
+
+// CompleteChannelLogWithRacingOutcome 完成日志并补记竞速结果：
+// gin context 带 won 标记（赢家）时置 RacingStatus=won；status 强制 completed。
+// 竞速未参与时不做任何额外处理。
+func CompleteChannelLogWithRacingOutcome(
+	channelLogStore *metrics.ChannelLogStore,
+	metricsKey string,
+	requestID string,
+	c *gin.Context,
+) {
+	won := false
+	if c != nil {
+		if v, ok := c.Get(racingOutcomeKey); ok {
+			if s, ok := v.(string); ok {
+				won = s == metrics.RacingStatusWon
+			}
+		}
+	}
+	if !won {
+		return
+	}
+	if channelLogStore == nil || metricsKey == "" || requestID == "" {
+		return
+	}
+	channelLogStore.Update(metricsKey, requestID, func(log *metrics.ChannelLog) {
+		log.RacingStatus = metrics.RacingStatusWon
+	})
+}
+
+// MarkChannelLogRacingLost 将败者日志标记为竞速败出终态。
+func MarkChannelLogRacingLost(
+	channelLogStore *metrics.ChannelLogStore,
+	metricsKey string,
+	requestID string,
+) {
+	if channelLogStore == nil || metricsKey == "" || requestID == "" {
+		return
+	}
+	channelLogStore.Update(metricsKey, requestID, func(log *metrics.ChannelLog) {
+		log.RacingStatus = metrics.RacingStatusLost
+	})
 }
 
 // CreatePendingLog 创建 pending 状态的日志条目（请求开始时调用）
@@ -207,6 +275,8 @@ func CompleteLog(
 		return
 	}
 
+	// 先按原始错误分类终态，再做文案归一化：归一会把竞速败出前缀改写为中文，分类必须在前。
+	status := getStatusFromResult(success, errorInfo)
 	errorInfo = normalizeChannelLogErrorInfo(errorInfo)
 	// 日志侧 guardrail：写日志前扫描 errorInfo 中的凭据，防御性掩码。
 	// 与请求侧豁免头解耦——日志脱敏是安全底线，始终生效。
@@ -219,7 +289,6 @@ func CompleteLog(
 		errorInfo = errorInfo[:200]
 	}
 
-	status := getStatusFromResult(success, errorInfo)
 	now := time.Now()
 	updateStatus, actualMetricsKey := channelLogStore.Update(metricsKey, requestID, func(log *metrics.ChannelLog) {
 		log.StatusCode = statusCode
@@ -254,6 +323,9 @@ func getStatusFromResult(success bool, errorInfo string) string {
 	}
 	if strings.EqualFold(strings.TrimSpace(errorInfo), "client canceled") {
 		return metrics.StatusCancelled
+	}
+	if strings.HasPrefix(strings.TrimSpace(errorInfo), racingLostErrorPrefix) {
+		return metrics.StatusRacingLost
 	}
 	return metrics.StatusFailed
 }
@@ -310,6 +382,8 @@ func RecordChannelLogWithSource(
 	if channelLogStore == nil || metricsKey == "" {
 		return
 	}
+	// 先按原始错误分类终态，再做文案归一化：归一会把竞速败出前缀改写为中文，分类必须在前。
+	status := getStatusFromResult(success, errorInfo)
 	errorInfo = normalizeChannelLogErrorInfo(errorInfo)
 	// 日志侧 guardrail：写日志前扫描 errorInfo 中的凭据，防御性掩码。
 	if errorInfo != "" {
@@ -331,13 +405,6 @@ func RecordChannelLogWithSource(
 	now := time.Now()
 	startTime := now.Add(-time.Duration(durationMs) * time.Millisecond)
 	requestID := GenerateRequestID()
-
-	var status string
-	if success {
-		status = metrics.StatusCompleted
-	} else {
-		status = metrics.StatusFailed
-	}
 
 	channelLogStore.Record(metricsKey, &metrics.ChannelLog{
 		RequestID:     requestID,
@@ -364,6 +431,8 @@ func RecordChannelLogWithSource(
 func normalizeChannelLogErrorInfo(errorInfo string) string {
 	trimmed := strings.TrimSpace(errorInfo)
 	switch {
+	case strings.HasPrefix(trimmed, racingLostErrorPrefix):
+		return "竞速败出：另一渠道分支更快交付有效响应，本分支已取消（真实上游消耗照常发生，不计入渠道失败）"
 	case strings.HasPrefix(trimmed, ErrEmptyStreamResponse.Error()):
 		diagnostic := strings.TrimSpace(strings.TrimPrefix(trimmed, ErrEmptyStreamResponse.Error()))
 		diagnostic = strings.TrimSpace(strings.TrimPrefix(diagnostic, ":"))

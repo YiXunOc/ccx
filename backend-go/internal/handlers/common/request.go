@@ -163,6 +163,7 @@ func GetEffectiveRequestBody(c *gin.Context, fallback []byte) []byte {
 // PassthroughResponse 直接将上游响应转发给客户端，不在内存中整包缓存。
 func PassthroughResponse(c *gin.Context, resp *http.Response) error {
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
+	utils.ForwardContentType(resp.Header, c.Writer)
 	c.Status(resp.StatusCode)
 	_, err := io.Copy(c.Writer, resp.Body)
 	return err
@@ -176,6 +177,7 @@ func PassthroughJSONResponse(c *gin.Context, resp *http.Response, target interfa
 	}
 
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
+	utils.ForwardContentType(resp.Header, c.Writer)
 	c.Status(resp.StatusCode)
 
 	tee := io.TeeReader(resp.Body, c.Writer)

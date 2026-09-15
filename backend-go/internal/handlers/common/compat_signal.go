@@ -91,33 +91,6 @@ var betaHeaderCorroborations = []string{
 	"invalid",
 }
 
-// rejectedBetaTokenPattern 从上游错误文案中提取被拒 anthropic-beta token 名。
-// 覆盖常见格式：
-//
-//	中文：尚未验证或不支持的 anthropic-beta：context-1m-2025-08-07
-//	英文：anthropic-beta `context-1m-2025-08-07` is not enabled
-//	英文：unsupported anthropic-beta header: context-1m-2025-08-07
-//
-// 允许跨 "header:"/"named:" 等中介词（(?:\w+[\s:：]+)* 匹配 0 次或多次"单词+分隔符"序列）。
-// token 名必含至少一个 `-`，避免把 "header"/"configuration" 等通用词误提取为 token。
-var rejectedBetaTokenPattern = regexp.MustCompile(
-	`(?i)anthropic-beta[\s:：'"` + "`" + `「『]*\s*(?:\w+[\s:：]+)*([a-z0-9][a-z0-9_-]*-[a-z0-9_-]{2,40})`,
-)
-
-// ExtractRejectedBetaTokens 从上游错误文案中提取被拒的 anthropic-beta token 名。
-// 返回 nil 表示文案里没有可识别的 token；视为格式不符，调用方不学。
-// 只取首个匹配：上游一次只拒绝一个 token，多 token 场景拆成多次报错。
-func ExtractRejectedBetaTokens(evidence string) []string {
-	if evidence == "" {
-		return nil
-	}
-	m := rejectedBetaTokenPattern.FindStringSubmatch(evidence)
-	if len(m) < 2 {
-		return nil
-	}
-	return []string{m[1]}
-}
-
 // BodyHasDeveloperRole 判断原始请求体中是否存在 developer role。
 // 同时检查 Responses 协议的 input[] 与 Chat 协议的 messages[]：failover 层拿到的是入口原始 body
 // （Responses 请求为 input），而下游 Chat 请求体由 provider 转换后才产生 messages，两处都要覆盖。
@@ -249,7 +222,7 @@ func CompatTraitFromError(statusCode int, bodyBytes []byte, ctx CompatSignalCont
 		if ctx.HasAnthropicBetaHeader &&
 			matchesAnyPattern(lower, betaHeaderPatterns) &&
 			containsAny(lower, betaHeaderCorroborations) {
-			if len(ExtractRejectedBetaTokens(msg)) == 0 {
+			if len(config.ExtractRejectedBetaTokens(msg)) == 0 {
 				continue
 			}
 			return &CompatSignal{

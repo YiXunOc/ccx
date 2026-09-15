@@ -333,6 +333,25 @@ func initSchema(db *sql.DB) error {
 		log.Printf("[SQLite-Migration] schema 升级: v7 -> v8 (添加请求侧压缩统计列)")
 	}
 
+	// v9: 记录最终用户请求关联 ID（同一用户请求的主/影子/failover 尝试共享），
+	// 供「真实用户请求数」COUNT(DISTINCT correlation_id) 聚合口径使用。
+	var correlationVersion int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&correlationVersion); err != nil {
+		return fmt.Errorf("读取 schema 版本失败: %w", err)
+	}
+	if correlationVersion < 9 {
+		migrations := []string{
+			"ALTER TABLE request_records ADD COLUMN correlation_id TEXT NOT NULL DEFAULT ''",
+			"PRAGMA user_version = 9",
+		}
+		for _, q := range migrations {
+			if _, err := db.Exec(q); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("migration v8->v9 failed: %w", err)
+			}
+		}
+		log.Printf("[SQLite-Migration] schema 升级: v8 -> v9 (添加 correlation_id 列)")
+	}
+
 	return nil
 }
 
@@ -758,8 +777,9 @@ func (s *SQLiteStore) batchInsertRecords(records []PersistentRecord) error {
 		 input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, api_type, model, proxy_key_mask,
 		 channel_uid, route_model, key_uid, subscription_uid, exchange_snapshot_version,
 		 list_cost_usd, effective_cost_usd, effective_cost_available, effective_cost_reason, consumption_policy,
-			 compressed, original_tokens, compressed_tokens, compression_savings_percent, compression_technique, compression_fallback_reason)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 compressed, original_tokens, compressed_tokens, compression_savings_percent, compression_technique, compression_fallback_reason,
+			 correlation_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -779,6 +799,7 @@ func (s *SQLiteStore) batchInsertRecords(records []PersistentRecord) error {
 			r.ChannelUID, r.RouteModel, r.KeyUID, r.SubscriptionUID, r.ExchangeSnapshotVersion,
 			r.ListCostUSD, r.EffectiveCostUSD, effectiveAvailable, r.EffectiveCostReason, r.ConsumptionPolicy,
 			r.Compressed, r.OriginalTokens, r.CompressedTokens, r.CompressionSavingsPct, r.CompressionTechnique, r.CompressionFallbackReason,
+			r.CorrelationID,
 		)
 		if err != nil {
 			return err
@@ -794,7 +815,8 @@ func (s *SQLiteStore) LoadRecords(since time.Time, apiType string) ([]Persistent
 		       input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, model, proxy_key_mask, channel_uid, route_model,
 		       key_uid, subscription_uid, exchange_snapshot_version, list_cost_usd, effective_cost_usd,
 		       effective_cost_available, effective_cost_reason, consumption_policy,
-		       compressed, original_tokens, compressed_tokens, compression_savings_percent, compression_technique, compression_fallback_reason
+		       compressed, original_tokens, compressed_tokens, compression_savings_percent, compression_technique, compression_fallback_reason,
+		       correlation_id
 		FROM request_records
 		WHERE timestamp >= ? AND api_type = ?
 		ORDER BY timestamp ASC
@@ -819,6 +841,7 @@ func (s *SQLiteStore) LoadRecords(since time.Time, apiType string) ([]Persistent
 			&r.ChannelUID, &r.RouteModel, &keyUID, &subscriptionUID, &version, &listCost, &effectiveCost,
 			&effectiveAvailable, &effectiveReason, &consumptionPolicy,
 			&r.Compressed, &r.OriginalTokens, &r.CompressedTokens, &r.CompressionSavingsPct, &r.CompressionTechnique, &r.CompressionFallbackReason,
+			&r.CorrelationID,
 		)
 		if err != nil {
 			return nil, err

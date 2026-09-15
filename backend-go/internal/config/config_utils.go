@@ -288,13 +288,10 @@ func migrateAutoDeriveChannelNamesInSlice(channels *[]UpstreamConfig) bool {
 		if up.Name == resolved {
 			continue
 		}
-		old := strings.TrimSpace(up.Name)
-		if old != "" && strings.TrimSpace(up.Remark) == "" {
-			if remarkRuneCount(old) > remarkMaxRunes {
-				old = string([]rune(old)[:remarkMaxRunes])
-			}
-			up.Remark = old
-		}
+		// 只改名，不把旧名写进备注：旧名→备注的保留机制是 2026-08 一次性存量迁移用的
+		// （自定义名→自动派生名过渡期防止语义丢失），迁移完成后该机制只剩副作用——
+		// 用户删除备注后，任何名字漂移（逻辑层同步、地址池调整）再触发迁移都会把
+		// 旧名截断写回空备注，「删了保存再打开又出现」即此循环（09-42 agentrouter 复活根因）。
 		up.Name = resolved
 		changed = true
 	}
@@ -806,6 +803,10 @@ func (u *UpstreamConfig) Clone() *UpstreamConfig {
 		cloned.NoVisionModels = make([]string, len(u.NoVisionModels))
 		copy(cloned.NoVisionModels, u.NoVisionModels)
 	}
+	if u.Racing != nil {
+		c := *u.Racing
+		cloned.Racing = &c
+	}
 
 	return &cloned
 }
@@ -948,14 +949,20 @@ func applyModelCapabilityUpdates(upstream *UpstreamConfig, updates UpstreamUpdat
 }
 
 // applyAPIKeyConfigUpdate 根据 UpstreamUpdate 同步 upstream.APIKeyConfigs：
-//   - updates.APIKeyConfigs != nil：以新值为准，按当前 APIKeys 归一化（保留 orphan）
+//   - updates.APIKeyConfigs != nil：以新值为准，按当前 APIKeys 归一化（保留 orphan）；
+//     默认经 mergeAndNormalizeAPIKeyConfigs 做表单合并（托管身份/倍率元数据缺省回填），
+//     SkipAPIKeyConfigMerge=true 时跳过合并直接替换（Key 倍率端点等精确写语义）
 //   - updates.APIKeyConfigs == nil 但 updates.APIKeys != nil：仅按新 APIKeys 重新归一化原有 configs
 //   - 两者都为 nil：不动 APIKeyConfigs
 //
 // 六类渠道 Update 函数共用，避免新增字段时遗漏其中某一处。
 func applyAPIKeyConfigUpdate(upstream *UpstreamConfig, updates UpstreamUpdate) {
 	if updates.APIKeyConfigs != nil {
-		upstream.APIKeyConfigs = mergeAndNormalizeAPIKeyConfigs(upstream.APIKeys, upstream.APIKeyConfigs, updates.APIKeyConfigs)
+		if updates.SkipAPIKeyConfigMerge {
+			upstream.APIKeyConfigs = normalizeAPIKeyConfigs(upstream.APIKeys, updates.APIKeyConfigs)
+		} else {
+			upstream.APIKeyConfigs = mergeAndNormalizeAPIKeyConfigs(upstream.APIKeys, upstream.APIKeyConfigs, updates.APIKeyConfigs)
+		}
 	} else if updates.APIKeys != nil {
 		upstream.APIKeyConfigs = normalizeAPIKeyConfigs(upstream.APIKeys, upstream.APIKeyConfigs)
 	}

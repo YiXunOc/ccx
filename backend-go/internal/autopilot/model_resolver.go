@@ -158,7 +158,7 @@ func NewModelResolver(profileStore *ModelProfileStore, cfgManager *config.Config
 //   - 显式 modelMapping（用户手动配置）始终优先，不经过能力下界检查
 //   - 禁止链式映射：candidate 源始终是原始 GetModelProfiles 结果
 //   - 仅 autoManaged 渠道走自动映射；手动渠道由 config.RedirectModel 短路
-//   - 只有 ModelRoutingPolicy 白名单入口允许跨模型替代；其余请求必须精确命中模型 ID
+//   - 自适应协议入口（messages/responses）允许跨模型替代；其余请求必须精确命中模型 ID
 func (r *ModelResolver) ResolveModel(
 	requestModel string,
 	channelUID string,
@@ -199,6 +199,19 @@ func (r *ModelResolver) ResolveModel(
 		candidates = filterSeverityClassCapable(candidates, channelUID)
 	}
 
+	// Step 3.6: 工具调用能力硬约束（负向黑名单 + 正向白名单，同安全分类挂载位）。
+	// 这是 endpoint policy 的实际 override 决策路径（resolveMappedModel→resolveAutoModel
+	// →本函数）；此前过滤只接在 AnyEndpoint 系列（调度器候选筛选），本路径漏接导致
+	// override 产出绕过白名单/黑名单的模型（2026-09-12 glm-5.3-flash@ark 实测）。
+	// 白名单模式：渠道内存在任一运行期验证组合时，候选只从验证组合产生；
+	// 无交集回退黑名单逻辑不空转（语义同 eligibleModelsAnyEndpoint）。
+	if floor.NeedsToolCalls {
+		candidates = filterLearnedToolCallCapable(candidates, r.toolRouteIdentity(channelUID, channelKind))
+		if len(candidates) == 0 {
+			return ResolvedRouteTarget{Model: requestModel, Reason: "no_capable_model"}, false, "no_capable_model"
+		}
+	}
+
 	// Step 4: 能力过滤——上下文、推理、视觉、工具调用仍是硬约束；
 	// 质量档作为首选条件，只有更高质量候选完全不存在时才允许降档，
 	// 避免“没有 Opus 等价模型就整条请求不可用”。
@@ -236,7 +249,7 @@ func (r *ModelResolver) ResolveModel(
 		effort, decided := r.resolveSingleProfileEffort(equivalent, floor)
 		return ResolvedRouteTarget{Model: equivalent.ModelID, Effort: effort, EffortDecided: decided, Reason: rsn}, true, rsn
 	}
-	intent := ClassifyModelRoutingIntent(channelKind, requestModel)
+	intent := ClassifyModelRoutingIntent(channelKind)
 	if !intent.AllowsSubstitution() {
 		return ResolvedRouteTarget{Model: requestModel, Reason: "exact_model_required"}, false, "exact_model_required"
 	}
@@ -357,7 +370,7 @@ func (r *ModelResolver) resolveModelAnyEndpoint(
 		rsn := modelResolutionReason("found_equivalent_model_in_profile", qualityFallback)
 		return ResolvedRouteTarget{Model: equivalent.ModelID, Reason: rsn}, true, rsn
 	}
-	intent := ClassifyModelRoutingIntent(channelKind, requestModel)
+	intent := ClassifyModelRoutingIntent(channelKind)
 	if !intent.AllowsSubstitution() {
 		return ResolvedRouteTarget{Model: requestModel, Reason: "exact_model_required"}, false, "exact_model_required"
 	}
@@ -385,6 +398,13 @@ func (r *ModelResolver) eligibleModelsAnyEndpoint(
 	candidates, reason = r.probedModelsAnyEndpoint(channelUID, channelKind)
 	if len(candidates) == 0 {
 		return nil, false, reason
+	}
+
+	if floor.NeedsToolCalls {
+		candidates = filterLearnedToolCallCapable(candidates, r.toolRouteIdentity(channelUID, channelKind))
+		if len(candidates) == 0 {
+			return nil, false, "no_capable_model"
+		}
 	}
 
 	if r.cfgManager != nil {
@@ -420,6 +440,13 @@ func (r *ModelResolver) capabilityFilteredModelsAnyEndpoint(
 			return nil, "no_capable_model"
 		}
 	}
+	// 工具调用学习黑名单同安全分类：带工具请求的兜底枚举同样避开实测不执行工具的组合。
+	if floor.NeedsToolCalls {
+		candidates = filterLearnedToolCallCapable(candidates, r.toolRouteIdentity(channelUID, channelKind))
+		if len(candidates) == 0 {
+			return nil, "no_capable_model"
+		}
+	}
 	// 仅按真实能力硬约束过滤，跳过质量档约束：低质量模型保留为低分行，由评分拉开差距。
 	// 此处是跨模型兜底枚举，无请求同名模型概念，传空串禁用试探放宽。
 	candidates = filterByCapabilityFloorWithoutQuality(candidates, floor, "")
@@ -431,6 +458,9 @@ func (r *ModelResolver) capabilityFilteredModelsAnyEndpoint(
 
 // probedModelsAnyEndpoint 收集渠道内已探测成功且协议匹配的模型画像（含自动发现能力刷新）。
 // 空集 reason 为 "model_profile_store_unavailable" / "no_probed_model_profiles"。
+// 已学到「该渠道×模型×此协议端点不可用」（no_protocol_support:<protocol>）的组合
+// 在此剔除：画像协议维与端点协议发现是两套数据源，协议端点拒绝是强证据事实，
+// 替代映射不得再把请求送往已实测拒绝的组合。
 func (r *ModelResolver) probedModelsAnyEndpoint(channelUID, channelKind string) ([]ModelProfile, string) {
 	if r.profileStore == nil {
 		return nil, "model_profile_store_unavailable"
@@ -442,6 +472,9 @@ func (r *ModelResolver) probedModelsAnyEndpoint(channelUID, channelKind string) 
 			continue
 		}
 		if !p.ProbeSuccess {
+			continue
+		}
+		if learnedProtocolUnsupported(channelUID, channelKind, p.ModelID) {
 			continue
 		}
 		candidates = append(candidates, p)
@@ -730,6 +763,42 @@ func filterSeverityClassCapable(profiles []ModelProfile, channelUID string) []Mo
 	return eligible
 }
 
+// filterLearnedToolCallCapable 带工具请求的候选过滤（两级）：
+//  1. 白名单模式：路由内存在任一「实测真实工具调用」组合（TraitVerifiedToolCalls，
+//     探针/运行期正向证据）时，候选只从验证组合中产生——伪工具标记方言是开放
+//     长尾（qwen/deepseek/glm 各族 auto 下文本化工具调用），负向清单打地鼠，
+//     正向白名单才是根治；验证组合与候选无交集时回退黑名单逻辑（不空转）。
+//  2. 黑名单模式：剔除实测不能执行工具调用的组合（TraitNoToolCallSupport）。
+//
+// routeIdentity 为 config.ToolRouteIdentity 的返回值（逻辑渠道×协议的稳定身份，
+// 调用方负责从物理 UID 翻译），直接作为兼容性记忆的键使用。
+// 画像的 SupportsToolCalls 来自注册表静态表，覆盖不了「静态宣称支持、渠道实例
+// 实际不执行（假成功/幻觉工具输出）」的组合——这类只能靠学习规避。
+// 与 filterSeverityClassCapable 对称：带工具请求在替代映射阶段即避开。
+func filterLearnedToolCallCapable(profiles []ModelProfile, routeIdentity string) []ModelProfile {
+	if verified := verifiedToolCallModels(routeIdentity); len(verified) > 0 {
+		whitelisted := make([]ModelProfile, 0, len(profiles))
+		for _, p := range profiles {
+			if verified[strings.ToLower(p.ModelID)] {
+				whitelisted = append(whitelisted, p)
+			}
+		}
+		if len(whitelisted) > 0 {
+			return whitelisted
+		}
+		// 验证组合不在当前候选集（画像/清单漂移）：回退黑名单逻辑，
+		// 不因白名单存在而空转阻塞请求。
+	}
+	eligible := make([]ModelProfile, 0, len(profiles))
+	for _, p := range profiles {
+		if learnedToolCallUnsupported(routeIdentity, p.ModelID) {
+			continue
+		}
+		eligible = append(eligible, p)
+	}
+	return eligible
+}
+
 func filterByCapabilityFloorInternal(profiles []ModelProfile, floor CapabilityFloor, enforceQuality bool, requestModel string) []ModelProfile {
 	var eligible []ModelProfile
 	for _, p := range profiles {
@@ -810,13 +879,13 @@ type rankedModelCandidate struct {
 	// evidenceQualityTier 是编码域证据档位（EffortAwareQualityAssessment 的
 	// 评定结果，即图表档位带）。非空时报告展示与排序均以它为准；空表示
 	// 未做证据评定（非编码域或无编码证据）。
-	evidenceQualityTier            QualityTier
-	measuredCostUSD                float64
-	versionLineage                 string
-	versionNumbers                 []int
-	sameFamily                     bool
-	normalizedCandidateID          string
-	frontierNote                   string // frontier 选型命中或回退的可解释标记，非空时追加到 reasonSummary
+	evidenceQualityTier   QualityTier
+	measuredCostUSD       float64
+	versionLineage        string
+	versionNumbers        []int
+	sameFamily            bool
+	normalizedCandidateID string
+	frontierNote          string // frontier 选型命中或回退的可解释标记，非空时追加到 reasonSummary
 }
 
 func (candidate rankedModelCandidate) reasonSummary() string {
@@ -901,7 +970,15 @@ func (r *ModelResolver) rankEligibleModels(
 		return best
 	}
 	frontierFallback = note
-	ranked = selectQualityBenefitBand(ranked, floor.QualityBenefitCap)
+	if banded := selectQualityBenefitBand(ranked, floor.QualityBenefitCap); len(banded) > 0 {
+		ranked = banded
+	} // band 过滤清空时保留全量：宁超收益帽不可空列表越界（回退链仅此一处无守卫）
+
+	if len(ranked) == 0 {
+		// 全量列表也为空（eligible 为空或排序阶段全过滤）：返回请求模型原样透传，
+		// 由上层 exact/fail-open 语义兜底，不得 panic。
+		return rankedModelCandidate{profile: ModelProfile{ModelID: requestModel}, frontierNote: "no_ranked_candidate_fallback"}
+	}
 
 	best := ranked[0]
 	for i := 1; i < len(ranked); i++ {
@@ -1097,10 +1174,10 @@ func (r *ModelResolver) buildRankedCandidates(
 				publicCostKnown:              publicCostKnown,
 				normalizedPublicCostUSD:      publicCostUSD,
 				benchmarkKnown:               effBenchKnown,
-					benchmarkScore:               effBenchScore,
-					benchmarkModel:               benchmark.Profile.CanonicalModel,
-					benchmarkLane:                benchmark.Profile.Lane,
-					evidenceQualityTier:          evidenceTier,
+				benchmarkScore:               effBenchScore,
+				benchmarkModel:               benchmark.Profile.CanonicalModel,
+				benchmarkLane:                benchmark.Profile.Lane,
+				evidenceQualityTier:          evidenceTier,
 				measuredCostUSD:              measuredCost,
 				versionLineage:               modelVersionLineage(profile.ModelFamily, profile.ModelID),
 				versionNumbers:               modelVersionNumbers(profile.ModelFamily, profile.ModelID),
@@ -1611,4 +1688,21 @@ func (r *ModelResolver) findUpstream(channelUID, channelKind string) *config.Ups
 		}
 	}
 	return nil
+}
+
+// toolRouteIdentity 把画像侧的物理渠道 UID 翻译为工具能力学习的稳定路由身份。
+// resolver 的调用链以 KeyEndpointProfile.ChannelUID（物理 ch_）为线索，而工具能力
+// 记忆按逻辑渠道 UID×协议存取（物理 UID 会随渠道重建被重铸，见 config.ToolRouteIdentity）。
+// 渠道已从 config 消失（画像残留的幽灵 UID）或无 cfgManager 时回退原始 UID——
+// 查询自然 miss，fail-open，不阻塞请求。
+func (r *ModelResolver) toolRouteIdentity(channelUID, channelKind string) string {
+	if channelUID == "" {
+		return ""
+	}
+	if upstream := r.findUpstream(channelUID, channelKind); upstream != nil {
+		if identity := config.ToolRouteIdentity(upstream, channelKind); identity != "" {
+			return identity
+		}
+	}
+	return channelUID
 }

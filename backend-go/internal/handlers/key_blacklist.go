@@ -84,13 +84,12 @@ func DisableGroupModel(cfgManager *config.ConfigManager, apiType string) gin.Han
 		var req struct {
 			APIKey string `json:"apiKey"`
 			Model  string `json:"model"`
-			Note   string `json:"note"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.APIKey) == "" || strings.TrimSpace(req.Model) == "" {
 			c.JSON(400, gin.H{"error": "apiKey and model are required"})
 			return
 		}
-		quotaGroup, affectedKeyCount, err := cfgManager.DisableGroupModel(apiType, id, req.APIKey, req.Model, req.Note)
+		quotaGroup, affectedKeyCount, err := cfgManager.DisableGroupModel(apiType, id, req.APIKey, req.Model)
 		if err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return

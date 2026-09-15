@@ -101,9 +101,9 @@ func CandidatesForModelWeighted(upstream *config.UpstreamConfig, failedKeys map[
 		if cfg.Enabled != nil && !*cfg.Enabled {
 			continue
 		}
-		// 自动接入的分组 Key 会持久化倍率与上限。配置不完整或倍率超限时
+		// 分组 Key 持久化倍率。倍率非法或超过渠道级 MaxGroupMultiplier 上限时
 		// fail-closed，避免高倍率分组因手工/热重载配置变化进入调用候选。
-		if !config.IsAPIKeyConfigGroupMultiplierAllowed(cfg) {
+		if !config.EvaluateAPIKeyMultiplierEligibility(cfg, upstream.MaxGroupMultiplier, now).Eligible {
 			continue
 		}
 		if model != "" && len(cfg.Models) > 0 && !matchesModel(model, cfg.Models) {

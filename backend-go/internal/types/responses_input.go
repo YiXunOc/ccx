@@ -72,6 +72,8 @@ func responsesItemFromMap(itemMap map[string]interface{}) ResponsesItem {
 		Output:           itemMap["output"],
 		Tools:            interfaceSliceFromMap(itemMap, "tools"),
 		EncryptedContent: stringFromMap(itemMap, "encrypted_content"),
+
+		EncryptedFunctionArgs: stringSliceFromMap(itemMap, "encrypted_function_args"),
 	}
 
 	if item.Type == "" && item.Role != "" {
@@ -199,6 +201,23 @@ func stringFromMap(data map[string]interface{}, key string) string {
 func interfaceSliceFromMap(data map[string]interface{}, key string) []interface{} {
 	value, _ := data[key].([]interface{})
 	return value
+}
+
+// stringSliceFromMap 提取 []string 字段（Codex encrypted_function_args 等），非数组或含非字符串项时返回 nil。
+func stringSliceFromMap(data map[string]interface{}, key string) []string {
+	raw, _ := data[key].([]interface{})
+	if len(raw) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(raw))
+	for _, item := range raw {
+		str, ok := item.(string)
+		if !ok {
+			return nil
+		}
+		values = append(values, str)
+	}
+	return values
 }
 
 func firstNonEmpty(values ...string) string {

@@ -149,6 +149,8 @@ type EndpointPolicyDeps struct {
 	ModelResolver *ModelResolver                       // Phase 3B-2: 自动模型映射器（nil 时不触发自动映射）
 	GetRoutingCfg func() config.AutopilotRoutingConfig // Phase 3B-2: 路由配置读取（用于 AutoResolve 门控）
 	APIKeyConfigs []config.APIKeyConfig                // 当前上游的 key 配置视图（按 Key 精确匹配）
+	// ChannelMaxGroupMultiplier 当前上游的渠道级分组倍率上限（nil=未启用闸门）
+	ChannelMaxGroupMultiplier *float64
 }
 
 type keyBindingDecision struct {
@@ -200,7 +202,7 @@ func classifyKeyBinding(deps EndpointPolicyDeps, req *RequestProfile, channelUID
 			decision.Candidate.EffectiveCostUSD = *cfg.GroupMultiplier
 			decision.Candidate.EffectiveCostReason = "configured_group_multiplier"
 		}
-		eligibility := config.EvaluateAPIKeyMultiplierEligibility(*cfg, time.Now())
+		eligibility := config.EvaluateAPIKeyMultiplierEligibility(*cfg, deps.ChannelMaxGroupMultiplier, time.Now())
 		if !eligibility.Eligible {
 			decision.HardEligible = false
 			decision.Candidate.HardFiltered = true

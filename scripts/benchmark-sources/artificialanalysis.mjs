@@ -88,6 +88,9 @@ export const ARTIFICIAL_ANALYSIS_MODEL_MAP = {
   'deepseek-v3-2': 'deepseek-v3.2',
   'deepseek-v4-flash': 'deepseek-v4-flash',
   'deepseek-v4-pro': 'deepseek-v4-pro',
+  // DeepSeek V4.1 Flash（2026-09-10 发布）：AA slug 用连字符分段版本号
+  'deepseek-v4-1-flash': 'deepseek-v4.1-flash',
+  'deepseek-flash': 'deepseek-v4.1-flash',
   // deepseek 日期快照（-MMDD）归并到对应基模型
   'deepseek-v4-flash-0420': 'deepseek-v4-flash',
   'deepseek-v4-pro-0424': 'deepseek-v4-pro',
@@ -203,6 +206,12 @@ export const ARTIFICIAL_ANALYSIS_IMAGE_MODEL_MAP = {
   'agnes-image-2.1-flash': 'agnes-image-2.1-flash',
   'agnes-image-2-1-flash': 'agnes-image-2.1-flash',
   'gpt-image-2': 'gpt-image-2',
+  'gpt-image-2.5': 'gpt-image-2.5',
+  'gpt-image-2-5': 'gpt-image-2.5',
+  'gpt-image-2.5-flare': 'gpt-image-2.5-flare',
+  'gpt-image-2-5-flare': 'gpt-image-2.5-flare',
+  'gpt-image-2.5-sunburst': 'gpt-image-2.5-sunburst',
+  'gpt-image-2-5-sunburst': 'gpt-image-2.5-sunburst',
   'nano-banana-2': 'nano-banana-2',
   'seedream-5.0-pro': 'seedream-5.0-pro',
   'seedream-5-0-pro': 'seedream-5.0-pro',

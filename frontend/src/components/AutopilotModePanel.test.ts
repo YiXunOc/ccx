@@ -23,7 +23,7 @@ const VSwitchStub = defineComponent({
   emits: ['update:modelValue'],
   setup(props, { emit }) {
     return () => h('button', {
-      class: 'kill-switch-control',
+      class: props.label.includes('killSwitch') ? 'kill-switch-control' : 'racing-control',
       disabled: props.disabled,
       'data-model': String(props.modelValue),
       onClick: () => emit('update:modelValue', !props.modelValue),
@@ -73,6 +73,7 @@ function config(overrides: Partial<SmartRoutingConfig> = {}): SmartRoutingConfig
     killSwitchForced: false,
     costPreference: 'balanced',
     scenario: 'auto',
+    racingEnabled: true,
     ...overrides,
   }
 }
@@ -169,6 +170,20 @@ describe('AutopilotModePanel KillSwitch', () => {
     expect(wrapper.get('.kill-switch-control').attributes('data-model')).toBe('true')
     expect(wrapper.get('.kill-switch-control').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('autopilot.modePanel.killSwitchForced')
+  })
+
+  it('竞速开关纳入整卡保存且不触发急停即时提交', async () => {
+    const wrapper = mountPanel(config({ racingEnabled: true }))
+
+    await wrapper.get('.racing-control').trigger('click')
+    expect(wrapper.emitted('update:config')).toBeUndefined()
+    expect(wrapper.get('.save-button').attributes('disabled')).toBeUndefined()
+
+    await wrapper.get('.save-button').trigger('click')
+    expect(wrapper.emitted<SmartRoutingConfig[]>('update:config')?.[0]?.[0]).toMatchObject({
+      killSwitchActive: false,
+      racingEnabled: false,
+    })
   })
 
   it('三种语言说明环境变量强制来源', () => {

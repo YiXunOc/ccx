@@ -54,6 +54,9 @@ export const DEEPSWE_MODEL_MAP = {
   'muse-spark-1-3': 'muse-spark-1.3',
   'deepseek-v4-flash': 'deepseek-v4-flash',
   'deepseek-v4-pro': 'deepseek-v4-pro',
+  // DeepSeek V4.1 Flash（2026-09-10 发布，官方 API 名 deepseek-flash）：deepswe 用连字符分段版本号
+  'deepseek-v4-1-flash': 'deepseek-v4.1-flash',
+  'deepseek-flash': 'deepseek-v4.1-flash',
   'qwen3-8-max': 'qwen3.8-max',
 }
 
@@ -121,6 +124,9 @@ export const BENCHLM_MODEL_MAP = {
   // DeepSeek 新版本发布后，部分榜单可能使用 -MMDD 日期后缀 slug
   'deepseek-v4-pro-0813': 'deepseek-v4-pro',
   'deepseek-v4-flash-0731': 'deepseek-v4-flash',
+  // DeepSeek V4.1 Flash（2026-09-10 发布，官方 API 名 deepseek-flash）：benchlm slug 用连字符分段版本号
+  'deepseek-v4-1-flash': 'deepseek-v4.1-flash',
+  'deepseek-flash': 'deepseek-v4.1-flash',
   // gemini-3-1-pro / gemini-3-flash 已在 benchlm 榜单有公开总分（55.96 / 59.6）
   'gemini-3-6-flash': 'gemini-3.6-flash',
   'gemini-3-1-pro': 'gemini-3.1-pro',
@@ -235,8 +241,10 @@ export function canonicalModelToPattern(canonical) {
     return `(?:^|[-/])${escaped}(?:-\\d{4}-\\d{2}-\\d{2}|-\\d{6,8})?(?=$|@)`
   }
   if (canonical.startsWith('deepseek-')) {
-    // deepseek 渠道常以 -MMDD 发布版本别名，注册表已放宽到 -\d{4,8}
-    return `(?:^|[-/])${canonical}(?:-\\d{4}-\\d{2}-\\d{2}|-\\d{4,8})?(?=$|@)`
+    // deepseek 渠道常以 -MMDD 发布版本别名，注册表已放宽到 -\d{4,8}；
+    // 点号必须转义（如 deepseek-v4.1-flash），否则 . 会匹配任意字符。
+    const escaped = canonical.replace(/\./g, '\\.')
+    return `(?:^|[-/])${escaped}(?:-\\d{4}-\\d{2}-\\d{2}|-\\d{4,8})?(?=$|@)`
   }
   if (canonical.startsWith('qwen')) {
     // qwen3.8-max -> (?:^|[-/])qwen3\.8-max(?:-\d{4}-\d{2}-\d{2}|-\d{4,8})?(?=$|@)

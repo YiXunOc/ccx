@@ -32,6 +32,8 @@ type ChannelLog struct {
 	RequestSource           string    `json:"requestSource,omitempty"` // 请求来源（proxy/capability_test）
 	SelectionReason         string    `json:"selectionReason,omitempty"`
 	SelectionTraceSummary   string    `json:"selectionTraceSummary,omitempty"`
+	RacingRole              string    `json:"racingRole,omitempty"`   // 竞速角色（primary/shadow，空=未参与竞速）
+	RacingStatus            string    `json:"racingStatus,omitempty"` // 竞速结果（won/lost）
 
 	// 请求生命周期状态
 	Status      string     `json:"status"`                // pending/connecting/first_byte/streaming/completed/failed/cancelled
@@ -74,10 +76,21 @@ const (
 	StatusCompleted  = "completed"
 	StatusFailed     = "failed"
 	StatusCancelled  = "cancelled"
+	// StatusRacingLost 竞速败出：影子请求竞速中另一分支更快交付，本分支被放弃。
+	// 语义上是主动放弃而非渠道故障，不计失败指标。
+	StatusRacingLost = "racing_lost"
+)
+
+// 竞速角色/结果常量。
+const (
+	RacingRolePrimary = "primary"
+	RacingRoleShadow  = "shadow"
+	RacingStatusWon   = "won"
+	RacingStatusLost  = "lost"
 )
 
 func isTerminalStatus(status string) bool {
-	return status == StatusCompleted || status == StatusFailed || status == StatusCancelled
+	return status == StatusCompleted || status == StatusFailed || status == StatusCancelled || status == StatusRacingLost
 }
 
 // ChannelLogStore 渠道日志存储（内存环形缓冲区）。

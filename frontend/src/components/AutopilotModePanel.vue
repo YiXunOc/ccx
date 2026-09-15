@@ -100,6 +100,20 @@
           </div>
         </div>
 
+        <!-- 竞速模式（随整卡保存提交） -->
+        <div class="mb-4">
+          <v-switch
+            v-model="localConfig.racingEnabled"
+            :label="t('autopilot.modePanel.racing')"
+            color="primary"
+            density="compact"
+            hide-details
+          />
+          <div class="text-caption text-medium-emphasis mt-1">
+            {{ t('autopilot.modePanel.racingHint') }}
+          </div>
+        </div>
+
         <!-- 保存按钮 -->
         <div class="d-flex ga-2">
           <v-btn
@@ -152,6 +166,7 @@ watch(() => props.config, (newCfg) => {
   localConfig.scenario = newCfg.scenario ?? 'auto'
   localConfig.scenarioPresets = newCfg.scenarioPresets
   localConfig.l2ProbeEnabled = newCfg.l2ProbeEnabled
+  localConfig.racingEnabled = newCfg.racingEnabled ?? false
 }, { deep: true })
 
 // 场景模式选项
@@ -212,6 +227,7 @@ function updateKillSwitch(enabled: boolean | null) {
 const hasChanges = computed(() => {
   return localConfig.costPreference !== props.config.costPreference
     || (localConfig.scenario ?? 'auto') !== (props.config.scenario ?? 'auto')
+    || (localConfig.racingEnabled ?? false) !== (props.config.racingEnabled ?? false)
 })
 
 // 保存普通配置
@@ -226,6 +242,7 @@ function resetConfig() {
   localConfig.killSwitchForced = props.config.killSwitchForced
   localConfig.costPreference = props.config.costPreference
   localConfig.scenario = props.config.scenario ?? 'auto'
+  localConfig.racingEnabled = props.config.racingEnabled ?? false
 }
 
 // 深拷贝配置（只拷贝前端需要的字段）
@@ -238,6 +255,7 @@ function cloneConfig(src: SmartRoutingConfig): SmartRoutingConfig {
     scenario: src.scenario ?? 'auto',
     scenarioPresets: src.scenarioPresets ? [...src.scenarioPresets] : undefined,
     l2ProbeEnabled: src.l2ProbeEnabled,
+    racingEnabled: src.racingEnabled,
   }
 }
 </script>

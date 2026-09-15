@@ -6,7 +6,7 @@
       "deepseek": {
         "modelMapping": {
           "fable": "deepseek-v4-pro",
-          "haiku": "deepseek-v4-flash",
+          "haiku": "deepseek-flash",
           "opus": "deepseek-v4-pro",
           "sonnet": "deepseek-v4-pro"
         },
@@ -14,7 +14,9 @@
         "normalizeSystemRoleToTopLevel": true,
         "normalizeMetadataUserId": true,
         "stripBillingHeader": true,
-        "noVision": true
+        "noVisionModels": [
+          "deepseek-v4-pro"
+        ]
       },
       "mimo": {
         "modelMapping": {
@@ -248,7 +250,9 @@
     "providers": {
       "deepseek": {
         "reasoningParamStyle": "reasoning",
-        "noVision": true
+        "noVisionModels": [
+          "deepseek-v4-pro"
+        ]
       },
       "mimo": {
         "reasoningParamStyle": "thinking",
@@ -350,9 +354,9 @@
     "providers": {
       "deepseek": {
         "modelMapping": {
-          "codex": "deepseek-v4-flash",
+          "codex": "deepseek-flash",
           "gpt": "deepseek-v4-pro",
-          "mini": "deepseek-v4-flash"
+          "mini": "deepseek-flash"
         },
         "reasoningMapping": {
           "gpt": "max"
@@ -360,7 +364,9 @@
         "reasoningParamStyle": "reasoning",
         "codexToolCompat": false,
         "stripCodexClientTools": false,
-        "noVision": true
+        "noVisionModels": [
+          "deepseek-v4-pro"
+        ]
       },
       "mimo": {
         "modelMapping": {

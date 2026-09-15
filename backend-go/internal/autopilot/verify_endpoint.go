@@ -23,16 +23,17 @@ import (
 const verifyEndpointTimeout = 12 * time.Second
 
 // minimalClaudeProbeBody 最小 Anthropic Messages 探测请求体。
-// max_tokens 取极小值，模型名用占位（鉴权判定不依赖模型有效性）。
+// max_tokens 固定 16（下限约定）：过小值（如 1）会被部分上游拒收或返回空 content 引发误判。
+// 模型名用占位（鉴权判定不依赖模型有效性）。
 // 若上游因模型无效返回 4xx（非 401/403），仍说明服务可达且鉴权通过。
-var minimalClaudeProbeBody = []byte(`{"model":"probe","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`)
+var minimalClaudeProbeBody = []byte(`{"model":"probe","max_tokens":16,"messages":[{"role":"user","content":"ping"}]}`)
 
 // minimalOpenAIChatProbeBody 最小 OpenAI Chat Completions 探测请求体。
 // 与 Claude 探测相同，400/422 通常表示占位模型或参数无效，但鉴权已通过。
-var minimalOpenAIChatProbeBody = []byte(`{"model":"probe","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`)
+var minimalOpenAIChatProbeBody = []byte(`{"model":"probe","messages":[{"role":"user","content":"ping"}],"max_tokens":16}`)
 
 // minimalResponsesProbeBody 最小 OpenAI Responses 探测请求体。
-var minimalResponsesProbeBody = []byte(`{"model":"probe","input":"ping","max_output_tokens":1}`)
+var minimalResponsesProbeBody = []byte(`{"model":"probe","input":"ping","max_output_tokens":16}`)
 
 var minimalImagesProbeBody = []byte(`{"model":"probe","prompt":"ping","size":"256x256"}`)
 
@@ -95,7 +96,7 @@ func VerifyGeminiEndpoint(ctx context.Context, baseURL, apiKey, authHeader strin
 	if !utils.HasAuthenticationHeaderOverride(authHeader) {
 		authHeader = "x-goog-api-key"
 	}
-	return verifyJSONPostEndpoint(ctx, url, apiKey, authHeader, nil, []byte(`{"contents":[{"role":"user","parts":[{"text":"ping"}]}],"generationConfig":{"maxOutputTokens":1}}`))
+	return verifyJSONPostEndpoint(ctx, url, apiKey, authHeader, nil, []byte(`{"contents":[{"role":"user","parts":[{"text":"ping"}]}],"generationConfig":{"maxOutputTokens":16}}`))
 }
 
 // KeyVerifyError 新增 key 验证失败的结构化错误。
@@ -106,7 +107,7 @@ func VerifyGeminiEndpoint(ctx context.Context, baseURL, apiKey, authHeader strin
 type KeyVerifyError struct {
 	MaskedKey   string
 	AuthFailed  bool
-	Probe       string   // 探测方式说明，如 "POST /v1/messages（占位模型 probe，max_tokens=1）"
+	Probe       string   // 探测方式说明，如 "POST /v1/messages（占位模型 probe，max_tokens=16）"
 	Diagnostics []string // 逐候选诊断
 }
 
@@ -122,13 +123,13 @@ func (e *KeyVerifyError) Error() string {
 func channelKeyProbeDesc(kind string) string {
 	switch kind {
 	case "messages":
-		return "POST /v1/messages（占位模型 probe，max_tokens=1）"
+		return "POST /v1/messages（占位模型 probe，max_tokens=16）"
 	case "responses":
-		return "POST /v1/responses（占位模型 probe，max_output_tokens=1）"
+		return "POST /v1/responses（占位模型 probe，max_output_tokens=16）"
 	case "gemini":
-		return "POST /v1beta/models/gemini-2.5-flash:generateContent（maxOutputTokens=1）"
+		return "POST /v1beta/models/gemini-2.5-flash:generateContent（maxOutputTokens=16）"
 	case "chat":
-		return "POST /v1/chat/completions（占位模型 probe，max_tokens=1）"
+		return "POST /v1/chat/completions（占位模型 probe，max_tokens=16）"
 	case "images":
 		return "POST /v1/images/generations（占位模型 probe）"
 	case "vectors":
@@ -142,6 +143,8 @@ func channelKeyProbeDesc(kind string) string {
 // 策略：任一候选地址探测通过即整体通过；全部失败时按失败类型分类——
 // 全部为 401/403 视为 key 无效（AuthFailed=true），其余情况（超时/网络/5xx 等）
 // 只说明探测未通过，不能证明 key 无效（AuthFailed=false，由调用方降级或阻断）。
+// 例外：推理探针被 403 拒时用 GET /v1/models 复核鉴权，通过则不判失败
+// （403 可能只是占位模型无权限/无渠道，key 本身有效）。
 func verifyChannelKey(ctx context.Context, kind string, upstream config.UpstreamConfig, apiKey string) error {
 	baseURLs := upstream.BaseURLsForKey(apiKey)
 	if len(baseURLs) == 0 {
@@ -179,6 +182,14 @@ func verifyChannelKey(ctx context.Context, kind string, upstream config.Upstream
 		}
 		if result.OK {
 			return nil
+		}
+		// 403 只说明「已认证但被拒」：new-api 系对无权限/无可用渠道的占位模型同样返回 403，
+		// 不能据此断言 key 无效——同 key 拉模型列表往往正常（routex 等站点实测）。
+		// 用 GET /v1/models 按 key 复核，通过即视为验证成功；401 是明确未认证，不复核。
+		if result.AuthFailed && result.StatusCode == http.StatusForbidden && probeDesc != modelsListProbeDesc {
+			if VerifyModelsListEndpoint(ctx, baseURL, apiKey, upstream.AuthHeader).OK {
+				return nil
+			}
 		}
 		if result.AuthFailed {
 			authFailedCount++
@@ -404,6 +415,13 @@ func verifyProviderRouteKeys(ctx context.Context, tmpl *config.ProviderTemplate,
 			if res.OK {
 				boundURL = cand.BaseURL
 				break
+			}
+			// 403 推理探针用模型列表复核鉴权（models 探针本身按 key 鉴权，无需复核）
+			if res.AuthFailed && res.StatusCode == http.StatusForbidden && !modelsListProbeForBaseURL(cand.BaseURL) {
+				if VerifyModelsListEndpoint(ctx, cand.BaseURL, apiKey, "").OK {
+					boundURL = cand.BaseURL
+					break
+				}
 			}
 			if res.AuthFailed {
 				authFailedCount++

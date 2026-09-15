@@ -122,3 +122,28 @@ func TestIsUpstreamAccountRateLimited_VolcRealisticShape(t *testing.T) {
 		t.Fatal("realistic volc 429 body should match")
 	}
 }
+
+// new-api/one-api 系中文限流文案（2026-09 seekai 生产观测：429 无 Retry-After，
+// 不识别时 AIMD 置信度停在 0.5 达不到采纳阈值，也不触发 scope 冷却）。
+func TestIsUpstreamAccountRateLimited_NewAPIChineseMessage(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{"seekai 总请求数限制", []byte(`{"error":{"message":"您已达到总请求数限制：1分钟内最多请求5次，包括失败次数","type":"rate_limit_exceeded"}}`)},
+		{"每分钟请求数限制", []byte(`{"error":{"message":"您已达到每分钟请求数限制"}}`)},
+		{"速率限制", []byte(`{"error":{"message":"您的请求已达到速率限制，请稍后重试"}}`)},
+		{"嵌套 upstream_error", []byte(`{"error":{"message":"upstream error","upstream_error":{"message":"您已达到总请求数限制"}}}`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !IsUpstreamAccountRateLimited(http.StatusTooManyRequests, tt.body) {
+				t.Fatalf("应识别为账号级限流: %s", tt.body)
+			}
+		})
+	}
+	// 同样的文案在非 429 状态码下不得命中
+	if IsUpstreamAccountRateLimited(http.StatusBadRequest, tests[0].body) {
+		t.Fatal("非 429 不得命中账号级限流")
+	}
+}

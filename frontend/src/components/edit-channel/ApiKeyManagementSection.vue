@@ -211,12 +211,16 @@
                 rounded="lg"
                 variant="tonal"
                 prepend-gap="8"
+                role="button"
+                :aria-expanded="expandedDetailKey === row.key"
                 :color="row.disabled ? 'warning' : duplicateKeyIndex === row.activeIndex ? 'error' : 'surface-variant'"
                 :class="{
                   'animate-pulse': duplicateKeyIndex === row.activeIndex,
                   'volcengine-key-row': !!(row.planCredential || row.minimaxEndpoint),
                 }"
-                @click="(row.planCredential || row.minimaxEndpoint) && toggleCredentialKey(row.key)"
+                class="cursor-pointer"
+                @click="onKeyRowClick(row)"
+                @keydown.enter.prevent="onKeyRowClick(row)"
               >
                 <template #prepend>
                   <div class="d-flex align-center">
@@ -329,17 +333,13 @@
                     </v-chip>
                     <span>{{ t('subscription.keyMultiplier.group') }}: {{ row.quotaGroup || '-' }}</span>
                     <span>{{ t('subscription.keyMultiplier.value') }}: {{ row.groupMultiplier ?? '-' }}</span>
-                    <span>{{ t('subscription.keyMultiplier.max') }}: {{ row.maxGroupMultiplier ?? '-' }}</span>
+                    <span>{{ t('subscription.keyMultiplier.max') }}: {{ row.maxGroupMultiplier ?? props.channelMaxGroupMultiplier ?? '-' }}</span>
                     <span v-if="row.effectiveCostClass">{{ t('subscription.keyMultiplier.effectiveCostClass') }}: {{ row.effectiveCostClass }}</span>
                     <span v-if="row.multiplierExpiresAt">TTL: {{ formatDisabledTime(row.multiplierExpiresAt) }}</span>
                     <span :class="row.eligible === false ? 'text-error' : 'text-success'">
                       {{ row.eligible === false ? (row.ineligibleReason || t('subscription.keyMultiplier.ineligible')) : t('subscription.keyMultiplier.eligible') }}
                     </span>
                     </template>
-                    <!-- 倍率编辑入口对未设置倍率的 key 同样可见（否则首次设置无入口） -->
-                    <v-btn v-if="row.keyUid && channelUid && channelKind" size="x-small" variant="tonal" color="secondary" prepend-icon="mdi-scale-balance" @click="openMultiplierEditor(row)">
-                      {{ (row.multiplierSource || row.groupMultiplier != null || row.maxGroupMultiplier != null) ? t('app.actions.edit') : t('subscription.keyMultiplier.title') }}
-                    </v-btn>
                   </div>
                 </v-list-item-subtitle>
                 <v-list-item-subtitle v-if="row.volcengineCredential" class="mt-1 text-caption">
@@ -371,9 +371,10 @@
 
                 <template #append>
                   <div class="d-flex align-center ga-1" @click.stop>
+                    <!-- 统一详情入口（渠道列表同款下箭头）：展开后同块承载 Key 倍率与分组模型排除 -->
                     <v-tooltip
-                      v-if="!row.disabled"
-                      :text="t('channelCard.groupModelPolicy')"
+                      v-if="!row.disabled && row.keyUid && channelUid && channelKind"
+                      :text="t('channelCard.keyDetail')"
                       location="top"
                       :open-delay="150"
                       content-class="ccx-tooltip"
@@ -381,13 +382,14 @@
                       <template #activator="{ props: tooltipProps }">
                         <v-btn
                           v-bind="tooltipProps"
+                          :aria-label="t('channelCard.keyDetail')"
                           size="small"
-                          color="secondary"
+                          :color="expandedDetailKey === row.key ? 'primary' : 'default'"
                           icon
                           variant="text"
-                          @click="openGroupModelEditor(row)"
+                          @click="toggleKeyDetail(row)"
                         >
-                          <v-icon size="small">mdi-tune-variant</v-icon>
+                          <v-icon size="small">{{ expandedDetailKey === row.key ? 'mdi-chevron-up' : 'mdi-chevron-down' }}</v-icon>
                         </v-btn>
                       </template>
                     </v-tooltip>
@@ -550,6 +552,103 @@
                   </div>
                 </template>
               </v-list-item>
+
+              <v-expand-transition>
+                <!-- Key 行统一详情面板：倍率（变更即保存）与分组模型排除（模型定稿即提交）同块展示 -->
+                <div v-if="row.keyUid && channelUid && channelKind && expandedDetailKey === row.key" class="volcengine-key-detail px-4 pt-3 pb-4">
+                  <div class="text-caption text-medium-emphasis mb-2">
+                    <code>{{ maskApiKey(row.key) }}</code>
+                    <v-chip size="x-small" color="secondary" variant="tonal" class="ml-2">
+                      {{ row.quotaGroup || t('channelCard.ungrouped') }}
+                    </v-chip>
+                    <span class="ml-2">{{ t('channelCard.affectedGroupKeys', { count: groupModelAffectedCount }) }}</span>
+                  </div>
+                  <v-row dense>
+                    <v-col cols="12" sm="6">
+                      <v-select
+                        v-model="multiplierForm.consumptionPolicy"
+                        :items="consumptionPolicyOptions"
+                        item-title="title"
+                        item-value="value"
+                        :label="t('subscription.keyMultiplier.policy')"
+                        clearable
+                        variant="outlined"
+                        density="compact"
+                        hide-details
+                        @update:model-value="applyMultiplierToConfigs"
+                      />
+                    </v-col>
+                    <v-col cols="12" sm="6">
+                      <v-text-field
+                        v-model="multiplierForm.groupMultiplier"
+                        type="number"
+                        min="0"
+                        step="any"
+                        :disabled="multiplierEditing?.multiplierSource === 'new_api'"
+                        :label="t('subscription.keyMultiplier.value')"
+                        variant="outlined"
+                        density="compact"
+                        hide-details
+                        @change="applyMultiplierToConfigs"
+                      />
+                    </v-col>
+                  </v-row>
+                  <!-- 两条 caption 与上方两列输入框对齐：左=暂存说明，右=渠道上限（原输入框 hint，与暂存行错行） -->
+                  <v-row dense class="mt-1">
+                    <v-col cols="12" sm="6">
+                      <div class="d-flex align-center ga-2 text-caption text-medium-emphasis">
+                        <v-icon size="14">mdi-content-save-edit-outline</v-icon>
+                        <span>{{ t('subscription.keyMultiplier.stagedHint') }}</span>
+                      </div>
+                    </v-col>
+                    <v-col v-if="channelMaxGroupMultiplierHint" cols="12" sm="6">
+                      <div class="text-caption text-medium-emphasis">{{ channelMaxGroupMultiplierHint }}</div>
+                    </v-col>
+                  </v-row>
+                  <v-alert
+                    v-if="multiplierForm.consumptionPolicy === 'opportunistic'"
+                    color="warning"
+                    variant="tonal"
+                    density="compact"
+                    class="mt-3"
+                  >
+                    {{ t('subscription.keyMultiplier.policyHint') }}
+                  </v-alert>
+
+                  <v-divider class="my-3" />
+
+                  <div class="text-subtitle-2 font-weight-medium mb-1">{{ t('channelCard.groupModelPolicy') }}</div>
+                  <v-combobox
+                    v-model="groupModelForm.model"
+                    :items="modelOptions"
+                    item-title="title"
+                    item-value="value"
+                    :return-object="false"
+                    :label="t('channelCard.groupModelModel')"
+                    :placeholder="t('channelCard.groupModelModelPlaceholder')"
+                    variant="outlined"
+                    density="compact"
+                    clearable
+                    @update:model-value="submitGroupModelDisable"
+                  />
+                  <!-- 无确认按钮：模型选定即暂存排除，随渠道主保存提交；误排可在此撤销或保存后经记录恢复。 -->
+                  <div class="text-caption text-medium-emphasis mt-2">{{ t('channelCard.groupModelInlineHint') }}</div>
+                  <div v-if="pendingDisablesForEditingKey.length" class="d-flex flex-wrap ga-2 mt-2">
+                    <v-chip
+                      v-for="pending in pendingDisablesForEditingKey"
+                      :key="pending.model"
+                      size="small"
+                      color="warning"
+                      variant="tonal"
+                      closable
+                      @click:close="unstageGroupModelDisable(pending.key, pending.model)"
+                    >
+                      <v-icon start size="14">mdi-clock-outline</v-icon>
+                      {{ pending.model }}
+                    </v-chip>
+                  </div>
+                </div>
+              </v-expand-transition>
 
               <v-expand-transition>
                 <div
@@ -1262,7 +1361,7 @@
                 <strong>{{ record.model }}</strong>
               </v-list-item-title>
               <v-list-item-subtitle class="text-caption">
-                {{ record.note || t('channelCard.groupModelManualNote') }} · {{ formatDisabledTime(record.disabledAt) }}
+                {{ t('channelCard.groupModelManualNote') }} · {{ formatDisabledTime(record.disabledAt) }}
               </v-list-item-subtitle>
               <template #append>
                 <v-btn
@@ -1325,121 +1424,11 @@
       </v-card-text>
     </v-card>
 
-    <v-dialog v-model="groupModelDialog" max-width="520">
-      <v-card>
-        <v-card-title class="d-flex align-center ga-2">
-          <v-icon color="secondary">mdi-tune-variant</v-icon>
-          {{ t('channelCard.groupModelPolicy') }}
-        </v-card-title>
-        <v-card-text class="d-flex flex-column ga-3">
-          <div class="d-flex align-center ga-2 flex-wrap text-caption text-medium-emphasis">
-            <code>{{ groupModelEditing ? maskApiKey(groupModelEditing.key) : '' }}</code>
-            <v-chip size="x-small" color="secondary" variant="tonal">
-              {{ groupModelEditing?.quotaGroup || t('channelCard.ungrouped') }}
-            </v-chip>
-            <span>{{ t('channelCard.affectedGroupKeys', { count: groupModelAffectedCount }) }}</span>
-          </div>
-          <v-combobox
-            v-model="groupModelForm.model"
-            :items="modelOptions"
-            item-title="title"
-            item-value="value"
-            :return-object="false"
-            :label="t('channelCard.groupModelModel')"
-            :placeholder="t('channelCard.groupModelModelPlaceholder')"
-            variant="outlined"
-            density="compact"
-            clearable
-            autofocus
-          />
-          <v-text-field
-            v-model="groupModelForm.note"
-            :label="t('channelCard.groupModelNote')"
-            :placeholder="t('channelCard.groupModelNotePlaceholder')"
-            variant="outlined"
-            density="compact"
-            clearable
-          />
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn variant="text" @click="groupModelDialog = false">
-            {{ t('app.actions.cancel') }}<span class="shortcut-hint ml-2 text-xs opacity-50">Esc</span>
-          </v-btn>
-          <v-btn
-            color="warning"
-            variant="tonal"
-            :loading="!!changingGroupModel"
-            :disabled="!groupModelForm.model.trim() || !!changingGroupModel"
-            @click="submitGroupModelDisable"
-          >
-            {{ t('channelCard.disableGroupModel') }}<span class="shortcut-hint ml-2 text-xs opacity-50">{{ isMac ? '⌘Enter' : 'Ctrl+Enter' }}</span>
-          </v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
-
-    <v-dialog v-model="multiplierDialog" max-width="520">
-      <v-card>
-        <v-card-title>{{ t('subscription.keyMultiplier.title') }}</v-card-title>
-        <v-card-text>
-          <v-select
-            v-model="multiplierForm.consumptionPolicy"
-            :items="consumptionPolicyOptions"
-            item-title="title"
-            item-value="value"
-            :label="t('subscription.keyMultiplier.policy')"
-            clearable
-            variant="outlined"
-            class="mb-4"
-          />
-          <v-text-field
-            v-model="multiplierForm.groupMultiplier"
-            type="number"
-            min="0"
-            step="any"
-            :disabled="multiplierEditing?.multiplierSource === 'new_api'"
-            :label="t('subscription.keyMultiplier.value')"
-            clearable
-            variant="outlined"
-          />
-          <v-text-field v-model="multiplierForm.maxGroupMultiplier" type="number" min="0" step="any" :label="t('subscription.keyMultiplier.max')" clearable variant="outlined" />
-          <v-alert
-            v-if="multiplierForm.consumptionPolicy === 'opportunistic'"
-            color="warning"
-            variant="tonal"
-            density="compact"
-            class="mt-3"
-          >
-            {{ t('subscription.keyMultiplier.policyHint') }}
-          </v-alert>
-          <v-alert v-if="multiplierError" color="error" variant="tonal" density="compact">{{ multiplierError }}</v-alert>
-        </v-card-text>
-        <v-card-actions>
-          <v-btn
-            v-if="multiplierEditing?.multiplierSource !== 'new_api'"
-            variant="text"
-            color="warning"
-            @click="markAsPublicKey"
-          >
-            {{ t('subscription.keyMultiplier.markPublic') }}
-          </v-btn>
-          <v-spacer />
-          <v-btn variant="text" @click="multiplierDialog = false">
-            {{ t('app.actions.cancel') }}<span class="shortcut-hint ml-2 text-xs opacity-50">Esc</span>
-          </v-btn>
-          <v-btn color="primary" :loading="multiplierSaving" @click="saveMultiplier">
-            {{ t('app.actions.save') }}<span class="shortcut-hint ml-2 text-xs opacity-50">{{ isMac ? '⌘Enter' : 'Ctrl+Enter' }}</span>
-          </v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount, watch } from 'vue'
-import { useDialogHotkeys } from '../../composables/useDialogHotkeys'
 import { useI18n } from '../../i18n'
 import { ApiError, ApiService } from '../../services/api'
 import type {
@@ -1491,6 +1480,7 @@ interface Props {
   disabledKeys: DisabledKeyInfo[]
   disabledKeyModels?: DisabledKeyModel[]
   disabledGroupModels?: DisabledGroupModelInfo[]
+  pendingGroupModelDisables?: Array<{ key: string; model: string; note?: string }>
   modelOptions?: Array<{ title: string; value: string }>
   apiKeyConfigs?: APIKeyConfig[]
   keyModelsStatus: Map<string, KeyModelsStatus>
@@ -1504,6 +1494,7 @@ interface Props {
   channelId?: number
   channelUid?: string
   channelKind?: 'messages' | 'chat' | 'responses' | 'gemini' | 'images' | 'vectors'
+  channelMaxGroupMultiplier?: number | null
   dialogOpen: boolean
   proxyUrl?: string
   accountUid?: string
@@ -1518,7 +1509,8 @@ const emit = defineEmits<{
   'update:proxyUrl': [string]
   'restore-key': [string]
   'restore-key-model': [string, string]
-  'disable-group-model': [string, string, string?]
+  'stage-group-model-disable': [string, string]
+  'unstage-group-model-disable': [string, string]
   'restore-group-model': [DisabledGroupModelInfo]
   'remove-key': [string]
   'suspend-key': [string]
@@ -1534,14 +1526,12 @@ const newApiKey = ref('')
 const apiKeyError = ref('')
 const duplicateKeyIndex = ref<number | null>(null)
 const copiedKey = ref('')
-const groupModelDialog = ref(false)
 const groupModelEditing = ref<ChannelApiKeyRow | null>(null)
-const groupModelForm = ref({ model: '', note: '' })
-const multiplierDialog = ref(false)
-const multiplierSaving = ref(false)
-const multiplierError = ref('')
+const groupModelForm = ref({ model: '' })
+// Key 行统一详情展开（倍率 + 分组模型排除同一块）：一次只展开一行，切换即重置编辑态。
+const expandedDetailKey = ref<string | null>(null)
 const multiplierEditing = ref<ChannelApiKeyRow | null>(null)
-const multiplierForm = ref<{ groupMultiplier: number | null; maxGroupMultiplier: number | null; consumptionPolicy: 'normal' | 'opportunistic' | null }>({ groupMultiplier: null, maxGroupMultiplier: null, consumptionPolicy: null })
+const multiplierForm = ref<{ groupMultiplier: number | null; consumptionPolicy: 'normal' | 'opportunistic' | null }>({ groupMultiplier: null, consumptionPolicy: null })
 
 const consumptionPolicyOptions = computed(() => [
   { title: t('subscription.keyMultiplier.policyNormal'), value: 'normal' as const },
@@ -1749,21 +1739,6 @@ const groupModelAffectedCount = computed(() => {
   return keyRows.value.filter(row => (row.quotaGroup || '') === group && !row.disabled).length
 })
 
-const openGroupModelEditor = (row: ChannelApiKeyRow) => {
-  groupModelEditing.value = row
-  groupModelForm.value = { model: '', note: '' }
-  emit('ensure-models-loaded')
-  groupModelDialog.value = true
-}
-
-const submitGroupModelDisable = () => {
-  const row = groupModelEditing.value
-  const model = groupModelForm.value.model.trim()
-  if (!row || !model) return
-  emit('disable-group-model', row.key, model, groupModelForm.value.note.trim() || undefined)
-  groupModelDialog.value = false
-}
-
 const multiplierStatusColor = (status?: string) => status === 'fresh' || status === 'manual' ? 'success' : status === 'over_limit' || status === 'sync_error' || status === 'relink_required' ? 'error' : 'warning'
 
 const openMultiplierEditor = (row: ChannelApiKeyRow) => {
@@ -1771,19 +1746,60 @@ const openMultiplierEditor = (row: ChannelApiKeyRow) => {
   const policy: 'normal' | 'opportunistic' | null = row.consumptionPolicy === 'opportunistic' ? 'opportunistic' : row.consumptionPolicy === 'normal' ? 'normal' : null
   multiplierForm.value = {
     groupMultiplier: row.groupMultiplier ?? null,
-    maxGroupMultiplier: row.maxGroupMultiplier ?? null,
     consumptionPolicy: policy,
   }
-  multiplierError.value = ''
-  multiplierDialog.value = true
 }
 
-const markAsPublicKey = () => {
-  multiplierForm.value = {
-    groupMultiplier: 0,
-    maxGroupMultiplier: 0,
-    consumptionPolicy: 'opportunistic',
+// Key 行统一详情展开（替代旧弹窗与两个独立入口）：一次只展开一行，切换即重置编辑态。
+// 面板同时承载 Key 倍率（暂存表单，随渠道主保存落盘）与分组模型排除（暂存，主保存后提交）。
+const toggleKeyDetail = (row: ChannelApiKeyRow) => {
+  if (expandedDetailKey.value === row.key) {
+    closeKeyDetail()
+    return
   }
+  openMultiplierEditor(row)
+  groupModelEditing.value = row
+  groupModelForm.value = { model: '' }
+  emit('ensure-models-loaded')
+  expandedDetailKey.value = row.key
+}
+
+const closeKeyDetail = () => {
+  expandedDetailKey.value = null
+  multiplierEditing.value = null
+  groupModelEditing.value = null
+}
+
+// 分组倍率输入框 hint：仅在渠道启用上限时提示（未启用时不解释闸门语义，避免噪声）。
+const channelMaxGroupMultiplierHint = computed(() => {
+  const limit = Number(props.channelMaxGroupMultiplier)
+  if (!Number.isFinite(limit) || limit <= 0) return ''
+  return t('subscription.keyMultiplier.channelLimitHint', { limit })
+})
+
+// 倍率改动不即时落盘：写入外层渠道编辑表单的 apiKeyConfigs 快照，
+// 随渠道主保存一并提交（自定义渠道走渠道 PUT 的 apiKeyConfigs merge；
+// 托管渠道由 channel.ts 单卡更新补发）。行副标题 chips 经 props 回流即时反映新值。
+const applyMultiplierToConfigs = () => {
+  const row = multiplierEditing.value
+  if (!row || !props.apiKeyConfigs?.length) return
+  let groupMultiplier: number | null
+  try {
+    groupMultiplier = parseMultiplierInput(multiplierForm.value.groupMultiplier)
+  } catch {
+    return // 非法输入暂不暂存，保留上次合法值
+  }
+  const configs = props.apiKeyConfigs.map(cfg => {
+    const cfgId = cfg.keyUid ?? cfg.credentialUid
+    if (cfgId !== row.keyUid && cfg.key !== row.key) return cfg
+    return {
+      ...cfg,
+      groupMultiplier,
+      maxGroupMultiplier: null,
+      consumptionPolicy: multiplierForm.value.consumptionPolicy ?? undefined,
+    }
+  })
+  emit('update:apiKeyConfigs', configs)
 }
 
 const parseMultiplierInput = (value: number | string | null): number | null => {
@@ -1793,48 +1809,42 @@ const parseMultiplierInput = (value: number | string | null): number | null => {
   return parsed
 }
 
-const saveMultiplier = async () => {
-  const row = multiplierEditing.value
-  if (!row?.keyUid || !props.channelUid || !props.channelKind) return
-  multiplierSaving.value = true
-  multiplierError.value = ''
-  try {
-    const maxGroupMultiplier = parseMultiplierInput(multiplierForm.value.maxGroupMultiplier)
-    const body = row.multiplierSource === 'new_api'
-      ? { maxGroupMultiplier, consumptionPolicy: multiplierForm.value.consumptionPolicy }
-      : { groupMultiplier: parseMultiplierInput(multiplierForm.value.groupMultiplier), maxGroupMultiplier, consumptionPolicy: multiplierForm.value.consumptionPolicy }
-    const response = await apiService.patchKeyMultiplier(props.channelKind, props.channelUid, row.keyUid, body)
-    row.groupMultiplier = response.groupMultiplier ?? null
-    row.maxGroupMultiplier = response.maxMultiplier ?? null
-    row.consumptionPolicy = response.consumptionPolicy ?? null
-    row.effectiveCostClass = response.effectiveCostClass ?? undefined
-    row.multiplierSyncStatus = response.status
-    row.multiplierSyncError = response.reason
-    row.eligible = response.eligible
-    row.ineligibleReason = response.reason
-    row.multiplierUpdatedAt = response.updatedAt
-    row.multiplierExpiresAt = response.expiresAt
-    multiplierDialog.value = false
-  } catch (error) {
-    multiplierError.value = error instanceof Error ? error.message : String(error)
-  } finally {
-    multiplierSaving.value = false
-  }
+// 模型选定（combobox 选择/手输回车定稿）即暂存排除（不即时调端点），
+// 随渠道主保存成功后统一提交；暂存条目在面板中可撤销。清空（clearable → null）不触发。
+const submitGroupModelDisable = (model: unknown = groupModelForm.value.model) => {
+  const row = groupModelEditing.value
+  const trimmed = (model ?? '').toString().trim()
+  if (!row || !trimmed) return
+  emit('stage-group-model-disable', row.key, trimmed)
+  groupModelForm.value = { model: '' }
 }
 
-// 分组模型策略 / Key 倍率内联对话框默认快捷键（Esc 取消走 Vuetify 原生，仅关本层）
-useDialogHotkeys(groupModelDialog, {
-  confirm: () => submitGroupModelDisable(),
-})
-useDialogHotkeys(multiplierDialog, {
-  confirm: () => {
-    if (multiplierSaving.value) return
-    void saveMultiplier()
-  },
-})
+const unstageGroupModelDisable = (key: string, model: string) => {
+  emit('unstage-group-model-disable', key, model)
+}
+
+// 当前展开 key 的暂存排除条目（展示于面板下半区，随主保存提交）。
+const pendingDisablesForEditingKey = computed(() =>
+  (props.pendingGroupModelDisables || []).filter(item => item.key === groupModelEditing.value?.key)
+)
 
 const toggleCredentialKey = (key: string) => {
   expandedCredentialKey.value = expandedCredentialKey.value === key ? null : key
+}
+
+// Key 行点击：整条可点按「展开/收起」优先级分发——可编辑渠道优先开倍率详情，
+// 否则回退到套餐用量详情；无详情可开则忽略。其他列表（newapi 账号）同款「点击行即展开」心智。
+const onKeyRowClick = (row: ChannelApiKeyRow) => {
+  if (row.disabled) return
+  // provider 有套餐/用量凭证且非禁用：展开用量详情（保持原「点击行切凭证详情」）
+  if (row.planCredential || row.minimaxEndpoint) {
+    toggleCredentialKey(row.key)
+    return
+  }
+  // 可编辑渠道普通 Key：展开倍率/分组模型详情
+  if (!row.disabled && row.keyUid && props.channelUid && props.channelKind) {
+    toggleKeyDetail(row)
+  }
 }
 
 const disabledKeyColor = (reason: string) => (
@@ -2891,6 +2901,10 @@ const getDisabledKeyLabel = (reason: string) => {
 .section-title {
   font-size: 1.125rem;
   font-weight: 600;
+}
+
+.cursor-pointer {
+  cursor: pointer;
 }
 
 .key-sortable-list {

@@ -76,7 +76,7 @@ func buildMinimalTestRequest() interface{} {
 				"content": "Hi",
 			},
 		},
-		"max_tokens": 10,
+		"max_tokens": 16,
 	}
 }
 
@@ -85,7 +85,7 @@ func sendTestRequest(ctx context.Context, baseURL string, apiKey string, req int
 	// 构造完整请求
 	fullReq := map[string]interface{}{
 		"model":      model,
-		"max_tokens": 10,
+		"max_tokens": 16,
 	}
 
 	// 合并 system 和 messages

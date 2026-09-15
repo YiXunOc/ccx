@@ -135,6 +135,9 @@ type ScoringCandidate struct {
 	SpeedTier     SpeedTier
 	CostTier      CostTier
 	HealthState   HealthState
+	// LatencyDegraded 延迟负反馈学习结论：该渠道×模型×任务类组合连续慢证据
+	// 达阈值（竞速被击败/触发/首字超家族 p90），经 calcPenalty 软降权。
+	LatencyDegraded bool
 
 	// 供应商质量（同模型在不同上游的质量差异）
 	ProviderQualityScore      float64 // 0.0-1.0
@@ -316,8 +319,12 @@ func ScoreCandidate(candidate ScoringCandidate, ctx ScoringContext) ScoredCandid
 		qhs = 0.5 // fail-open：无数据时给中性分，不惩罚
 	}
 
-	// 11. penalty：healthState=degraded 时 -5, limited 时 -20
+	// 11. penalty：healthState=degraded 时 -5, limited 时 -20；
+	// 延迟劣化学习结论叠加 -15（介于 degraded 与 limited 之间，快样本乐观翻转即回升）。
 	penalty := calcPenalty(candidate.HealthState)
+	if candidate.LatencyDegraded {
+		penalty += latencyDegradedPenalty
+	}
 
 	// 十项求和
 	total := w.WQuality*qs +
@@ -373,6 +380,10 @@ func calcTierMatchBonus(c ScoringCandidate, hint string) float64 {
 	}
 	return 0
 }
+
+// latencyDegradedPenalty 延迟劣化学习结论的软降权幅度：介于 degraded（-5）与
+// limited（-20）之间——延迟差不是能力缺失（请求能成功），不打沉到底，快样本翻转即回升。
+const latencyDegradedPenalty = 15.0
 
 // calcPenalty 计算健康状态惩罚分（§5.3）。
 // assist 模式必须保留全部候选，因此用终态惩罚确保 dead/misconfigured

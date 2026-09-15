@@ -132,7 +132,7 @@ func TestBuildChannelViews_KeyEnabledReflectsDisabled(t *testing.T) {
 
 // TestMigrateStaleChannelViewNames_ResetsOldDerivedName 验证旧派生规则写下的
 // vip-lyclaude-site-claude 在镜像里被改写为新规则派生值 vip-lyclaude-site，
-// 且旧名进 Remark，ChannelsV3 同步。
+// 旧名不进 Remark（旧名保留机制已随存量迁移退役，保留只会复活用户删除的备注），ChannelsV3 同步。
 func TestMigrateStaleChannelViewNames_ResetsOldDerivedName(t *testing.T) {
 	cfg := &Config{
 		ChannelsV3: []ChannelV3{{
@@ -155,8 +155,8 @@ func TestMigrateStaleChannelViewNames_ResetsOldDerivedName(t *testing.T) {
 	if got := cfg.Channels[0].Name; got != "vip-lyclaude-site" {
 		t.Errorf("Channels[0].Name = %q, want %q", got, "vip-lyclaude-site")
 	}
-	if got := cfg.Channels[0].Remark; got != "vip-lyclau" {
-		t.Errorf("Channels[0].Remark = %q, want %q (10 字符截断)", got, "vip-lyclau")
+	if got := cfg.Channels[0].Remark; got != "" {
+		t.Errorf("Channels[0].Remark = %q, want 空（改名不得把旧名写进备注复活）", got)
 	}
 	if got := cfg.ChannelsV3[0].Name; got != "vip-lyclaude-site" {
 		t.Errorf("ChannelsV3[0].Name = %q, want %q", got, "vip-lyclaude-site")

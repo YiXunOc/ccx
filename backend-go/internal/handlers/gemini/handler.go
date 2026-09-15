@@ -161,8 +161,9 @@ func handleMultiChannel(
 		userID,
 		model,
 		contextRequirement,
+		isStream,
 		agentRole,
-		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
+		func(c *gin.Context, selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
 			channelIndex := selection.ChannelIndex
 
@@ -690,6 +691,10 @@ func handleSuccess(
 		return nil, common.ErrEmptyNonStreamResponse
 	}
 
+	// 竞速提交闸门：完整响应校验通过后裁决赢家；败者零字节写客户端。
+	if !common.RacingClaimClientCommit(c) {
+		return nil, common.ErrRacingSuperseded
+	}
 	// 返回 Gemini 格式响应
 	respBytes, err := json.Marshal(geminiResp)
 	if err != nil {

@@ -370,7 +370,7 @@ func TestNewApiAdapter_ProvisionKey_CreateNew(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("解析请求体失败: %v", err)
 			}
-			if req.Name != "ccx-autopilot" {
+			if req.Name != DefaultNewApiProvisionKeyName {
 				t.Fatalf("建 key 名称不符: %s", req.Name)
 			}
 			if !req.UnlimitedQuota || req.ExpiredTime != -1 || req.RemainQuota != 0 {
@@ -383,7 +383,7 @@ func TestNewApiAdapter_ProvisionKey_CreateNew(t *testing.T) {
 	})
 
 	adapter := &NewApiAdapter{HTTPClient: srv.Client()}
-	tokenID, key, reused, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{})
+	tokenID, key, reused, _, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{})
 	if err != nil {
 		t.Fatalf("ProvisionKey 失败: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestNewApiAdapter_ProvisionKey_ReuseExisting(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/token/":
 			writeEnvelope(w, true, map[string]interface{}{
 				"items": []NewApiToken{
-					{ID: 7, Key: "sk-existing", Name: "ccx-autopilot", Status: 1},
+					{ID: 7, Key: "sk-existing", Name: DefaultNewApiProvisionKeyName, Status: 1},
 				},
 			}, "")
 		case r.Method == http.MethodPost && r.URL.Path == "/api/token/":
@@ -417,7 +417,7 @@ func TestNewApiAdapter_ProvisionKey_ReuseExisting(t *testing.T) {
 	})
 
 	adapter := &NewApiAdapter{HTTPClient: srv.Client()}
-	tokenID, key, reused, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{})
+	tokenID, key, reused, _, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{})
 	if err != nil {
 		t.Fatalf("ProvisionKey 失败: %v", err)
 	}
@@ -432,32 +432,45 @@ func TestNewApiAdapter_ProvisionKey_ReuseExisting(t *testing.T) {
 	}
 }
 
-func TestNewApiAdapter_ProvisionKey_RejectsExistingKeyInDifferentGroup(t *testing.T) {
-	postCalled := false
+func TestNewApiAdapter_ProvisionKey_SuffixesOnNameGroupMismatch(t *testing.T) {
+	var createdName string
 	srv := newMockNewApiServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/token/":
-			writeEnvelope(w, true, map[string]interface{}{
-				"items": []NewApiToken{{ID: 7, Key: "sk-existing", Name: "ccx-autopilot-default", Group: "premium", Status: 1}},
-			}, "")
+			items := []NewApiToken{{ID: 7, Key: "sk-existing", Name: "ccx-autopilot-default", Group: "premium", Status: 1}}
+			if createdName != "" {
+				items = append(items, NewApiToken{ID: 999, Key: "sk-created", Name: createdName, Group: "default", Status: 1})
+			}
+			writeEnvelope(w, true, map[string]interface{}{"items": items}, "")
 		case r.Method == http.MethodPost && r.URL.Path == "/api/token/":
-			postCalled = true
-			writeEnvelope(w, true, NewApiToken{ID: 999, Key: "sk-should-not-be-created"}, "")
+			var req NewApiCreateTokenRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("解析请求体失败: %v", err)
+			}
+			createdName = req.Name
+			writeEnvelope(w, true, NewApiToken{ID: 999, Key: "sk-created", Name: req.Name, Group: req.Group}, "")
 		default:
 			t.Fatalf("意外请求: %s %s", r.Method, r.URL.Path)
 		}
 	})
 
+	// 同名异组：不复用、不报错，换 2 位后缀新建，避免误绑不属于目标分组的同名 key。
 	adapter := &NewApiAdapter{HTTPClient: srv.Client()}
-	_, _, _, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{
+	tokenID, key, reused, _, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{
 		Name:  "ccx-autopilot-default",
 		Group: "default",
 	})
-	if err == nil {
-		t.Fatal("同名但不同分组的 key 必须被拒绝")
+	if err != nil {
+		t.Fatalf("同名异组应加后缀避让而非报错: %v", err)
 	}
-	if postCalled {
-		t.Fatal("分组不匹配时不应新建或复用 key")
+	if reused {
+		t.Fatal("加后缀后应标记为新建（非复用）")
+	}
+	if tokenID != 999 || key != "sk-created" {
+		t.Fatalf("新建结果不符: id=%d key=%s", tokenID, key)
+	}
+	if createdName == "ccx-autopilot-default" || len(createdName) <= len("ccx-autopilot-default") {
+		t.Fatalf("创建名应带避让后缀: %s", createdName)
 	}
 }
 
@@ -482,7 +495,7 @@ func TestNewApiAdapter_ProvisionKey_WithModelsAndGroup(t *testing.T) {
 	})
 
 	adapter := &NewApiAdapter{HTTPClient: srv.Client()}
-	_, _, _, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{
+	_, _, _, _, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{
 		Group:  "vip",
 		Models: []string{"gpt-4o", "claude-3-5-sonnet"},
 	})
@@ -505,18 +518,18 @@ func TestNewApiAdapter_ProvisionKey_CreateResponseMissingKey_FallbackToList(t *t
 				// 第二次回查：能找到刚创建的
 				writeEnvelope(w, true, map[string]interface{}{
 					"items": []NewApiToken{
-						{ID: 55, Key: "sk-fallback", Name: "ccx-autopilot", Status: 1},
+						{ID: 55, Key: "sk-fallback", Name: DefaultNewApiProvisionKeyName, Status: 1},
 					},
 				}, "")
 			}
 		case r.Method == http.MethodPost && r.URL.Path == "/api/token/":
 			// 创建响应不带 key
-			writeEnvelope(w, true, NewApiToken{ID: 55, Name: "ccx-autopilot"}, "")
+			writeEnvelope(w, true, NewApiToken{ID: 55, Name: DefaultNewApiProvisionKeyName}, "")
 		}
 	})
 
 	adapter := &NewApiAdapter{HTTPClient: srv.Client()}
-	tokenID, key, reused, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{})
+	tokenID, key, reused, _, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{})
 	if err != nil {
 		t.Fatalf("ProvisionKey 失败: %v", err)
 	}
@@ -536,7 +549,7 @@ func TestNewApiAdapter_ProvisionKey_MaskedReuse_Revealed(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/token/":
 			writeEnvelope(w, true, map[string]interface{}{
 				"items": []NewApiToken{
-					{ID: 7, Key: "bV6R********Af6H", Name: "ccx-autopilot", Status: 1},
+					{ID: 7, Key: "bV6R********Af6H", Name: DefaultNewApiProvisionKeyName, Status: 1},
 				},
 			}, "")
 		case r.Method == http.MethodPost && r.URL.Path == "/api/token/7/key":
@@ -548,7 +561,7 @@ func TestNewApiAdapter_ProvisionKey_MaskedReuse_Revealed(t *testing.T) {
 	})
 
 	adapter := &NewApiAdapter{HTTPClient: srv.Client()}
-	tokenID, key, reused, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{})
+	tokenID, key, reused, _, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{})
 	if err != nil {
 		t.Fatalf("ProvisionKey 失败: %v", err)
 	}
@@ -575,7 +588,7 @@ func TestNewApiAdapter_ProvisionKey_MaskedFallbackList_Revealed(t *testing.T) {
 			} else {
 				writeEnvelope(w, true, map[string]interface{}{
 					"items": []NewApiToken{
-						{ID: 55, Key: "oxGA********x9Zk", Name: "ccx-autopilot", Group: "default", Status: 1},
+						{ID: 55, Key: "oxGA********x9Zk", Name: DefaultNewApiProvisionKeyName, Group: "default", Status: 1},
 					},
 				}, "")
 			}
@@ -590,7 +603,7 @@ func TestNewApiAdapter_ProvisionKey_MaskedFallbackList_Revealed(t *testing.T) {
 	})
 
 	adapter := &NewApiAdapter{HTTPClient: srv.Client()}
-	tokenID, key, reused, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{})
+	tokenID, key, reused, _, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{})
 	if err != nil {
 		t.Fatalf("ProvisionKey 失败: %v", err)
 	}
@@ -609,7 +622,7 @@ func TestNewApiAdapter_ProvisionKey_MaskedRevealUnavailable_Error(t *testing.T) 
 		case r.Method == http.MethodGet && r.URL.Path == "/api/token/":
 			writeEnvelope(w, true, map[string]interface{}{
 				"items": []NewApiToken{
-					{ID: 7, Key: "bV6R********Af6H", Name: "ccx-autopilot", Status: 1},
+					{ID: 7, Key: "bV6R********Af6H", Name: DefaultNewApiProvisionKeyName, Status: 1},
 				},
 			}, "")
 		case r.Method == http.MethodPost && r.URL.Path == "/api/token/7/key":
@@ -620,7 +633,7 @@ func TestNewApiAdapter_ProvisionKey_MaskedRevealUnavailable_Error(t *testing.T) 
 	})
 
 	adapter := &NewApiAdapter{HTTPClient: srv.Client()}
-	_, key, _, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{})
+	_, key, _, _, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{})
 	if err == nil {
 		t.Fatal("掩码且揭示失败时必须报错")
 	}
@@ -695,7 +708,7 @@ func TestNewApiAdapter_ProvisionKey_DefaultName(t *testing.T) {
 	})
 
 	adapter := &NewApiAdapter{HTTPClient: srv.Client()}
-	if _, _, _, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{}); err != nil {
+	if _, _, _, _, err := adapter.ProvisionKey(context.Background(), srv.URL, "token", "1", "", NewApiProvisionOptions{}); err != nil {
 		t.Fatalf("ProvisionKey 失败: %v", err)
 	}
 }

@@ -223,3 +223,28 @@ CCX 五个 tool_use 生成点核查：三处本就安全——`claudeStreamNorma
 ## [ ] 英伟达渠道导入
 
 可能模型太多响应太慢导致预检时间过长，或者需要代理？
+
+## [x] Codex token budget 记忆系统适配 + 客户端预算提醒剔除统一机制（2026-09-11 完成）
+
+背景：Codex CLI 引入 token budget 记忆系统（feature 默认关，config.toml `[features] token_budget = true` 手动开启），三层架构：感知层（developer message 裸文本 `You have N tokens left in this context window.` + 旧版 `<token_budget>` 包装 + 本地 `get_context_remaining` 工具）、管理层（本地 `new_context` 工具切换无摘要新窗口）、记忆层（`history.*`/`notes.*` namespace 工具，后端 HTTP 调 `POST {provider base_url}/alpha/history|notes/v2/*`，部分端点带 `x-openai-encrypted-tool-arguments` 头）。源码核实：openai/codex `codex-rs/ext/history-notes/`。
+
+### 统一预算提醒剔除（providers/client_budget_reminders.go）
+
+统一语义：客户端按「自己认知的模型窗口」注入余量提醒，网关改写实际执行模型后数字必然失真 → 剔除；模型语义未变则保留。CC 的 tokens-left 剔除（1c63bbb2 临时处理）转正并接入 Codex，五个接线点：
+
+- 三转换路径（messages→chat/gemini/responses）保持无条件剔（`isClaudeCodeSystemHeader` 合并「身份清单 ∪ 预算清单」判定，行为不变）；
+- 补缺口 A：Claude 直通 + ModelMapping 命中（`redirectModelInBody` 换模型时剔 system 预算块，未命中零改动保缓存）；
+- 补缺口 B：调度器联邦/溢出跨模型改写点（`upstream_failover.go` 按 kind 剥离 messages/responses 两形态）；
+- 补缺口 C：Responses 直通 + ModelMapping 命中（`RedirectModelWithMatch` 判定）；converter 分支跨协议无条件剔。
+
+保留物：`<context_window>` 窗口 UUID 标识与 `<context_window_guidance>`（无失真数字、模型靠它调 history 工具）；CC 身份块在原生直通场景保留。
+
+### /v1/alpha/* 记忆层透传端点（handlers/alpha/）
+
+粘 Responses 渠道池，session 粘性三级（X-Channel pin > 推理亲和桶扫描 `PreferredChannelNameForUserSweep` > SelectChannel 无桶亲和自粘）。刻意隔离：指标用独立 identity（serviceType 标签 "Alpha"），不写 RecordSuccess/RecordFailure/MarkKeyAsFailed——中转站普遍不支持 alpha 端点，失败并入推理指标会把渠道打成不健康。上游 404 如实透传（候选耗尽回写最后上游响应），Codex 客户端自行降级。已知取舍：跨端点粘性（推理↔记忆同渠道）是尽力而为——Codex 推理请求 userID 提取链未必等于记忆请求的 `context.session_id`；key 级粘性未做（扩展点：`ResolvePinnedAPIKey` 反查）。
+
+### encrypted_function_args 全链路（types/converters/token_counter）
+
+Codex namespace 工具的 function_call 可携带分段加密参数：`ResponsesItem` 加字段 + 解析/响应侧枚举 + passthrough 天然透传 + converter 密文丢弃但空 arguments 补 `"{}"` 占位（DeepSeek 拒收空串）+ token 保守计数 + 日志截断白名单。
+
+明确不做：不改写 `get_context_remaining` 的 function_call_output（客户端本地计算，改写风险大于收益）；不动 RemoteCompactionV2 兼容路径与 thinkingcache reasoning encrypted_content。

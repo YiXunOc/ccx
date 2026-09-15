@@ -2,6 +2,7 @@ package utils
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/BenedictKing/ccx/internal/types"
@@ -308,4 +309,49 @@ func TestEstimateRequestTokens(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEstimateResponsesRequestTokens_CountsEncryptedFunctionArgs 验证 Codex
+// namespace 工具的密文分段被计数（密文保守估算法），而非按 0 计。
+func TestEstimateResponsesRequestTokens_CountsEncryptedFunctionArgs(t *testing.T) {
+	longSegment := strings.Repeat("A", 600) // 高熵密文按 ~1.5 字符/token 保守估
+	withEncrypted := map[string]interface{}{
+		"model": "gpt-5.6",
+		"input": []interface{}{
+			map[string]interface{}{
+				"type":                    "function_call",
+				"name":                    "read_item",
+				"call_id":                 "call-1",
+				"encrypted_function_args": []interface{}{longSegment},
+			},
+		},
+	}
+	withoutEncrypted := map[string]interface{}{
+		"model": "gpt-5.6",
+		"input": []interface{}{
+			map[string]interface{}{
+				"type":    "function_call",
+				"name":    "read_item",
+				"call_id": "call-1",
+			},
+		},
+	}
+
+	withTokens := EstimateResponsesRequestTokens(mustMarshalForTokenTest(t, withEncrypted))
+	withoutTokens := EstimateResponsesRequestTokens(mustMarshalForTokenTest(t, withoutEncrypted))
+	if withTokens <= withoutTokens {
+		t.Fatalf("encrypted segments must add tokens: with=%d without=%d", withTokens, withoutTokens)
+	}
+	if delta := withTokens - withoutTokens; delta < 100 {
+		t.Fatalf("600-char opaque segment estimated only %d tokens, want >= 100 (conservative 1.5 chars/token)", delta)
+	}
+}
+
+func mustMarshalForTokenTest(t *testing.T, req map[string]interface{}) []byte {
+	t.Helper()
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	return data
 }

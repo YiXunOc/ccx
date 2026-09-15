@@ -103,32 +103,13 @@ func TestProtocolFederationIncludesOnlyEligibleSiblings(t *testing.T) {
 }
 
 func TestProtocolFederationMarksConvertedFidelityAndPenalty(t *testing.T) {
-	cfg := federationTestConfig()
-	cfg.AutopilotRouting.ProtocolFederation.ConversionPenalty = 0.5
-	s, cleanup := createTestScheduler(t, cfg)
+	s, cleanup := createTestScheduler(t, federationTestConfig())
 	defer cleanup()
 
 	for _, ch := range s.protocolFederationSiblings("acct-a", ChannelKindMessages) {
-		if ch.ProtocolFidelity != "converted" || ch.ConversionPenalty != 0.5 {
+		if ch.ProtocolFidelity != "converted" || ch.ConversionPenalty != protocolFederationConversionPenalty {
 			t.Fatalf("sibling missing conversion metadata: %#v", ch)
 		}
-	}
-}
-
-func TestProtocolFederationFeatureOffKeepsMessagesOnly(t *testing.T) {
-	cfg := federationTestConfig()
-	cfg.AutopilotRouting.ProtocolFederation.Enabled = false
-	s, cleanup := createTestScheduler(t, cfg)
-	defer cleanup()
-
-	if got := s.protocolFederationSiblings("acct-a", ChannelKindMessages); len(got) != 0 {
-		t.Fatalf("feature-off siblings = %#v, want none", got)
-	}
-	native := s.federateDefaultCandidates(context.Background(), ChannelKindMessages, []ChannelInfo{{
-		Route: channelRouteRef(ChannelKindMessages, 0, &config.UpstreamConfig{ChannelUID: "msg"}), Index: 0, Status: "active",
-	}}, "claude-sonnet-5", nil, newSelectionTrace(SelectionOptions{Kind: ChannelKindMessages}))
-	if len(native) != 1 || native[0].Route.Kind != string(ChannelKindMessages) {
-		t.Fatalf("feature-off candidates = %#v, want messages-only", native)
 	}
 }
 

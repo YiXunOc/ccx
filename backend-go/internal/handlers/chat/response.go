@@ -101,6 +101,9 @@ func handleSuccess(
 			common.RequestLogf(c, "[Chat-EmptyResponse] 上游返回空响应（非流式，upstreamType=%s），触发 failover", upstreamType)
 			return nil, common.ErrEmptyNonStreamResponse
 		}
+		if !common.RacingClaimClientCommit(c) {
+			return nil, common.ErrRacingSuperseded
+		}
 		c.Data(resp.StatusCode, "application/json", chatRespBytes)
 		// 提取 usage（Responses 格式：input_tokens / output_tokens）
 		var usage *types.Usage
@@ -140,6 +143,9 @@ func handleSuccess(
 			return nil, common.ErrEmptyNonStreamResponse
 		}
 		// 透传原始响应体（保留上游字段，避免 marshal 丢失）
+		if !common.RacingClaimClientCommit(c) {
+			return nil, common.ErrRacingSuperseded
+		}
 		utils.ForwardResponseHeaders(resp.Header, c.Writer)
 		c.Data(resp.StatusCode, "application/json", bodyBytes)
 		if u, ok := respMap["usage"].(map[string]interface{}); ok {

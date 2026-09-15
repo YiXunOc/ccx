@@ -1303,7 +1303,7 @@ func TestUpdateManagedAccountKeyVerifyDegradation(t *testing.T) {
 		router := setupAutoManagedRouter(&AutoManagedDeps{
 			CfgManager: manager,
 			VerifyChannelKey: func(_ context.Context, _ string, _ config.UpstreamConfig, _ string) error {
-				return &KeyVerifyError{MaskedKey: "sk-***", AuthFailed: false, Probe: "POST /v1/messages（占位模型 probe，max_tokens=1）", Diagnostics: []string{"候选 1: context deadline exceeded"}}
+				return &KeyVerifyError{MaskedKey: "sk-***", AuthFailed: false, Probe: "POST /v1/messages（占位模型 probe，max_tokens=16）", Diagnostics: []string{"候选 1: context deadline exceeded"}}
 			},
 		})
 		w := putAccount(t, router, `{"name":"custom","apiKeys":["sk-old","sk-new"]}`)
@@ -1330,7 +1330,7 @@ func TestUpdateManagedAccountKeyVerifyDegradation(t *testing.T) {
 		router := setupAutoManagedRouter(&AutoManagedDeps{
 			CfgManager: manager,
 			VerifyChannelKey: func(_ context.Context, _ string, _ config.UpstreamConfig, _ string) error {
-				return &KeyVerifyError{MaskedKey: "sk-***", AuthFailed: true, Probe: "POST /v1/messages（占位模型 probe，max_tokens=1）", Diagnostics: []string{"候选 1: HTTP 401"}}
+				return &KeyVerifyError{MaskedKey: "sk-***", AuthFailed: true, Probe: "POST /v1/messages（占位模型 probe，max_tokens=16）", Diagnostics: []string{"候选 1: HTTP 401"}}
 			},
 		})
 		w := putAccount(t, router, `{"name":"custom","apiKeys":["sk-old","sk-new"]}`)

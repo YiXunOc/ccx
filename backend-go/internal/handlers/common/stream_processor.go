@@ -670,6 +670,8 @@ func ProcessStreamEvents(
 	defer keepaliveTicker.Stop()
 	// 安全分类格式标记扫描：输出文本增量里检测 <severity，供运行期能力学习读取。
 	severityScanner := &SeverityTagScanner{}
+	// 伪工具调用标记扫描：模型用纯文本"扮演"工具调用时命中，供白名单负反馈读取。
+	pseudoScanner := &PseudoToolCallMarkerScanner{}
 
 	for {
 		select {
@@ -690,6 +692,9 @@ func ProcessStreamEvents(
 				progress.Tick()
 				if severityScanner.Feed(delta) {
 					MarkStreamSeverityTag(c)
+				}
+				if pseudoScanner.Feed(delta) {
+					MarkPseudoToolCallMarker(c)
 				}
 			}
 			eventHasActivity := ctx.OutputTextBuffer.Len() > prevTextLen || HasClaudeSemanticContent(event) || HasStreamEventActivity(event)
@@ -1283,6 +1288,14 @@ func HandleStreamResponse(
 	}
 
 	// 非空响应：正常流程
+	// 竞速提交闸门：preflight 确认首字有效后才裁决——赢家 claim 并写出，
+	// 败者在此返回 ErrRacingSuperseded（Header 未写，零字节污染）。
+	// ForStream 版带伪工具调用标记软校验：tool_choice=auto 下把工具调用
+	// 写成 <tool_call>/DSML 文本的分支让出提交权（codex 事故链的收口）。
+	if !RacingClaimClientCommitForStream(c, strings.Join(preflight.BufferedEvents, "\n")) {
+		drainChannels(eventChan, errChan)
+		return nil, ErrRacingSuperseded
+	}
 	SetupStreamHeaders(c, resp, envCfg, "Messages")
 
 	w := c.Writer

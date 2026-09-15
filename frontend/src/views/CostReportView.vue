@@ -170,7 +170,7 @@
               <span :class="{ 'text-warning': !isPricingComplete(row) }">
                 {{ formatCost(row.listCostUSD, isPricingComplete(row)) }}
               </span>
-              <v-tooltip v-if="!isPricingComplete(row)" location="top">
+              <v-tooltip v-if="!isPricingComplete(row)" location="top" content-class="ccx-tooltip">
                 <template #activator="{ props }">
                   <v-icon v-bind="props" class="ml-1" color="warning" size="16">mdi-alert-circle-outline</v-icon>
                 </template>

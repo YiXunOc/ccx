@@ -69,21 +69,25 @@ func stringListContains(values []string, target string) bool {
 	return false
 }
 
-func (s *ChannelScheduler) protocolFederationEnabled(requestKind ChannelKind) bool {
-	if s == nil || s.configManager == nil {
-		return false
-	}
-	cfg := s.configManager.GetAutopilotRouting()
-	federation := cfg.ProtocolFederation
-	return federation.Enabled && federation.RequireSameAccount && federation.RequireAutoManaged &&
-		stringListContains(federation.RequestKinds, string(requestKind))
+// protocolFederationExecutionKinds 是联邦 sibling 的执行协议边界：
+// 仅 chat/responses 具备协议转换发送层，新增协议须在此显式登记。
+var protocolFederationExecutionKinds = []string{"chat", "responses"}
+
+// protocolFederationConversionPenalty 是协议转换候选在评分中的固定惩罚。
+const protocolFederationConversionPenalty = 0.35
+
+// protocolFederationApplicable 报告该请求协议是否参与协议联邦。
+// 联邦是默认 Autopilot 路径的常开行为：messages/responses 逻辑请求可由
+// 同一托管账号的 chat/responses 物理路由承接；同账号与 AutoManaged 是
+// sibling 收集的结构性约束，不受配置开关控制。
+func (s *ChannelScheduler) protocolFederationApplicable(requestKind ChannelKind) bool {
+	return requestKind == ChannelKindMessages || requestKind == ChannelKindResponses
 }
 
 func (s *ChannelScheduler) protocolFederationSiblings(accountUID string, requestKind ChannelKind) []ChannelInfo {
-	if accountUID == "" || !s.protocolFederationEnabled(requestKind) {
+	if accountUID == "" || !s.protocolFederationApplicable(requestKind) {
 		return nil
 	}
-	federation := s.configManager.GetAutopilotRouting().ProtocolFederation
 	cfg := s.configManager.GetConfig()
 	indexByUID := func(kind string, upstream config.UpstreamConfig) int {
 		var upstreams []config.UpstreamConfig
@@ -105,7 +109,7 @@ func (s *ChannelScheduler) protocolFederationSiblings(accountUID string, request
 	seen := make(map[ChannelRouteKey]struct{})
 	result := make([]ChannelInfo, 0, 2)
 	for _, sibling := range s.configManager.GetAccountChannels(accountUID) {
-		if !stringListContains(federation.ExecutionKinds, sibling.Kind) || !sibling.Upstream.AutoManaged {
+		if !stringListContains(protocolFederationExecutionKinds, sibling.Kind) || !sibling.Upstream.AutoManaged {
 			continue
 		}
 		status := sibling.Upstream.Status
@@ -135,7 +139,7 @@ func (s *ChannelScheduler) protocolFederationSiblings(accountUID string, request
 			Priority:          priority,
 			Status:            status,
 			ProtocolFidelity:  "converted",
-			ConversionPenalty: federation.ConversionPenalty,
+			ConversionPenalty: protocolFederationConversionPenalty,
 		})
 	}
 	return result
@@ -145,7 +149,7 @@ func (s *ChannelScheduler) protocolFederationSiblings(accountUID string, request
 // 每个 sibling 都按自身执行协议做模型解析、可用性、模型熔断与上下文校验，
 // 并按 ChannelRouteRef.Key() 去重，避免同一物理渠道重复进入候选集合。
 func (s *ChannelScheduler) federateDefaultCandidates(ctx context.Context, requestKind ChannelKind, channels []ChannelInfo, model string, requirement *ContextRequirement, trace *SelectionTrace) []ChannelInfo {
-	if !s.protocolFederationEnabled(requestKind) {
+	if !s.protocolFederationApplicable(requestKind) {
 		return channels
 	}
 	seen := make(map[ChannelRouteKey]struct{}, len(channels))
@@ -1104,6 +1108,21 @@ func (s *ChannelScheduler) MarkLimiterScopeCooldown(kind ChannelKind, channelInd
 		return
 	}
 	s.rateLimitManager.SetCooldownScoped(kindAPIType(kind), channelIndex, scope, duration, time.Now())
+}
+
+// IsChannelRateLimitHot 渠道当前是否处于限流热态：渠道级运行时冷却中，或
+// 全部 key scope 都被限速延迟（此时向该渠道追加请求只会放大 429 消耗）。
+// 竞速影子候选过滤用：影子是真实上游请求，热渠道不得派影子；
+// 部分 scope 可用时返回 false（影子换 scope 仍有意义，不拦）。
+func (s *ChannelScheduler) IsChannelRateLimitHot(kind ChannelKind, channelIndex int, upstream *config.UpstreamConfig, model string) bool {
+	if s == nil || upstream == nil {
+		return false
+	}
+	if s.channelInRuntimeCooldown(kind, channelIndex) {
+		return true
+	}
+	deferred, _, _, _ := s.channelRateLimitSoftDeferred(upstream, kind, channelIndex, model, time.Now())
+	return deferred
 }
 
 func (s *ChannelScheduler) channelFailureRate(upstream *config.UpstreamConfig, kind ChannelKind, model string) float64 {

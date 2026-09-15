@@ -2,6 +2,7 @@ package common
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -239,4 +240,103 @@ func TestTryUpstreamAppliesFederatedExecutionModelForResponsesToChat(t *testing.
 	if responsesLogs := channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses).Get(identity); len(responsesLogs) != 0 {
 		t.Fatalf("responses store must not receive sibling execution logs: %#v", responsesLogs)
 	}
+}
+
+// TestTryUpstreamStripsClientBudgetRemindersOnFederationRewrite 验证联邦/溢出
+// 跨模型改写后，客户端按原模型窗口注入的预算提醒被剥离（统一预算提醒机制）。
+func TestTryUpstreamStripsClientBudgetRemindersOnFederationRewrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	type rawCapture struct {
+		body []byte
+	}
+	received := make(chan rawCapture, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		received <- rawCapture{body: raw}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	run := func(t *testing.T, kind scheduler.ChannelKind, requestBody []byte, wantGone, wantKept string) {
+		cfgManager, channelScheduler, kindMetrics, cleanup := newTestFailoverDependencies(t, config.UpstreamConfig{
+			Name:        "fed-target",
+			ChannelUID:  "ch_fed_target",
+			BaseURL:     server.URL,
+			APIKeys:     []string{"sk-fed"},
+			Status:      "active",
+			ServiceType: "openai",
+		})
+		defer cleanup()
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader("{}"))
+
+		executionRoute := scheduler.ChannelRouteRef{Kind: string(scheduler.ChannelKindChat), Index: 0, ChannelUID: "ch_fed_target"}
+		cfg := cfgManager.GetConfig()
+		upstream := &cfg.Upstream[0]
+		handled, _, _, failoverErr, _, lastErr := TryUpstreamWithAllKeys(
+			c,
+			config.NewEnvConfig(),
+			cfgManager,
+			channelScheduler,
+			kind,
+			"Messages",
+			kindMetrics,
+			upstream,
+			[]warmup.URLLatencyResult{{URL: server.URL, OriginalIdx: 0}},
+			requestBody,
+			nil,
+			false,
+			func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+				return cfgManager.GetNextAPIKey(upstream, failedKeys, ChannelAPIType(scheduler.ChannelKindChat))
+			},
+			func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+				body, _ := c.Get("requestBodyBytes")
+				raw, _ := body.([]byte)
+				return http.NewRequestWithContext(c.Request.Context(), http.MethodPost, upstreamCopy.BaseURL, strings.NewReader(string(raw)))
+			},
+			func(apiKey string) {},
+			nil,
+			nil,
+			func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string, actualRequestBody []byte) (*types.Usage, error) {
+				_ = resp.Body.Close()
+				return nil, nil
+			},
+			"claude-sonnet-5",
+			"",
+			0,
+			channelScheduler.GetChannelLogStoreForRoute(executionRoute),
+			WithExecutionRoute(executionRoute),
+			WithExecutionModel("kimi-k3"),
+		)
+		if !handled || failoverErr != nil || lastErr != nil {
+			t.Fatalf("attempt failed: handled=%v failoverErr=%#v lastErr=%v", handled, failoverErr, lastErr)
+		}
+		select {
+		case capture := <-received:
+			if strings.Contains(string(capture.body), wantGone) {
+				t.Fatalf("budget reminder must be stripped after model rewrite, got: %s", capture.body)
+			}
+			if !strings.Contains(string(capture.body), wantKept) {
+				t.Fatalf("non-reminder content must survive, got: %s", capture.body)
+			}
+		default:
+			t.Fatal("upstream never received the request")
+		}
+	}
+
+	t.Run("messages_cc_tokens_left", func(t *testing.T) {
+		run(t, scheduler.ChannelKindMessages,
+			[]byte(`{"model":"claude-sonnet-5","system":[{"type":"text","text":"<total_tokens>1000 tokens left</total_tokens>"},{"type":"text","text":"real system prompt"}],"messages":[{"role":"user","content":"hi"}]}`),
+			"tokens left", "real system prompt")
+	})
+
+	t.Run("responses_codex_budget", func(t *testing.T) {
+		run(t, scheduler.ChannelKindResponses,
+			[]byte(`{"model":"gpt-5","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"You have 710 tokens left in this context window."}]},{"type":"message","role":"user","content":"hi"}]}`),
+			"tokens left", `"role":"user"`)
+	})
 }

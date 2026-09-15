@@ -66,7 +66,7 @@ Autopilot 是 CCX 的智能路由与渠道托管子系统，由 Manager + SmartR
 | `request_profile.go` | `RequestProfile`、`ClassifierInput`、`IntentEffortPin` 定义 |
 | `request_profile_builder.go` | `BuildRequestProfile`、`ResolveQualityTarget` |
 | `request_profile_context.go` | context key，请求画像跨层传递 |
-| `request_correlation.go` | 请求 correlation ID 载体 |
+| `request_correlation.go` | 请求 correlation ID 载体（同一最终用户请求的主/影子/failover 尝试共享；failover 连通后落 metrics `request_records` v9 `correlation_id` 列，时间窗口聚合输出 `userRequestCount`=COUNT DISTINCT，与上游尝试口径 `requestCount` 对照可见竞速放大倍数） |
 | `task_classifier.go` | 确定性 `Classify`，产出 `TaskClass` |
 | `task_complexity.go` | `InferTaskComplexity`：从 prompt 信号提取难度 |
 | `task_domain.go` | `InferTaskDomain`、域关键词表、域强度证据 |
@@ -550,6 +550,7 @@ health(40) > fastDecay(25) > successRate(20) > latency(10) > cost(5)
 - `Manager.ObserveRateLimitSignal` 读取响应头/429/TTFB
 - `RateLimitDiscoverer.Observe` 更新 `endpointLearnState`
 - header 显式值优先 → 429 反推 RPM/并发折半 → 成功 AIMD 上调
+- 429 原因分级（`RateLimitSignalReason`，`rate_limit_discovery.go:36`）：账号级限流（`account_rate_limit_exceeded`）属精确原因，提升 AIMD 置信度（普通无 header 429 不提升）并触发当前 key/quota scope 冷却；判定在 `handlers/common/failover.go` `isAccountRateLimitExceededMap`：错误码 `AccountRateLimitExceeded`（规范化匹配）、`requests are too frequent`、new-api/one-api 系中文文案「请求数限制」「速率限制」；英文通用 429 文案刻意不匹配——普通 429 只换 key failover，不升级 scope 冷却
 - TTFB 拥塞：连续显著慢于基线降低 `MaxConcurrent`
 - `RateLimitApplier.Apply` 写入 `ratelimit.Manager`
 - 显式 RPM/MaxConcurrent 配置永远优先
@@ -670,6 +671,7 @@ health(40) > fastDecay(25) > successRate(20) > latency(10) > cost(5)
 
 - 候选粒度从渠道级变为 (渠道, 模型) 级：`RoutingCandidate`/`RoutingPlanCandidate`/`channelScoreEntry` 新增 `CandidateKey = channelUID + "|" + normalizeRoutingModelID(model)`（`smart_router.go:1318`）；单渠道候选行上限 `routingCandidateFanoutLimit = 8`。
 - AutoManaged 渠道走 `ResolveModelsAnyEndpointWithFloor`（能力过滤 + `betterRankedModel` 排序 + 截断 top8）；精确/等价命中只产该行；无精确命中且意图不允许替代（`AllowsSubstitution()` 为 false）→ 渠道不产候选行（保持 exact_model_required 不变量）。
+- 路由意图按协议划分，不再按模型名白名单放行（`model_routing_policy.go`）：messages/responses 逻辑入口对任意请求模型都是自适应（gpt-6-astra、第三方模型名与 claude/gpt-5.x 同权，精确命中仍优先短路）；chat/gemini/images/vectors 执行侧协议保持 exact_only。协议联邦同为常开行为：`ProtocolFederationConfig` 配置开关已删除，默认 Autopilot 路径无条件拉入同账号 AutoManaged 的 chat/responses sibling（执行边界 `protocolFederationExecutionKinds`，转换惩罚固定 0.35）。
 - **精确命中短路例外（运行期否决）**：精确模型在画像中命中、但被运行期负信号否决（Key 全禁用/持久限制/模型熔断/endpoint binding 判死，`exactModelRuntimeViable`）时，自适应意图渠道不短路，改产替代模型行（被否决的精确模型不再产行，`MappingReason` 带 `exact_vetoed:` 前缀）；单数版 `resolveChannelModel` 的 AutoManaged 同名承接路径同样改取最佳非精确候选。非自适应意图与手动显式映射渠道不受影响。
 - 显式/白名单渠道从 `ModelMapping` 值 + redirect 目标枚举，逐个过 `ExplainModelSupport`；枚举为空但单数版认为 supported 时回退单模型行（fail-open）。
 - 同名承接（映射后模型名 == 请求模型名）的行 `MappedModel` 保持空——`applyModelQualityTier` 依赖 MappedModel 判空做映射质量档折算；模型名展示由前端经 CandidateKey 回退解析（`AutopilotTraceDetailDialog.vue` 加 Model 列）。
@@ -737,7 +739,8 @@ health(40) > fastDecay(25) > successRate(20) > latency(10) > cost(5)
 提交：`205fe29d`
 
 - 动机：Claude Code 2.x 携带的 `anthropic-beta: context-1m-2025-08-07` 等 beta header 透传到部分 new-api 风格上游会被 400 拒绝。
-- 链路（跨模块）：`handlers/common/compat_signal.go` 检测请求带 `anthropic-beta` header 且上游拒绝 → `ExtractRejectedBetaTokens` 提取被拒 token → 以 trait `unsupported_beta_header`（`config/channel_compat_cache.go:44` 的 `CompatTrait` 枚举）写入 `UpstreamConfig.LearnedRejectedBetaTokens`（`config/config.go:87`，运行时字段不落盘）→ 下次请求 `upstream_failover.go:721` 注入 learnedTraits，`providers/claude.go:220` `stripUnsupportedBetaHeaderTokens` 按 token 粒度剥离（token 名必含 `-` 防误判）。
+- 链路（跨模块）：`handlers/common/compat_signal.go` 检测请求带 `anthropic-beta` header 且上游拒绝 → `config.ExtractRejectedBetaTokens` 提取被拒 token → 以 trait `unsupported_beta_header`（`config/channel_compat_cache.go:44` 的 `CompatTrait` 枚举）写入 `UpstreamConfig.LearnedRejectedBetaTokens`（`config/config.go:87`，运行时字段不落盘）→ 下次请求 `upstream_failover.go:721` 注入 learnedTraits，`providers/claude.go:220` `stripUnsupportedBetaHeaderTokens` 按 token 粒度剥离（token 名必含 `-` 防误判）。
+- 集合语义（`e9d0f186`）：上游逐个点名拒绝不同 token（剥掉 A 后又拒 B），`Record` 对该 trait 做 evidence 增量合并——新 token 并入并视为新增（触发同 Key 重试剥离），否则旧实现下第二个 token 永远学不进：同结论已存在 → Record 返回 false → 不重试不更新 → 400 计失败直至模型熔断。合并态 evidence 为规范形态 `rejected anthropic-beta: t1; anthropic-beta: t2`，可被 `ExtractRejectedBetaTokens`（多 token 提取）再解析。
 - 与 §2.8 的 context_limit / document_capability 记忆同属共享兼容性缓存体系，但 trait 化后由 config 层统一承载。
 
 ### 5.15 其他近期功能

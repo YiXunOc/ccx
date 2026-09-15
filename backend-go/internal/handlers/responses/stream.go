@@ -86,6 +86,20 @@ func handleStreamSuccess(
 	preflightHasNonTextContent := false
 	preflightEmpty := false
 	preflightDiagnostic := ""
+	// 伪工具标记观察窗（仅竞速影子 + 带工具请求启用）：preflight 放行前
+	// 多收几个有效内容 delta 再做标记检测，见阶段 B 放行分支注释。
+	pseudoMarkerProbeMinDeltas := 5
+	pseudoProbeContentCount := 0
+	pseudoMarkerProbeArmed := -1 // 惰性判定：-1 未判定，0 关闭，1 开启
+	needsPseudoMarkerProbe := func() bool {
+		if pseudoMarkerProbeArmed < 0 {
+			pseudoMarkerProbeArmed = 0
+			if common.RacingShadowWithTools(c) {
+				pseudoMarkerProbeArmed = 1
+			}
+		}
+		return pseudoMarkerProbeArmed == 1
+	}
 	// 阶段A：首个有效内容等待超时
 	var firstContentTimer *time.Timer
 	firstContentChan := (<-chan time.Time)(nil)
@@ -262,7 +276,31 @@ func handleStreamSuccess(
 						}
 						resetInactivityTimer()
 					} else {
-						// 阶段B中收到第二个有效内容：健康流，放行
+						// 阶段B中收到后续有效内容：健康流，放行。
+						// 例外：竞速影子 + 带工具请求进入伪标记观察窗——每个有效内容
+						// 行都做伪工具调用标记检测（<tool_call>/DSML 通常紧跟首段干净
+						// 文本，实测 qwen 系在第 3+ delta 才吐标记），命中即让位；观察
+						// 满 5 个有效内容行仍干净才放行。影子多等几百毫秒无妨，主分支
+						// 不受影响（非影子路径保持原有放行节奏）。
+						// 仅 data 行计入观察窗计数：event 名行是协议开销，若计入会在
+						// 配对的 data 行（真正携带文本）到达前就满足计数放行，标记逃逸。
+						isDataLine := strings.HasPrefix(event, "data:")
+						if isDataLine {
+							pseudoProbeContentCount++
+						}
+						if needsPseudoMarkerProbe() {
+							// 原始行 + 已提取文本双通道检测：data 行 JSON 里的标记是字面
+							// 量子串，直接扫原始行不依赖 extract 的提取时机。
+							if common.DetectPseudoToolCallMarker(event) || common.DetectPseudoToolCallMarker(preflightTextBuf.String()) {
+								common.RequestLogf(c, "[Racing-QualityGate] 观察窗捕获伪工具调用标记（阶段B第 %d 个有效内容），影子分支让位", pseudoProbeContentCount)
+								close(scanDone)
+								return nil, common.ErrRacingSuperseded
+							}
+							if !isDataLine || pseudoProbeContentCount < pseudoMarkerProbeMinDeltas {
+								resetInactivityTimer()
+								continue
+							}
+						}
 						if streamObserver != nil {
 							streamObserver.MarkStreamActivity(time.Now())
 						}
@@ -275,8 +313,19 @@ func handleStreamSuccess(
 				// 检查是否为 response.completed 事件（流正常结束）
 				if isResponsesCompletedEvent(event) {
 					preflightDone = true
+					// 伪标记观察窗的兜底检测：短流在计数到达前的 completed 放行
+					// 同样不得放过伪标记（检测语义同阶段 B 放行分支）。
+					if needsPseudoMarkerProbe() {
+						if common.DetectPseudoToolCallMarker(event) || common.DetectPseudoToolCallMarker(preflightTextBuf.String()) {
+							common.RequestLogf(c, "[Racing-QualityGate] 观察窗捕获伪工具调用标记（completed 兜底），影子分支让位")
+							close(scanDone)
+							return nil, common.ErrRacingSuperseded
+						}
+					}
 					// 安全分类格式标记：短分类响应可能整体在预检阶段完成，此处必须一并扫描。
 					common.MarkSeverityTagIfHit(c, preflightTextBuf.String())
+					// 伪工具调用标记同理：整体在预检完成的响应也要参与白名单负反馈观测。
+					common.MarkPseudoToolCallMarkerIfHit(c, preflightTextBuf.String())
 					// 检查是否有实际内容（文本或工具调用）
 					preflightEmpty = !preflightHasNonTextContent && common.IsEffectivelyEmptyStreamText(preflightTextBuf.String())
 					// 如果有工具调用，不算空响应
@@ -346,6 +395,17 @@ func handleStreamSuccess(
 	// 非空响应：发送 Header 并回放缓冲行
 	// 重置 converterState 以便回放时重新转换
 	converterState = nil
+
+	// 竞速提交闸门：preflight 确认首字有效后才裁决——赢家 claim 并写出，
+	// 败者在此返回 ErrRacingSuperseded（Header 未写，零字节污染）。
+	// 流式路径漏掉此裁决时，分支 writer 的缓冲内容永远不会 Commit 到
+	// 真实客户端 writer，客户端只会拿到空 200。
+	// ForStream 版带伪工具调用标记软校验：tool_choice=auto 下把工具调用
+	// 写成 <tool_call>/DSML 文本的分支让出提交权（codex 事故链的收口）。
+	if !common.RacingClaimClientCommitForStream(c, preflightTextBuf.String()) {
+		close(scanDone)
+		return nil, common.ErrRacingSuperseded
+	}
 
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
 	c.Header("Content-Type", "text/event-stream")
@@ -521,6 +581,8 @@ func handleStreamSuccess(
 	postCommitToolTracker := common.NewStreamToolCallTracker()
 	// 安全分类格式标记扫描：post-commit 阶段逐 SSE 行检测 <severity（分片安全）。
 	severityScanner := &common.SeverityTagScanner{}
+	// 伪工具调用标记扫描：逐 SSE 行检测文本扮演工具调用的标记，供白名单负反馈读取。
+	pseudoScanner := &common.PseudoToolCallMarkerScanner{}
 	observePostCommitEvents := func(events []string) bool {
 		hadChange := false
 		wasPending := postCommitToolTracker.HasPendingToolCall()
@@ -599,6 +661,9 @@ func handleStreamSuccess(
 			events := processLine(sl.text)
 			if severityScanner.Feed(sl.text) {
 				common.MarkStreamSeverityTag(c)
+			}
+			if pseudoScanner.Feed(sl.text) {
+				common.MarkPseudoToolCallMarker(c)
 			}
 			keepaliveTicker.Reset(15 * time.Second)
 			wasToolCallPending := postCommitToolTracker.HasPendingToolCall()

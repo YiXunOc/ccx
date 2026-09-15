@@ -117,6 +117,7 @@ func TestRoutingConfigResponse_Serialization(t *testing.T) {
 		KillSwitchForced:     true,
 		CostPreference:       "balanced",
 		L2ProbeEnabled:       true,
+		RacingEnabled:        true,
 	}
 
 	data, err := json.Marshal(resp)
@@ -131,7 +132,7 @@ func TestRoutingConfigResponse_Serialization(t *testing.T) {
 	if _, exists := parsed["mode"]; exists {
 		t.Fatal("配置响应不应再暴露 mode")
 	}
-	if parsed["killSwitchActive"] != true || parsed["killSwitchConfigured"] != false || parsed["killSwitchForced"] != true || parsed["costPreference"] != "balanced" || parsed["l2ProbeEnabled"] != true {
+	if parsed["killSwitchActive"] != true || parsed["killSwitchConfigured"] != false || parsed["killSwitchForced"] != true || parsed["costPreference"] != "balanced" || parsed["l2ProbeEnabled"] != true || parsed["racingEnabled"] != true {
 		t.Fatalf("序列化结果异常: %+v", parsed)
 	}
 }
@@ -246,6 +247,27 @@ func TestPutRoutingConfigOtherFieldsDoNotChangeKillSwitch(t *testing.T) {
 	empty := performRoutingConfigRequest(router, http.MethodPut, `{}`)
 	if empty.Code != http.StatusBadRequest {
 		t.Fatalf("空请求 status=%d, want 400; body=%s", empty.Code, empty.Body.String())
+	}
+}
+
+func TestPutRoutingConfigPersistsRacingWithoutChangingKillSwitch(t *testing.T) {
+	t.Setenv("AUTOPILOT_KILL_SWITCH", "false")
+	manager, _ := newRoutingConfigTestManager(t, true)
+	router := setupRoutingConfigRouter(&RoutingConfigDeps{CfgManager: manager})
+
+	recorder := performRoutingConfigRequest(router, http.MethodPut, `{"racingEnabled":false}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT racingEnabled=false status=%d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	response := decodeRoutingConfigResponse(t, recorder)
+	if response.RacingEnabled || !response.KillSwitchActive || !response.KillSwitchConfigured || response.KillSwitchForced {
+		t.Fatalf("PUT racingEnabled=false 合并响应异常: %+v", response)
+	}
+	if manager.GetRacingEnabled() {
+		t.Fatal("PUT racingEnabled=false 未持久化竞速开关")
+	}
+	if !manager.GetPersistedAutopilotRouting().KillSwitch {
+		t.Fatal("PUT racingEnabled=false 不应修改已配置的 KillSwitch")
 	}
 }
 

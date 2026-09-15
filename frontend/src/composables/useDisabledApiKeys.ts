@@ -30,8 +30,10 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
   const restoringKeyModel = ref('')
   const localRestoredKeyModels = ref(new Set<string>())
   const changingGroupModel = ref('')
-  const localDisabledGroupModels = ref<Array<{ quotaGroup: string; key?: string; model: string; note?: string; disabledAt: string }>>([])
+  const localDisabledGroupModels = ref<Array<{ quotaGroup: string; key?: string; model: string; disabledAt: string }>>([])
   const localRestoredGroupModels = ref(new Set<string>())
+  // 分组模型排除暂存：行内面板暂存、渠道主保存成功后统一提交（flushStagedGroupModelDisables）。
+  const pendingGroupModelDisables = ref<Array<{ key: string; model: string }>>([])
   const suspendingKey = ref('')
   const localSuspendedKeys = ref(new Set<string>())
   const localResumedKeys = ref(new Set<string>())
@@ -255,7 +257,7 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
     }
   }
 
-  const disableGroupModel = async (apiKey: string, model: string, note?: string) => {
+  const disableGroupModel = async (apiKey: string, model: string) => {
     const channel = options.channel.value
     const normalizedModel = model.trim()
     if (!channel || !normalizedModel || changingGroupModel.value) return
@@ -266,11 +268,10 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
         channelId(channel),
         apiKey,
         normalizedModel,
-        note,
       )
       localDisabledGroupModels.value = [
         ...localDisabledGroupModels.value.filter(record => groupModelKey(record.quotaGroup, record.model) !== groupModelKey(result.quotaGroup, result.model)),
-        { quotaGroup: result.quotaGroup, key: apiKey, model: result.model, note: note?.trim() || undefined, disabledAt: new Date().toISOString() },
+        { quotaGroup: result.quotaGroup, key: apiKey, model: result.model, disabledAt: new Date().toISOString() },
       ]
       localRestoredGroupModels.value.delete(groupModelKey(result.quotaGroup, result.model))
       return result
@@ -278,6 +279,33 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
       options.emitError(error instanceof Error ? error.message : 'Disable failed')
     } finally {
       changingGroupModel.value = ''
+    }
+  }
+
+  // ── 分组模型排除暂存（随渠道主保存提交）──
+
+  const stageGroupModelDisable = (apiKey: string, model: string) => {
+    const normalizedModel = model.trim()
+    if (!normalizedModel) return
+    if (pendingGroupModelDisables.value.some(item => item.key === apiKey && item.model === normalizedModel)) return
+    pendingGroupModelDisables.value = [
+      ...pendingGroupModelDisables.value,
+      { key: apiKey, model: normalizedModel },
+    ]
+  }
+
+  const unstageGroupModelDisable = (apiKey: string, model: string) => {
+    pendingGroupModelDisables.value = pendingGroupModelDisables.value.filter(
+      item => !(item.key === apiKey && item.model === model),
+    )
+  }
+
+  // 渠道主保存成功后调用：逐个提交暂存的排除并清空暂存（单个失败仅报错，不阻断其余）。
+  const flushStagedGroupModelDisables = async () => {
+    const staged = pendingGroupModelDisables.value
+    pendingGroupModelDisables.value = []
+    for (const item of staged) {
+      await disableGroupModel(item.key, item.model)
     }
   }
 
@@ -359,6 +387,10 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
     visibleDisabledGroupModels,
     disableGroupModel,
     restoreDisabledGroupModel,
+    pendingGroupModelDisables,
+    stageGroupModelDisable,
+    unstageGroupModelDisable,
+    flushStagedGroupModelDisables,
     suspendingKey,
     suspendKey,
     resumeKey,

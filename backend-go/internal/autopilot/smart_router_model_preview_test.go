@@ -251,8 +251,18 @@ func TestBuildPlanAutoManagedEmptyModelsUsesProfilePolicy(t *testing.T) {
 		t.Fatalf("adaptive candidates = %+v, want GLM profile mapping", plan.Candidates)
 	}
 
-	exactOnly := BuildRequestProfile(RequestProfileFeatures{
+	// messages 是自适应协议入口：任意模型名（含第三方模型）无精确画像时
+	// 同样映射到画像内最优模型，跨模型替代不再按模型名白名单放行。
+	thirdParty := BuildRequestProfile(RequestProfileFeatures{
 		Model: "deepseek-chat", ChannelKind: "messages", Operation: "completion", EstTokens: 2_000,
+	})
+	plan = router.BuildPlan(&thirdParty)
+	if len(plan.Candidates) != 1 || plan.Candidates[0].MappedModel != "glm-5.2" {
+		t.Fatalf("third-party model on adaptive protocol = %+v, want GLM profile mapping", plan.Candidates)
+	}
+
+	exactOnly := BuildRequestProfile(RequestProfileFeatures{
+		Model: "claude-sonnet-5", ChannelKind: "chat", Operation: "completion", EstTokens: 2_000,
 	})
 	plan = router.BuildPlan(&exactOnly)
 	if len(plan.Candidates) != 0 {
@@ -265,7 +275,9 @@ func TestResolveModelSupportAutoManagedEmptyModelsUsesProfilePolicy(t *testing.T
 	cfg.Upstream[0].SupportedModels = nil
 	cfgManager, cleanup := createTestConfigManager(t, cfg)
 	defer cleanup()
-	resolver := NewModelResolver(newModelPreviewStore(t, glmPreviewProfile()), cfgManager)
+	chatProfile := glmPreviewProfile()
+	chatProfile.ChannelKind = "chat"
+	resolver := NewModelResolver(newModelPreviewStore(t, glmPreviewProfile(), chatProfile), cfgManager)
 	manager := &Manager{cfgManager: cfgManager, modelResolver: resolver}
 	upstream := cfgManager.GetConfig().Upstream[0]
 
@@ -275,7 +287,15 @@ func TestResolveModelSupportAutoManagedEmptyModelsUsesProfilePolicy(t *testing.T
 			supported, mapped, source, reason)
 	}
 
+	// messages 上第三方模型名同样走自适应映射（替代不按模型名放行）。
 	supported, mapped, source, reason = manager.ResolveModelSupport("messages", &upstream, "deepseek-chat")
+	if !supported || mapped != "glm-5.2" || source != "auto_resolve" || reason == "" {
+		t.Fatalf("third-party adaptive support = %v mapped=%q source=%q reason=%q",
+			supported, mapped, source, reason)
+	}
+
+	// 非自适应协议（chat）保持精确语义：无精确画像时权威拒绝。
+	supported, mapped, source, reason = manager.ResolveModelSupport("chat", &upstream, "claude-sonnet-5")
 	if supported || mapped != "" || source != scheduler.ModelSupportSourceAuthoritativeDeny || reason != "exact_model_required" {
 		t.Fatalf("exact-only support = %v mapped=%q source=%q reason=%q",
 			supported, mapped, source, reason)

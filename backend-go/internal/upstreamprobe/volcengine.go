@@ -191,14 +191,14 @@ func ProbeVolcenginePlanWithModels(ctx context.Context, serviceType, baseURL, ap
 	var result Result
 	switch strings.ToLower(strings.TrimSpace(serviceType)) {
 	case "claude", "messages":
-		body := []byte(`{"model":"` + model + `","max_tokens":1,"stream":true,"messages":[{"role":"user","content":"ping"}]}`)
+		body := []byte(`{"model":"` + model + `","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"ping"}]}`)
 		body, sessionID := utils.EnsureClaudeCodeProbeBody(body)
 		result = postJSONProbe(ctx, buildVersionedProbeURL(baseURL, "/messages"), apiKey, authHeader,
 			func(req *http.Request) {
 				utils.ApplyClaudeCodeProbeHeaders(req.Header, sessionID)
 			}, body, options)
 	case "openai":
-		body := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":true}`)
+		body := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"ping"}],"max_tokens":16,"stream":true}`)
 		result = postJSONProbe(ctx, buildVersionedProbeURL(baseURL, "/chat/completions"), apiKey, authHeader, nil, body, options)
 	case "responses":
 		body := []byte(`{"model":"` + model + `","input":"ping","max_output_tokens":16,"stream":true}`)

@@ -218,7 +218,9 @@
           {{ t('app.actions.cancel') }}
           <span class="shortcut-hint ml-2 text-xs opacity-50">Esc</span>
         </v-btn>
+        <!-- new-api 内嵌模式：主操作（验证/接入）在表单内部，此处不再显示「创建渠道」 -->
         <v-btn
+          v-if="!(quickAddMode && quickAddFormRef?.isNewApiMode)"
           color="primary"
           variant="elevated"
           :disabled="quickAddMode ? !quickAddFormRef?.isFormValid : !isQuickFormValid || standardSubmitting"
@@ -534,7 +536,11 @@ function handleCancel() {
 useDialogHotkeys(
   () => props.show,
   {
-    esc: () => handleCancel(),
+    // Esc 栈顶语义：new-api 内嵌表单视为栈顶层，先退出该模式，再次 Esc 才关闭对话框
+    esc: () => {
+      if (quickAddMode.value && quickAddFormRef.value?.exitNewApiMode()) return
+      handleCancel()
+    },
     confirm: () => handleSubmitByMode(),
   },
 )

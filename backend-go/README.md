@@ -239,7 +239,7 @@ Images 请求会额外记录 `operation`，用于区分具体端点：
 
 ### 指标与历史数据
 
-后端会为不同渠道类型维护独立指标空间，避免 Messages、Responses、Chat、Gemini、Images 之间互相污染健康状态。
+后端会为不同渠道类型维护独立指标空间，避免 Messages、Responses、Chat、Gemini、Images、Vectors 之间互相污染健康状态。
 
 ## 版本管理
 

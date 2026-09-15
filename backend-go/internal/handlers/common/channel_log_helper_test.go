@@ -167,6 +167,53 @@ func TestCompleteLog_LeavesRealFailuresAsFailed(t *testing.T) {
 	}
 }
 
+func TestCompleteLog_MapsRacingSupersededToRacingLostStatus(t *testing.T) {
+	store := metrics.NewChannelLogStore()
+	requestID := CreatePendingLog(store, "test-metrics-key-6", 0, "test-channel", "model-a", "", "", "", "sk-test-secret", "https://example.com", "Messages", "", metrics.RequestSourceProxy, nil, "")
+
+	CompleteLog(store, "test-metrics-key-6", requestID, 0, false, "racing superseded", false)
+
+	logs := store.Get("test-metrics-key-6")
+	if len(logs) != 1 {
+		t.Fatalf("logs count = %d, want 1", len(logs))
+	}
+	if logs[0].Status != metrics.StatusRacingLost {
+		t.Fatalf("status = %q, want %q", logs[0].Status, metrics.StatusRacingLost)
+	}
+	if !strings.HasPrefix(logs[0].ErrorInfo, "竞速败出：") {
+		t.Fatalf("errorInfo = %q, want racing lost display text", logs[0].ErrorInfo)
+	}
+}
+
+func TestRecordChannelLogWithSource_MapsRacingSupersededToRacingLostStatus(t *testing.T) {
+	store := metrics.NewChannelLogStore()
+
+	RecordChannelLogWithSource(
+		store,
+		"test-metrics-key-7",
+		1,
+		"model-b",
+		"",
+		0,
+		45,
+		false,
+		"sk-test-another-secret",
+		"https://example.com",
+		"racing superseded",
+		"Messages",
+		false,
+		metrics.RequestSourceProxy,
+	)
+
+	logs := store.Get("test-metrics-key-7")
+	if len(logs) != 1 {
+		t.Fatalf("logs count = %d, want 1", len(logs))
+	}
+	if logs[0].Status != metrics.StatusRacingLost {
+		t.Fatalf("status = %q, want %q", logs[0].Status, metrics.StatusRacingLost)
+	}
+}
+
 func TestCompleteLog_NormalizesEmptyStreamErrorInfo(t *testing.T) {
 	store := metrics.NewChannelLogStore()
 	requestID := CreatePendingLog(store, "test-metrics-key-5", 0, "test-channel", "model-a", "", "", "", "sk-test-secret", "https://example.com", "Messages", "", metrics.RequestSourceProxy, nil, "")

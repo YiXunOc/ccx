@@ -242,6 +242,13 @@ tbody tr:hover { background: var(--accent-soft); }
         <button type="button" data-value="full" aria-pressed="false">全部成本</button>
       </div>
     </div>
+    <div class="control">
+      <span class="control-label">横轴刻度</span>
+      <div class="segmented" id="scale-control">
+        <button type="button" data-value="log" aria-pressed="true">对数</button>
+        <button type="button" data-value="linear" aria-pressed="false">线性</button>
+      </div>
+    </div>
     <label class="control" for="source-control">
       <span class="control-label">数据源</span>
       <select id="source-control"></select>
@@ -307,7 +314,7 @@ tbody tr:hover { background: var(--accent-soft); }
 const RAW_ROWS = ${serializedRows};
 const COMPARISON_ROWS = ${serializedComparisons};
 const QUALITY_TIERS = ${serializedQualityTiers};
-const state = { metric: 'mean_cost', range: 'focus', source: 'all' };
+const state = { metric: 'mean_cost', range: 'focus', source: 'all', scale: 'log' };
 const effortRank = new Map([['off', -2], ['minimal', -1], ['low', 0], ['medium', 1], ['high', 2], ['xhigh', 3], ['max', 4], ['ultra', 5]]);
 // 小样本阈值与 scripts/benchmark-sources/visualization.mjs 的 MIN_RELIABLE_TASKS 一致：
 // 任务数不足的档位不参与 Pareto 前沿与轨迹，仅在图上以半透明空点标注供参考。
@@ -460,6 +467,39 @@ function ticks(minimum, maximum, count) {
   return values;
 }
 
+// 对数刻度：1-2-5 序列（与 Artificial Analysis 成本轴一致），刻度值不小于 0.01
+function niceLogFloor(value) {
+  const safe = Math.max(value, 0.01);
+  const magnitude = 10 ** Math.floor(Math.log10(safe));
+  const normalized = safe / magnitude;
+  return ([1, 2, 5].filter(candidate => candidate <= normalized).pop() || 1) * magnitude;
+}
+
+function niceLogCeil(value) {
+  const safe = Math.max(value, 0.01);
+  const magnitude = 10 ** Math.floor(Math.log10(safe));
+  const normalized = safe / magnitude;
+  return [1, 2, 5, 10].find(candidate => candidate >= normalized) * magnitude;
+}
+
+function logTicks(minimum, maximum) {
+  const values = [];
+  for (let exponent = Math.floor(Math.log10(minimum)); exponent <= Math.ceil(Math.log10(maximum)); exponent++) {
+    for (const coefficient of [1, 2, 5]) {
+      const value = coefficient * 10 ** exponent;
+      if (value >= minimum * .999 && value <= maximum * 1.001) values.push(value);
+    }
+  }
+  return values;
+}
+
+// 成本刻度标签：1-2-5 序列按数量级自适应小数位（$0.03 不会四舍五入成 $0.1）
+function costTickLabel(value) {
+  if (value === 0) return '$0';
+  const decimals = value >= 1 ? (Number.isInteger(value) ? 0 : 1) : value >= .1 ? 1 : 2;
+  return '$' + value.toFixed(decimals);
+}
+
 function currentRows() {
   return RAW_ROWS
     .filter(row => state.source === 'all' || row.source === state.source)
@@ -480,7 +520,11 @@ function setGeometry(rows) {
   const costs = rows.map(row => row.cost);
   const focusMax = quantile(costs, .95);
   const visibleMax = state.range === 'focus' ? focusMax : Math.max(...costs);
-  const xMax = niceMax(visibleMax * 1.04);
+  const isLog = state.scale === 'log';
+  // 对数轴不能从 0 起：xMin 取正成本最小值向下取 1-2-5；线性轴固定从 0 起
+  const positiveCosts = costs.filter(cost => cost > 0);
+  const xMin = isLog ? niceLogFloor(positiveCosts.length ? Math.min(...positiveCosts) : .01) : 0;
+  const xMax = isLog ? niceLogCeil(visibleMax * 1.04) : niceMax(visibleMax * 1.04);
   const scores = rows.filter(row => row.cost <= xMax).map(row => row.pass_rate * 100);
   // Y 轴随可见数据自适应展开；pass@1 理论区间 [0,100]，上下限不得越界
   const dataMin = Math.min(...scores);
@@ -488,7 +532,12 @@ function setGeometry(rows) {
   const span = Math.max(10, dataMax - dataMin);
   const yMin = Math.max(0, Math.floor((dataMin - span * .07) / 5) * 5);
   const yMax = Math.min(100, Math.max(yMin + 10, Math.ceil((dataMax + span * .07) / 5) * 5));
-  const x = value => margin.left + value / xMax * plotWidth;
+  const xMinLog = Math.log10(xMin);
+  const xSpanLog = Math.log10(xMax) - xMinLog;
+  // 对数轴把 0/负成本点钳到左边界，保证点不消失（数据校验已剔除 NaN，仍防异常行）
+  const x = isLog
+    ? value => margin.left + (Math.log10(Math.max(value, xMin)) - xMinLog) / xSpanLog * plotWidth
+    : value => margin.left + value / xMax * plotWidth;
   const y = value => margin.top + (yMax - value) / (yMax - yMin) * plotHeight;
   svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
   svg.style.height = height + 'px';
@@ -496,7 +545,7 @@ function setGeometry(rows) {
   document.getElementById('clip-rect').setAttribute('y', margin.top);
   document.getElementById('clip-rect').setAttribute('width', plotWidth);
   document.getElementById('clip-rect').setAttribute('height', plotHeight);
-  geometry = { width, height, margin, plotWidth, plotHeight, xMax, yMin, yMax, x, y };
+  geometry = { width, height, margin, plotWidth, plotHeight, xMin, xMax, yMin, yMax, x, y };
   return geometry;
 }
 
@@ -507,10 +556,10 @@ function renderAxes(g) {
   axes.replaceChildren();
   const bottom = g.margin.top + g.plotHeight;
   const right = g.margin.left + g.plotWidth;
-  ticks(0, g.xMax, 6).forEach(value => {
+  (state.scale === 'log' ? logTicks(g.xMin, g.xMax) : ticks(0, g.xMax, 6)).forEach(value => {
     const x = g.x(value);
     grid.append(svgNode('line', { class: 'grid-line', x1: x, x2: x, y1: g.margin.top, y2: bottom }));
-    axes.append(svgNode('text', { class: 'axis-text', x, y: bottom + 21, 'text-anchor': 'middle' }, '$' + (value < 1 ? value.toFixed(1) : value.toFixed(0))));
+    axes.append(svgNode('text', { class: 'axis-text', x, y: bottom + 21, 'text-anchor': 'middle' }, costTickLabel(value)));
   });
   ticks(g.yMin, g.yMax, 6).forEach(value => {
     const y = g.y(value);
@@ -519,7 +568,7 @@ function renderAxes(g) {
   });
   axes.append(svgNode('line', { class: 'axis-line', x1: g.margin.left, x2: right, y1: bottom, y2: bottom }));
   axes.append(svgNode('line', { class: 'axis-line', x1: g.margin.left, x2: g.margin.left, y1: g.margin.top, y2: bottom }));
-  axes.append(svgNode('text', { class: 'axis-title', x: g.margin.left + g.plotWidth / 2, y: g.height - 13, 'text-anchor': 'middle' }, state.metric === 'mean_cost' ? '平均成本（USD / task）' : '中位成本（USD / task）'));
+  axes.append(svgNode('text', { class: 'axis-title', x: g.margin.left + g.plotWidth / 2, y: g.height - 13, 'text-anchor': 'middle' }, (state.metric === 'mean_cost' ? '平均成本' : '中位成本') + '（USD / task' + (state.scale === 'log' ? '，对数刻度' : '') + '）'));
   const yTitle = svgNode('text', { class: 'axis-title', x: -(g.margin.top + g.plotHeight / 2), y: 14, transform: 'rotate(-90)', 'text-anchor': 'middle' }, 'pass@1（%）');
   axes.append(yTitle);
 }
@@ -914,6 +963,7 @@ const sources = [...new Set(RAW_ROWS.map(row => row.source))].sort();
 sourceControl.addEventListener('change', () => { state.source = sourceControl.value; update(); });
 bindSegmented('metric-control', 'metric');
 bindSegmented('range-control', 'range');
+bindSegmented('scale-control', 'scale');
 if (RAW_ROWS.length > 0) {
   new ResizeObserver(() => update()).observe(shell);
   update();

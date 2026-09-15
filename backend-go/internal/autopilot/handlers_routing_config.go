@@ -31,15 +31,17 @@ type RoutingConfigResponse struct {
 	Scenario             string               `json:"scenario,omitempty"`
 	ScenarioPresets      []ScenarioPresetView `json:"scenarioPresets,omitempty"`
 	L2ProbeEnabled       bool                 `json:"l2ProbeEnabled,omitempty"`
+	RacingEnabled        bool                 `json:"racingEnabled,omitempty"`
 }
 
 // RoutingConfigUpdateRequest PUT /smart-routing/config 请求体。
-// 只允许修改 killSwitch、rolloutPercent、costPreference 和 scenario。
+// 只允许修改 killSwitch、rolloutPercent、costPreference、scenario 和 racingEnabled。
 type RoutingConfigUpdateRequest struct {
 	KillSwitch     *bool  `json:"killSwitch,omitempty"`
 	RolloutPercent *int   `json:"rolloutPercent,omitempty"`
 	CostPreference string `json:"costPreference,omitempty"`
 	Scenario       string `json:"scenario,omitempty"`
+	RacingEnabled  *bool  `json:"racingEnabled,omitempty"`
 }
 
 // ─── 路由注册 ─────────────────────────────────────────────────────────────────────────
@@ -68,7 +70,7 @@ func handleGetRoutingConfig(deps *RoutingConfigDeps) gin.HandlerFunc {
 }
 
 // handleUpdateRoutingConfig PUT /api/smart-routing/config
-// 更新智能路由配置。只允许修改 costPreference 和 scenario。
+// 更新智能路由配置。只允许修改 killSwitch、costPreference、scenario 和 racingEnabled。
 func handleUpdateRoutingConfig(deps *RoutingConfigDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req RoutingConfigUpdateRequest
@@ -108,8 +110,16 @@ func handleUpdateRoutingConfig(deps *RoutingConfigDeps) gin.HandlerFunc {
 			}
 		}
 
-		if req.KillSwitch == nil && req.CostPreference == "" && req.Scenario == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "至少需要提供 killSwitch、costPreference 或 scenario"})
+		// 竞速模式全局开关（racing.enabled）
+		if req.RacingEnabled != nil {
+			if err := deps.CfgManager.SetRacingEnabled(*req.RacingEnabled); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "保存竞速配置失败"})
+				return
+			}
+		}
+
+		if req.KillSwitch == nil && req.CostPreference == "" && req.Scenario == "" && req.RacingEnabled == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "至少需要提供 killSwitch、costPreference、scenario 或 racingEnabled"})
 			return
 		}
 
@@ -140,10 +150,10 @@ func currentRoutingConfigResponse(cfgManager *config.ConfigManager) RoutingConfi
 	cfg := cfgManager.GetPersistedAutopilotRouting()
 	configured := cfg.KillSwitch
 	forced := isTruthyEnv(os.Getenv("AUTOPILOT_KILL_SWITCH"))
-	return routingConfigResponse(cfg, configured, forced)
+	return routingConfigResponse(cfg, configured, forced, cfgManager.GetRacingEnabled())
 }
 
-func routingConfigResponse(cfg config.AutopilotRoutingConfig, killSwitchConfigured, killSwitchForced bool) RoutingConfigResponse {
+func routingConfigResponse(cfg config.AutopilotRoutingConfig, killSwitchConfigured, killSwitchForced, racingEnabled bool) RoutingConfigResponse {
 	cfg.KillSwitch = killSwitchConfigured || killSwitchForced
 	presets := BuiltinScenarioPresets(cfg.Scenario)
 	views := make([]ScenarioPresetView, 0, len(presets))
@@ -175,6 +185,7 @@ func routingConfigResponse(cfg config.AutopilotRoutingConfig, killSwitchConfigur
 		Scenario:             scenario,
 		ScenarioPresets:      views,
 		L2ProbeEnabled:       cfg.HealthCheck.L2ProbeEnabled,
+		RacingEnabled:        racingEnabled,
 	}
 }
 

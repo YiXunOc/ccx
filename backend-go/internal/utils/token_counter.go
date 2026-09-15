@@ -334,6 +334,10 @@ func estimateResponsesItemTokens(item types.ResponsesItem, isRequest bool) int {
 		if item.CallID != "" {
 			total += EstimateTokens(item.CallID)
 		}
+		// Codex namespace 工具的分段加密参数：密文按保守估算法逐段计
+		for _, segment := range item.EncryptedFunctionArgs {
+			total += estimateOpaqueStringTokens(segment)
+		}
 		// 不重复计 Content/ToolUse（NormalizeResponsesItem 会清空它们）
 		if item.Content != nil {
 			// 但兼容：如果确实只有 Content 没有 Arguments，补计 Content

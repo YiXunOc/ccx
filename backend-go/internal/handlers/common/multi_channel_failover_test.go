@@ -53,8 +53,8 @@ func TestHandleMultiChannelFailoverRecordsOneTerminalOutcome(t *testing.T) {
 	attempt := 0
 	common.HandleMultiChannelFailover(
 		c, &config.EnvConfig{}, env.scheduler, scheduler.ChannelKindMessages,
-		"Messages", "user", "model", "",
-		func(*scheduler.SelectionResult) common.MultiChannelAttemptResult {
+		"Messages", "user", "model", false, "",
+		func(_ *gin.Context, _ *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			attempt++
 			if attempt == 1 {
 				return common.MultiChannelAttemptResult{Attempted: true, LastError: errors.New("first failed")}
@@ -86,8 +86,8 @@ func TestHandleMultiChannelFailoverRecordsFailedRouteWithoutLegacyIndexPollution
 	var selected []scheduler.ChannelRouteRef
 	common.HandleMultiChannelFailover(
 		newTestGinContext(httptest.NewRecorder()), &config.EnvConfig{}, env.scheduler,
-		scheduler.ChannelKindMessages, "Messages", "user", "model", "",
-		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
+		scheduler.ChannelKindMessages, "Messages", "user", "model", false, "",
+		func(_ *gin.Context, selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			selected = append(selected, selection.Route)
 			if len(selected) == 1 {
 				return common.MultiChannelAttemptResult{Route: selection.Route, Attempted: true, LastError: errors.New("failed")}
@@ -193,7 +193,7 @@ func TestHandleMultiChannelFailover_SkipsAffinityForVisionRequest(t *testing.T) 
 	common.HasImageContent(c, []byte(`{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"abc"}}]}]}`))
 
 	var attempts []int
-	trySelectedChannel := func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
+	trySelectedChannel := func(_ *gin.Context, selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 		attempts = append(attempts, selection.ChannelIndex)
 		if selection.ChannelIndex == 0 {
 			return common.MultiChannelAttemptResult{
@@ -208,7 +208,7 @@ func TestHandleMultiChannelFailover_SkipsAffinityForVisionRequest(t *testing.T) 
 	}
 
 	envCfg := config.NewEnvConfig()
-	common.HandleMultiChannelFailover(c, envCfg, env.scheduler, scheduler.ChannelKindMessages, "Messages", "user-1", "gpt-4o", "", trySelectedChannel, nil, nil)
+	common.HandleMultiChannelFailover(c, envCfg, env.scheduler, scheduler.ChannelKindMessages, "Messages", "user-1", "gpt-4o", false, "", trySelectedChannel, nil, nil)
 
 	if len(attempts) != 2 {
 		t.Fatalf("期望尝试 2 个渠道，实际尝试 %d 个", len(attempts))
@@ -251,7 +251,7 @@ func TestHandleMultiChannelFailover_KeepsAffinityForTextRequest(t *testing.T) {
 	c.Set("userMessageCount", 1)
 
 	var attempts []int
-	trySelectedChannel := func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
+	trySelectedChannel := func(_ *gin.Context, selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 		attempts = append(attempts, selection.ChannelIndex)
 		if selection.ChannelIndex == 0 {
 			return common.MultiChannelAttemptResult{
@@ -266,7 +266,7 @@ func TestHandleMultiChannelFailover_KeepsAffinityForTextRequest(t *testing.T) {
 	}
 
 	envCfg := config.NewEnvConfig()
-	common.HandleMultiChannelFailover(c, envCfg, env.scheduler, scheduler.ChannelKindMessages, "Messages", "user-2", "gpt-4o", "", trySelectedChannel, nil, nil)
+	common.HandleMultiChannelFailover(c, envCfg, env.scheduler, scheduler.ChannelKindMessages, "Messages", "user-2", "gpt-4o", false, "", trySelectedChannel, nil, nil)
 
 	if len(attempts) != 2 {
 		t.Fatalf("期望尝试 2 个渠道，实际尝试 %d 个", len(attempts))
@@ -328,8 +328,9 @@ func TestHandleMultiChannelFailoverLogsSelectionTraceInDebug(t *testing.T) {
 		"Messages",
 		"user-debug",
 		"gpt-4o",
+		false,
 		"",
-		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
+		func(_ *gin.Context, selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			return common.MultiChannelAttemptResult{Handled: true, SuccessKey: "ok"}
 		},
 		nil,
@@ -379,7 +380,7 @@ func TestHandleMultiChannelFailover_KeepsExistingTextAffinityOnVisionFallback(t 
 	c.Set("userMessageCount", 1)
 	common.HasImageContent(c, []byte(`{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"abc"}}]}]}`))
 
-	trySelectedChannel := func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
+	trySelectedChannel := func(_ *gin.Context, selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 		if selection.ChannelIndex == 0 {
 			return common.MultiChannelAttemptResult{Handled: false, Attempted: true}
 		}
@@ -387,7 +388,7 @@ func TestHandleMultiChannelFailover_KeepsExistingTextAffinityOnVisionFallback(t 
 	}
 
 	envCfg := config.NewEnvConfig()
-	common.HandleMultiChannelFailover(c, envCfg, env.scheduler, scheduler.ChannelKindMessages, "Messages", "user-3", "gpt-4o", "", trySelectedChannel, nil, nil)
+	common.HandleMultiChannelFailover(c, envCfg, env.scheduler, scheduler.ChannelKindMessages, "Messages", "user-3", "gpt-4o", false, "", trySelectedChannel, nil, nil)
 
 	idx, ok := env.affinity.GetPreferredChannel(string(scheduler.ChannelKindMessages) + ":user-3")
 	if !ok {

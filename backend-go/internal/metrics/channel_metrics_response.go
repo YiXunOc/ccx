@@ -308,6 +308,7 @@ func (m *MetricsManager) calculateAggregatedTimeWindowsMultiURL(baseURLs []strin
 		var inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens int64
 		connectLatencies := make([]int64, 0)
 		firstByteLatencies := make([]int64, 0)
+		correlationIDs := make(map[string]struct{})
 
 		// 遍历所有 BaseURL 和 Key 的组合
 		for _, metrics := range m.getIdentityMetricsByMultiURLAndKeysLocked(baseURLs, activeKeys, serviceType) {
@@ -318,6 +319,9 @@ func (m *MetricsManager) calculateAggregatedTimeWindowsMultiURL(baseURLs []strin
 						successCount++
 					} else {
 						failureCount++
+					}
+					if record.CorrelationID != "" {
+						correlationIDs[record.CorrelationID] = struct{}{}
 					}
 					inputTokens += record.InputTokens
 					outputTokens += record.OutputTokens
@@ -351,6 +355,7 @@ func (m *MetricsManager) calculateAggregatedTimeWindowsMultiURL(baseURLs []strin
 			SuccessCount:          successCount,
 			FailureCount:          failureCount,
 			SuccessRate:           successRate,
+			UserRequestCount:      int64(len(correlationIDs)),
 			InputTokens:           inputTokens,
 			OutputTokens:          outputTokens,
 			CacheCreationTokens:   cacheCreationTokens,

@@ -785,7 +785,7 @@ export interface ChannelLogEntry {
   isRetry: boolean
   interfaceType?: string
   requestSource?: string
-  status: string
+  status: string  // pending/connecting/first_byte/streaming/completed/failed/cancelled/racing_lost
   startTime: string
   connectedAt?: string
   firstByteAt?: string

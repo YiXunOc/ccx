@@ -23,10 +23,14 @@ type MultiChannelAttemptResult struct {
 	Usage             *types.Usage
 	LastError         error
 	ResponseText      string
+	// AlsoFailedRoutes 竞速场景下与主尝试同时失败的真实影子路由：
+	// 外壳需一并写入 failedRoutes，避免后续轮次重选到已失败的影子渠道。
+	AlsoFailedRoutes []scheduler.ChannelRouteKey
 }
 
 // TrySelectedChannelFunc 尝试一次选中的渠道，返回该渠道的尝试结果。
-type TrySelectedChannelFunc func(selection *scheduler.SelectionResult) MultiChannelAttemptResult
+// c 是本次尝试的分支 gin context：主分支为主请求 context，竞速影子分支为其副本。
+type TrySelectedChannelFunc func(c *gin.Context, selection *scheduler.SelectionResult) MultiChannelAttemptResult
 
 // OnMultiChannelHandledFunc 在请求被"处理完成"时回调（成功或非 failover 错误都会触发）。
 type OnMultiChannelHandledFunc func(selection *scheduler.SelectionResult, result MultiChannelAttemptResult)
@@ -52,12 +56,13 @@ func HandleMultiChannelFailover(
 	apiType string,
 	userID string,
 	model string,
+	isStream bool,
 	agentRole string,
 	trySelectedChannel TrySelectedChannelFunc,
 	onHandled OnMultiChannelHandledFunc,
 	handleAllFailed HandleAllFailedFunc,
 ) {
-	HandleMultiChannelFailoverWithContextRequirement(c, envCfg, channelScheduler, kind, apiType, userID, model, nil, agentRole, trySelectedChannel, onHandled, handleAllFailed)
+	HandleMultiChannelFailoverWithContextRequirement(c, envCfg, channelScheduler, kind, apiType, userID, model, nil, isStream, agentRole, trySelectedChannel, onHandled, handleAllFailed)
 }
 
 // HandleMultiChannelFailoverWithContextRequirement 处理带上下文需求的多渠道 failover。
@@ -71,6 +76,7 @@ func HandleMultiChannelFailoverWithContextRequirement(
 	userID string,
 	model string,
 	contextRequirement *scheduler.ContextRequirement,
+	isStream bool,
 	agentRole string,
 	trySelectedChannel TrySelectedChannelFunc,
 	onHandled OnMultiChannelHandledFunc,
@@ -85,6 +91,7 @@ func HandleMultiChannelFailoverWithContextRequirement(
 		userID,
 		model,
 		contextRequirement,
+		isStream,
 		agentRole,
 		nil,
 		trySelectedChannel,
@@ -102,6 +109,7 @@ func HandleMultiChannelFailoverWithSelectionFilter(
 	userID string,
 	model string,
 	contextRequirement *scheduler.ContextRequirement,
+	isStream bool,
 	agentRole string,
 	candidateFilter scheduler.CandidateFilterFunc,
 	trySelectedChannel TrySelectedChannelFunc,
@@ -162,7 +170,7 @@ func HandleMultiChannelFailoverWithSelectionFilter(
 			// 继续正常流程
 		}
 
-		selection, err := channelScheduler.SelectChannelWithOptions(c.Request.Context(), scheduler.SelectionOptions{
+		selectionOpts := scheduler.SelectionOptions{
 			UserID:             userID,
 			FailedRoutes:       failedRoutes,
 			Kind:               kind,
@@ -173,7 +181,8 @@ func HandleMultiChannelFailoverWithSelectionFilter(
 			HasImageContent:    hasImageContent,
 			AgentRole:          agentRole,
 			CandidateFilter:    candidateFilter,
-		})
+		}
+		selection, err := channelScheduler.SelectChannelWithOptions(c.Request.Context(), selectionOpts)
 		if err != nil {
 			// 上下文溢出的跨协议重定向已前移到调度器内部（容量错误分支注入
 			// OverflowRedirect 候选），外壳不再二次改写模型。
@@ -214,7 +223,24 @@ func HandleMultiChannelFailoverWithSelectionFilter(
 
 		resetAutopilotAttemptTelemetry(c)
 		attemptStartedAt := time.Now()
-		result := trySelectedChannel(selection)
+
+		// 竞速编排：未启用时行为等同直接调用 trySelectedChannel；
+		// 启用后主分支与影子分支竞速，返回实际服务请求的 selection 与结果。
+		var result MultiChannelAttemptResult
+		selection, result = RunRacingAttempt(c, trySelectedChannel, RacingAttemptInput{
+			Ctx:              c.Request.Context(),
+			EnvCfg:           envCfg,
+			CfgManager:       channelScheduler.GetConfigManager(),
+			Scheduler:        channelScheduler,
+			Kind:             kind,
+			Model:            model,
+			IsStream:         isStream,
+			HasImageContent:  hasImageContent,
+			SelectionOptions: selectionOpts,
+			Selection:        selection,
+			AttemptStartedAt: attemptStartedAt,
+			RequestStartedAt: requestStartedAt,
+		})
 		attemptDuration := time.Since(attemptStartedAt)
 		if result.Handled {
 			notifyRoutingOutcome(selection, buildRoutingOutcome(
@@ -256,6 +282,9 @@ func HandleMultiChannelFailoverWithSelectionFilter(
 		}
 
 		failedRoutes[selection.Route.Key()] = true
+		for _, routeKey := range result.AlsoFailedRoutes {
+			failedRoutes[routeKey] = true
+		}
 
 		if result.FailoverError != nil {
 			lastFailoverError = result.FailoverError

@@ -73,28 +73,69 @@ func TestRunCapabilityToolCallProbeUnsupportedProtocol(t *testing.T) {
 }
 
 // recordToolCallProbeResult：仅 Tested && !Supported 落库，且写入共享缓存。
+// 键为稳定路由身份（无逻辑 UID 的渠道回退物理 UID#协议）。
 func TestRecordToolCallProbeResult(t *testing.T) {
 	restore := config.SwapSharedChannelCompatCacheForTest(config.NewChannelCompatCache())
 	defer restore()
 
 	channel := &config.UpstreamConfig{ChannelUID: "ch_probe", Name: "probe"}
 	unsupported := ToolCallProbeSummary{Tested: true, Supported: false, ConfirmedUnsupported: true, Evidence: "有效内容但无工具调用"}
-	recordToolCallProbeResult(channel, "sk-test", "fake-model", unsupported)
+	recordToolCallProbeResult(channel, "sk-test", "fake-model", "responses", unsupported)
 
 	cache := config.SharedChannelCompatCache()
-	if !cache.IsToolCallUnsupportedForChannelModel("ch_probe", "fake-model") {
-		t.Fatal("不支持结论应写入共享兼容性记忆")
+	if !cache.IsToolCallUnsupportedForChannelModel("ch_probe#responses", "fake-model") {
+		t.Fatal("不支持结论应按路由身份写入共享兼容性记忆")
+	}
+	// 裸物理 UID（无协议维度的旧口径查询）不应命中——协议维隔离是设计语义
+	if cache.IsToolCallUnsupportedForChannelModel("ch_probe", "fake-model") {
+		t.Fatal("裸 UID 查询不应命中路由身份键")
 	}
 
 	// Supported=true 与 inconclusive 不落库
 	supported := ToolCallProbeSummary{Tested: true, Supported: true}
-	recordToolCallProbeResult(channel, "sk-test", "ok-model", supported)
+	recordToolCallProbeResult(channel, "sk-test", "ok-model", "responses", supported)
 	inconclusive := ToolCallProbeSummary{Tested: true, Supported: false, Error: "timeout"}
-	recordToolCallProbeResult(channel, "sk-test", "timeout-model", inconclusive)
-	if cache.IsToolCallUnsupportedForChannelModel("ch_probe", "ok-model") {
+	recordToolCallProbeResult(channel, "sk-test", "timeout-model", "responses", inconclusive)
+	if cache.IsToolCallUnsupportedForChannelModel("ch_probe#responses", "ok-model") {
 		t.Fatal("支持结论不应落库")
 	}
-	if cache.IsToolCallUnsupportedForChannelModel("ch_probe", "timeout-model") {
+	if cache.IsToolCallUnsupportedForChannelModel("ch_probe#responses", "timeout-model") {
 		t.Fatal("inconclusive 结论不应落库")
+	}
+}
+
+// 跨渠道 UID 重铸的存活回归：物理 UID 会随渠道重建/账号同步被重铸（2026-09 ark
+// 两个月 ≥5 代，种子曾种在 7 月代幽灵 UID 上全 miss），工具能力学习必须锚定逻辑
+// 渠道 UID 才能在重铸后继续命中——旧代渠道写入的证据，新代渠道（同逻辑卡）可查。
+func TestRecordToolCallProbeResultSurvivesUIDRemint(t *testing.T) {
+	restore := config.SwapSharedChannelCompatCacheForTest(config.NewChannelCompatCache())
+	defer restore()
+
+	gen1 := &config.UpstreamConfig{ChannelUID: "ch_july", LogicalChannelUID: "lc_stable", Name: "ark-gen1"}
+	gen2 := &config.UpstreamConfig{ChannelUID: "ch_today", LogicalChannelUID: "lc_stable", Name: "ark-gen2"}
+
+	supported := ToolCallProbeSummary{Tested: true, Supported: true, Evidence: "真实 function_call"}
+	recordToolCallProbeResult(gen1, "sk-test", "kimi-k3", "responses", supported)
+
+	cache := config.SharedChannelCompatCache()
+	identity := config.ToolRouteIdentity(gen2, "responses")
+	if identity != "lc_stable#responses" {
+		t.Fatalf("新代渠道的路由身份应为逻辑锚，got %s", identity)
+	}
+	verified := cache.VerifiedToolCallModelsForChannel(identity, false)
+	if !verified["kimi-k3"] {
+		t.Fatal("同逻辑卡新代物理渠道应命中旧代写入的验证记录")
+	}
+	routes := cache.VerifiedToolCallRoutes("responses", false)
+	if !routes["lc_stable#responses"] {
+		t.Fatal("排他集合应包含逻辑路由身份")
+	}
+	// 协议维隔离：responses 证据不得外溢到 messages 排他集合
+	if ms := cache.VerifiedToolCallRoutes("messages", false); len(ms) != 0 {
+		t.Fatalf("messages 集合不应包含 responses 证据，got %v", ms)
+	}
+	// 旧代物理 UID 直接查询（无逻辑锚的口径）自然 miss，不误伤
+	if cache.VerifiedToolCallModelsForChannel("ch_july", false) != nil {
+		t.Fatal("裸物理 UID 查询不应命中路由身份键")
 	}
 }

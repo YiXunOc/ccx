@@ -58,85 +58,43 @@ func TestHandlePatchKeyMultiplier(t *testing.T) {
 		return router
 	}
 
-	t.Run("manual key set and reset", func(t *testing.T) {
+	t.Run("manual key set and reset without pair", func(t *testing.T) {
 		router := register()
-		body := map[string]any{"groupMultiplier": 0.5, "maxGroupMultiplier": 1.0}
-		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", body)
+		// 倍率上限已统一为渠道级：Key 级只设置分组倍率即可。
+		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 0.5})
 		if resp.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 		}
 		var got keyMultiplierResponse
 		decodeJSONResponse(t, resp, &got)
-		if got.GroupMultiplier == nil || *got.GroupMultiplier != 0.5 || got.MaxMultiplier == nil || *got.MaxMultiplier != 1.0 || !got.Eligible {
+		if got.GroupMultiplier == nil || *got.GroupMultiplier != 0.5 || !got.Eligible {
 			t.Fatalf("unexpected response: %+v", got)
 		}
+		if got.MaxMultiplier != nil {
+			t.Fatalf("key-level response must echo channel max (nil here), got %+v", got.MaxMultiplier)
+		}
 
-		resp = performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": nil, "maxGroupMultiplier": nil})
+		resp = performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": nil})
 		if resp.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 		}
 		got = keyMultiplierResponse{}
 		decodeJSONResponse(t, resp, &got)
-		if got.GroupMultiplier != nil || got.MaxMultiplier != nil || !got.Eligible {
+		if got.GroupMultiplier != nil || !got.Eligible {
 			t.Fatalf("unexpected reset response: %+v", got)
 		}
 	})
 
 	t.Run("zero preserved", func(t *testing.T) {
 		router := register()
-		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 0, "maxGroupMultiplier": 0})
+		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 0})
 		if resp.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 		}
 		var got keyMultiplierResponse
 		decodeJSONResponse(t, resp, &got)
-		if got.GroupMultiplier == nil || *got.GroupMultiplier != 0 || got.MaxMultiplier == nil || *got.MaxMultiplier != 0 {
+		if got.GroupMultiplier == nil || *got.GroupMultiplier != 0 || !got.Eligible {
 			t.Fatalf("unexpected zero response: %+v", got)
-		}
-	})
-
-	t.Run("invalid pair rejected", func(t *testing.T) {
-		router := register()
-		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 2, "maxGroupMultiplier": 1})
-		if resp.Code != http.StatusOK {
-			// current validator writes over_limit state instead of 400 on non-new_api
-			// but malformed numeric types should still 400; preserve current behavior here.
-		}
-	})
-
-	t.Run("new api reject manual group allow max and over limit immediately", func(t *testing.T) {
-		future := time.Now().Add(time.Hour).UTC()
-		cfg := cfgManager.GetConfig()
-		cfg.Upstream[0].APIKeyConfigs[0] = config.APIKeyConfig{
-			Key:                   "plain-key",
-			KeyUID:                "key-1",
-			QuotaGroup:            "premium",
-			GroupMultiplier:       ptrFloat(2),
-			MaxGroupMultiplier:    ptrFloat(2),
-			MultiplierSource:      "new_api",
-			MultiplierSyncStatus:  "fresh",
-			SourceSubscriptionUID: "sub-1",
-			SourceRemoteTokenID:   123,
-			MultiplierExpiresAt:   &future,
-		}
-		if _, err := cfgManager.UpdateUpstream(0, config.UpstreamUpdate{APIKeyConfigs: cfg.Upstream[0].APIKeyConfigs}); err != nil {
-			t.Fatalf("UpdateUpstream: %v", err)
-		}
-		router := register()
-
-		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 1})
-		if resp.Code != http.StatusConflict {
-			t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
-		}
-
-		resp = performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"maxGroupMultiplier": 1})
-		if resp.Code != http.StatusOK {
-			t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
-		}
-		var got keyMultiplierResponse
-		decodeJSONResponse(t, resp, &got)
-		if got.Status != "over_limit" || got.Eligible || got.Reason != config.MultiplierEligibilityReasonOverGroupLimit {
-			t.Fatalf("unexpected over-limit response: %+v", got)
 		}
 	})
 
@@ -152,13 +110,73 @@ func TestHandlePatchKeyMultiplier(t *testing.T) {
 		for _, tc := range cases {
 			t.Run(tc.kind, func(t *testing.T) {
 				router := register()
-				resp := performJSONRequest(t, router, http.MethodPatch, "/"+tc.kind+"/channels/"+tc.channelUID+"/keys/"+tc.keyUID+"/multiplier", map[string]any{"maxGroupMultiplier": 1})
+				resp := performJSONRequest(t, router, http.MethodPatch, "/"+tc.kind+"/channels/"+tc.channelUID+"/keys/"+tc.keyUID+"/multiplier", map[string]any{"groupMultiplier": 1})
 				if resp.Code != http.StatusOK {
 					t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 				}
 			})
 		}
 	})
+
+	t.Run("over channel limit reflects eligibility", func(t *testing.T) {
+		limit := 1.0
+		if _, err := cfgManager.UpdateUpstream(0, config.UpstreamUpdate{MaxGroupMultiplier: &limit}); err != nil {
+			t.Fatalf("UpdateUpstream: %v", err)
+		}
+		router := register()
+		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 2})
+		if resp.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+		}
+		var got keyMultiplierResponse
+		decodeJSONResponse(t, resp, &got)
+		if got.Eligible || got.Reason != config.MultiplierEligibilityReasonOverGroupLimit {
+			t.Fatalf("expected over-limit eligibility, got %+v", got)
+		}
+		if got.MaxMultiplier == nil || *got.MaxMultiplier != limit {
+			t.Fatalf("response must echo channel-level max, got %+v", got.MaxMultiplier)
+		}
+		// 清除渠道上限回退不启用闸门
+		zero := 0.0
+		if _, err := cfgManager.UpdateUpstream(0, config.UpstreamUpdate{MaxGroupMultiplier: &zero}); err != nil {
+			t.Fatalf("UpdateUpstream clear: %v", err)
+		}
+		resp = performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 2})
+		if resp.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+		}
+		got = keyMultiplierResponse{}
+		decodeJSONResponse(t, resp, &got)
+		if !got.Eligible || got.MaxMultiplier != nil {
+			t.Fatalf("expected eligible without gate, got %+v", got)
+		}
+	})
+
+	t.Run("new api reject manual group", func(t *testing.T) {
+		future := time.Now().Add(time.Hour).UTC()
+		cfg := cfgManager.GetConfig()
+		cfg.Upstream[0].APIKeyConfigs[0] = config.APIKeyConfig{
+			Key:                   "plain-key",
+			KeyUID:                "key-1",
+			QuotaGroup:            "premium",
+			GroupMultiplier:       ptrFloat(2),
+			MultiplierSource:      "new_api",
+			MultiplierSyncStatus:  "fresh",
+			SourceSubscriptionUID: "sub-1",
+			SourceRemoteTokenID:   123,
+			MultiplierExpiresAt:   &future,
+		}
+		if _, err := cfgManager.UpdateUpstream(0, config.UpstreamUpdate{APIKeyConfigs: cfg.Upstream[0].APIKeyConfigs}); err != nil {
+			t.Fatalf("UpdateUpstream: %v", err)
+		}
+		router := register()
+
+		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 1})
+		if resp.Code != http.StatusConflict {
+			t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+		}
+	})
+
 }
 
 func TestHandlePatchKeyMultiplierConsumptionPolicy(t *testing.T) {
@@ -179,16 +197,16 @@ func TestHandlePatchKeyMultiplierConsumptionPolicy(t *testing.T) {
 	assertPolicy := func(t *testing.T, expected config.KeyConsumptionPolicy, effectiveCostClass string) {
 		t.Helper()
 		var got keyMultiplierResponse
-		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 0, "maxGroupMultiplier": 0, "consumptionPolicy": string(expected)})
+		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 0, "consumptionPolicy": string(expected)})
 		if resp.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 		}
 		decodeJSONResponse(t, resp, &got)
 		if got.ConsumptionPolicy != expected {
-			t.Fatalf("expected consumptionPolicy=%s, got %s", expected, got.ConsumptionPolicy)
+			t.Fatalf("expected consumptionPolicy=%s, got %s", got.ConsumptionPolicy, expected)
 		}
 		if got.EffectiveCostClass != effectiveCostClass {
-			t.Fatalf("expected effectiveCostClass=%s, got %s", effectiveCostClass, got.EffectiveCostClass)
+			t.Fatalf("expected effectiveCostClass=%s, got %s", got.EffectiveCostClass, effectiveCostClass)
 		}
 		if !got.Eligible {
 			t.Fatalf("expected eligible, got %+v", got)
@@ -224,10 +242,16 @@ func TestHandlePatchKeyMultiplierConsumptionPolicy(t *testing.T) {
 		}
 	})
 
-	t.Run("group without max rejected", func(t *testing.T) {
-		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 0.5, "maxGroupMultiplier": nil})
-		if resp.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400, got status=%d body=%s", resp.Code, resp.Body.String())
+	t.Run("group without key level max is allowed", func(t *testing.T) {
+		// 渠道级统一上限后，Key 级无需再配对提供上限。
+		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 0.5})
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200, got status=%d body=%s", resp.Code, resp.Body.String())
+		}
+		var got keyMultiplierResponse
+		decodeJSONResponse(t, resp, &got)
+		if got.GroupMultiplier == nil || *got.GroupMultiplier != 0.5 || !got.Eligible {
+			t.Fatalf("unexpected response: %+v", got)
 		}
 	})
 
@@ -251,7 +275,6 @@ func TestHandlePatchKeyMultiplierConsumptionPolicy(t *testing.T) {
 			KeyUID:                "key-1",
 			QuotaGroup:            "premium",
 			GroupMultiplier:       ptrFloat(1),
-			MaxGroupMultiplier:    ptrFloat(2),
 			MultiplierSource:      "new_api",
 			MultiplierSyncStatus:  "fresh",
 			SourceSubscriptionUID: "sub-1",
@@ -263,7 +286,7 @@ func TestHandlePatchKeyMultiplierConsumptionPolicy(t *testing.T) {
 			t.Fatalf("UpdateUpstream: %v", err)
 		}
 
-		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 0.5, "maxGroupMultiplier": nil})
+		resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-1/keys/key-1/multiplier", map[string]any{"groupMultiplier": 0.5})
 		if resp.Code != http.StatusConflict {
 			t.Fatalf("expected 409, got status=%d body=%s", resp.Code, resp.Body.String())
 		}
@@ -336,7 +359,7 @@ func TestHandlePatchKeyMultiplierByCredentialUID(t *testing.T) {
 
 	// 用 credentialUid 定位并标记为零成本（免费签到额度场景）
 	resp := performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-cred/keys/cred-free/multiplier", map[string]any{
-		"groupMultiplier": 0, "maxGroupMultiplier": 0, "consumptionPolicy": "opportunistic",
+		"groupMultiplier": 0, "consumptionPolicy": "opportunistic",
 	})
 	if resp.Code != http.StatusOK {
 		t.Fatalf("credentialUid 兜底定位失败: status=%d body=%s", resp.Code, resp.Body.String())
@@ -356,7 +379,7 @@ func TestHandlePatchKeyMultiplierByCredentialUID(t *testing.T) {
 
 	// 未知标识仍 404（credentialUid 兜底不放松错误匹配）
 	resp = performJSONRequest(t, router, http.MethodPatch, "/messages/channels/msg-cred/keys/cred-missing/multiplier", map[string]any{
-		"groupMultiplier": 0, "maxGroupMultiplier": 0,
+		"groupMultiplier": 0,
 	})
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("未知 credentialUid 应 404: status=%d body=%s", resp.Code, resp.Body.String())

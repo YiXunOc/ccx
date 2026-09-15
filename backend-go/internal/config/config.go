@@ -139,6 +139,11 @@ type UpstreamConfig struct {
 	ChannelCreditCurrency  string   `json:"channelCreditCurrency,omitempty"`  // 渠道显示/计价币种（如 USD）
 	ChannelCreditAmount    *float64 `json:"channelCreditAmount,omitempty"`    // 渠道到账金额
 
+	// MaxGroupMultiplier 渠道级分组倍率安全上限：本渠道 Key 声明的 GroupMultiplier
+	// 超过该值时自动退出调度（倍率回落后自动恢复）。nil=不启用闸门，Key 倍率仅用于成本折算。
+	// 这是唯一运行时真源；Key 级同名字段已废弃（存量数据加载期迁移到此处后清空）。
+	MaxGroupMultiplier *float64 `json:"maxGroupMultiplier,omitempty"` // 最高分组倍率上限（如 1=不超过标准倍率）
+
 	// Vision 能力配置
 	NoVision            bool     `json:"noVision,omitempty"`            // 整个渠道不支持图片输入
 	NoVisionModels      []string `json:"noVisionModels,omitempty"`      // 不支持图片输入的模型列表（匹配 modelMapping 后的实际模型名）
@@ -168,6 +173,8 @@ type UpstreamConfig struct {
 	Tags []string `json:"tags,omitempty"`
 	// 渠道级保活验证配置（可选，nil 时继承全局与 OriginTier 分档默认）
 	HealthCheck *ChannelHealthCheckConfig `json:"healthCheck,omitempty"`
+	// 渠道级竞速参与配置（可选，nil 时继承全局；关闭=既不做主触发也不做影子目标）
+	Racing *ChannelRacingConfig `json:"racing,omitempty"`
 	// LogicalChannelUID 是该物理渠道所属逻辑渠道的稳定身份。
 	// 六个物理数组仍是运行时存储；本字段是非权威指针，加载旧配置时由 ConfigManager
 	// 自动回填，逻辑渠道 CRUD 也使用它保持各协议物理路由同步。空值表示旧数据。
@@ -288,9 +295,12 @@ type APIKeyConfig struct {
 	BaseURL    string `json:"baseUrl,omitempty"`
 	Enabled    *bool  `json:"enabled,omitempty"`
 	QuotaGroup string `json:"quotaGroup,omitempty"`
-	// GroupMultiplier 和 MaxGroupMultiplier 是自动接入的成本安全闸门。
-	// 两者同时存在时，调度只会使用倍率不超过上限的 Key；任一字段缺失则保持历史 Key 的兼容行为。
-	GroupMultiplier    *float64 `json:"groupMultiplier,omitempty"`
+	// GroupMultiplier 是该 Key 所属上游分组的成本倍率（成本折算与调度偏好使用）。
+	// 是否允许参与调度由渠道级 UpstreamConfig.MaxGroupMultiplier 统一判定（nil=不启用闸门）。
+	GroupMultiplier *float64 `json:"groupMultiplier,omitempty"`
+	// MaxGroupMultiplier 已废弃：上限统一为渠道级 UpstreamConfig.MaxGroupMultiplier。
+	// 字段仅为兼容读取旧配置保留；加载期 ensureChannelGroupMultiplierLimits 会把存量值
+	// 聚合提升到渠道级后清空，运行时不再参与任何判定。
 	MaxGroupMultiplier *float64 `json:"maxGroupMultiplier,omitempty"`
 	// ConsumptionPolicy Key 级消耗策略：normal（常规）或 opportunistic（机会性优先消耗）。
 	ConsumptionPolicy        KeyConsumptionPolicy `json:"consumptionPolicy,omitempty"`
@@ -525,7 +535,6 @@ type DisabledGroupModelInfo struct {
 	QuotaGroup string `json:"quotaGroup,omitempty"`
 	Key        string `json:"key,omitempty"`
 	Model      string `json:"model"`
-	Note       string `json:"note,omitempty"`
 	DisabledAt string `json:"disabledAt"`
 }
 
@@ -845,6 +854,21 @@ func mergeAPIKeyConfig(existing *APIKeyConfig, incoming APIKeyConfig) APIKeyConf
 	// 上游未显式携带 ConsumptionPolicy 时保留本地用户意图（new-api 同步、跨协议合并均适用）。
 	if merged.ConsumptionPolicy == "" {
 		merged.ConsumptionPolicy = existing.ConsumptionPolicy
+	}
+	// 倍率核心元数据由 Key 倍率编辑端点/同步服务管理，渠道编辑表单只是旧快照。
+	// incoming 未携带（零值）时保留 existing，否则渠道编辑保存会把内嵌编辑刚落盘的
+	// 倍率静默覆盖丢失（与备注复活同款「外层表单旧快照覆盖」模式）。
+	// 渠道编辑没有清空倍率的显式入口；Key 倍率端点的显式清除走 SkipAPIKeyConfigMerge
+	// 绕过本合并，不受回填影响。展示性字段（时间戳/SyncError）不回填：同步路径
+	// 会显式写空串/nil，回填会导致旧错误与过期时间残留。
+	if merged.GroupMultiplier == nil {
+		merged.GroupMultiplier = existing.GroupMultiplier
+	}
+	if strings.TrimSpace(merged.MultiplierSource) == "" {
+		merged.MultiplierSource = existing.MultiplierSource
+	}
+	if strings.TrimSpace(merged.MultiplierSyncStatus) == "" {
+		merged.MultiplierSyncStatus = existing.MultiplierSyncStatus
 	}
 	return merged
 }
@@ -1286,6 +1310,8 @@ type UpstreamUpdate struct {
 	CodexToolCompat          *bool                              `json:"codexToolCompat"`
 	StripCodexClientTools    *bool                              `json:"stripCodexClientTools"`
 	ConvertImageURLToB64JSON *bool                              `json:"convertImageUrlToB64Json"`
+	// 渠道级竞速参与配置（nil=继承全局）
+	Racing *ChannelRacingConfig `json:"racing"`
 	// 多渠道调度相关字段
 	Priority                *int       `json:"priority"`
 	Status                  *string    `json:"status"`
@@ -1331,6 +1357,8 @@ type UpstreamUpdate struct {
 	ChannelPaymentAmount   *float64 `json:"channelPaymentAmount"`   // 充值金额
 	ChannelCreditCurrency  *string  `json:"channelCreditCurrency"`  // 渠道计价币种
 	ChannelCreditAmount    *float64 `json:"channelCreditAmount"`    // 渠道到账金额
+	// 渠道级分组倍率上限（nil=不修改；0=清除即不启用闸门）
+	MaxGroupMultiplier *float64 `json:"maxGroupMultiplier"` // 最高分组倍率上限
 
 	// Vision 能力配置
 	NoVision            *bool    `json:"noVision"`
@@ -1344,6 +1372,10 @@ type UpstreamUpdate struct {
 	AutoManagedKind *string    `json:"autoManagedKind"`
 	// 用户自定义标签（nil=不修改，空切片=清空标签）
 	Tags []string `json:"tags"`
+	// SkipAPIKeyConfigMerge 为 true 时 APIKeyConfigs 直接归一化替换、不做表单合并
+	// （mergeAPIKeyConfig 的托管身份/倍率回填），供 Key 倍率端点等「精确写」语义使用。
+	// JSON 不暴露：只允许服务端内部构造。
+	SkipAPIKeyConfigMerge bool `json:"-"`
 }
 
 // Config 配置结构
@@ -1410,6 +1442,9 @@ type Config struct {
 
 	// 渠道保活验证全局配置（可选，nil 使用默认值）
 	HealthCheck *GlobalHealthCheckConfig `json:"healthCheck,omitempty"`
+
+	// 竞速（影子请求）全局配置（可选，nil 默认关闭；行为参数由策略表自动推导）
+	Racing *GlobalRacingConfig `json:"racing,omitempty"`
 
 	// LogicalChannels 逻辑渠道列表（管理面聚合实体）。
 	// 运行时的物理渠道仍以六个 Upstream* 数组为准；本字段由 ConfigManager 在加载时
@@ -1685,7 +1720,10 @@ func (cm *ConfigManager) GetAdminAPIKey(upstream *UpstreamConfig, failedKeys map
 		if failedKeys[disabledKey.Key] {
 			continue
 		}
-		if disabledKey.Config != nil && !IsAPIKeyConfigGroupMultiplierAllowed(*disabledKey.Config) {
+		// 已拉黑密钥的配置挂在 DisabledAPIKeys[].Config（不在 APIKeyConfigs），
+		// 直接按渠道级上限判定，避免方法内查不到配置而误放行。
+		if disabledKey.Config != nil &&
+			!EvaluateAPIKeyMultiplierEligibility(*disabledKey.Config, upstream.MaxGroupMultiplier, time.Now()).Eligible {
 			continue
 		}
 		log.Printf("[%s-Key] 警告: 活跃密钥不可用，临时借用已拉黑密钥用于管理操作: %s", apiType, utils.MaskAPIKey(disabledKey.Key))
@@ -2691,7 +2729,7 @@ func (cm *ConfigManager) RestoreKeyModel(apiType string, channelIndex int, apiKe
 
 // DisableGroupModel 永久禁用目标 Key 当前所属配额组的模型。
 // 空配额组不会与其他空组 Key 合并，而是退化为单 Key 限制。
-func (cm *ConfigManager) DisableGroupModel(apiType string, channelIndex int, apiKey, model, note string) (string, int, error) {
+func (cm *ConfigManager) DisableGroupModel(apiType string, channelIndex int, apiKey, model string) (string, int, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -2701,7 +2739,6 @@ func (cm *ConfigManager) DisableGroupModel(apiType string, channelIndex int, api
 	}
 	apiKey = strings.TrimSpace(apiKey)
 	model = strings.TrimSpace(model)
-	note = strings.TrimSpace(note)
 	if apiKey == "" || model == "" {
 		return "", 0, fmt.Errorf("apiKey 和 model 不能为空")
 	}
@@ -2718,15 +2755,6 @@ func (cm *ConfigManager) DisableGroupModel(apiType string, channelIndex int, api
 		if !sameDisabledGroupModel(*dm, apiKey, quotaGroup, model) {
 			continue
 		}
-		if note == "" || dm.Note == note {
-			return quotaGroup, affectedKeyCount, nil
-		}
-		previous := upstream.Clone().DisabledGroupModels
-		dm.Note = note
-		if err := cm.saveConfigLocked(cm.config); err != nil {
-			upstream.DisabledGroupModels = previous
-			return "", 0, err
-		}
 		return quotaGroup, affectedKeyCount, nil
 	}
 
@@ -2734,7 +2762,6 @@ func (cm *ConfigManager) DisableGroupModel(apiType string, channelIndex int, api
 	entry := DisabledGroupModelInfo{
 		QuotaGroup: quotaGroup,
 		Model:      model,
-		Note:       note,
 		DisabledAt: time.Now().Format(time.RFC3339),
 	}
 	if quotaGroup == "" {

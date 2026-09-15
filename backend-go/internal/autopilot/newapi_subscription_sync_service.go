@@ -357,7 +357,7 @@ func (s *NewApiSubscriptionSyncService) SyncNow(ctx context.Context, uid string)
 	result.Balance, result.UsedQuota, result.Models, result.ModelsHash = float64(self.Quota), self.UsedQuota, models, newHash
 	result.ModelsHashChanged = oldHash != "" && oldHash != newHash
 
-	statuses, desired := buildNewApiDesired(profile, groups, now)
+	statuses, desired := s.buildNewApiDesired(profile, groups, now)
 	result.Keys = statuses
 	if err := s.store.Patch(uid, nil, func(p *SubscriptionProfile) error {
 		p.Balance = result.Balance
@@ -395,7 +395,7 @@ func (s *NewApiSubscriptionSyncService) SyncNow(ctx context.Context, uid string)
 		return s.handleHardFailure(profile, result, newApiSyncStatusRelinkRequired, fmt.Errorf("key ownership 冲突，需要重新关联"))
 	}
 	// 常规同步只更新已存在 config；渠道侧被误删的自动接入 key 在此自愈找回。
-	s.healMissingProvisionedKeys(ctx, profile, adapter, profile.BaseURL, profile.AccessToken, userID, mode, desired)
+	s.healMissingProvisionedKeys(ctx, profile, adapter, profile.BaseURL, profile.AccessToken, userID, mode, desired, "")
 
 	if result.ModelsHashChanged && s.runner != nil && s.cfgManager != nil {
 		for _, channel := range changedChannels {
@@ -472,7 +472,7 @@ func (s *NewApiSubscriptionSyncService) syncOneAccount(ctx context.Context, prof
 		}
 	}
 
-	statuses, desired := buildDesiredForKeys(profile.SubscriptionUID, account.ProvisionedKeys, groups, profile.MaxGroupMultiplier, now)
+	statuses, desired := buildDesiredForKeys(profile.SubscriptionUID, account.ProvisionedKeys, groups, s.linkedChannelMaxGroupMultiplier(profile), now)
 
 	// 更新账号余额/状态/KeyUID/倍率。
 	_ = s.store.Patch(profile.SubscriptionUID, nil, func(p *SubscriptionProfile) error {
@@ -502,7 +502,7 @@ func (s *NewApiSubscriptionSyncService) syncOneAccount(ctx context.Context, prof
 			if !ok {
 				continue
 			}
-			merged, conflict := reconcileNewApiConfigs(channel.APIKeyConfigs, desired, profile.SubscriptionUID)
+			merged, conflict := reconcileNewApiConfigs(channel.APIKeyConfigs, desired, profile.SubscriptionUID, channel.MaxGroupMultiplier)
 			if conflict {
 				continue
 			}
@@ -511,7 +511,7 @@ func (s *NewApiSubscriptionSyncService) syncOneAccount(ctx context.Context, prof
 			}
 		}
 		// 账号侧被误删的自动接入 key 同样自愈找回（凭证走该账号自己的 accessToken）。
-		s.healMissingProvisionedKeys(ctx, profile, adapter, profile.BaseURL, account.AccessToken, userID, mode, desired)
+		s.healMissingProvisionedKeys(ctx, profile, adapter, profile.BaseURL, account.AccessToken, userID, mode, desired, account.AccountUID)
 	}
 	return statuses, nil
 }
@@ -552,13 +552,20 @@ func (s *NewApiSubscriptionSyncService) markAccountKeys(profile *SubscriptionPro
 // 同时从 APIKeys 列表移除对应明文 key。返回被移除的 tokenID 集合，供调用方回收远端 key。
 func (s *NewApiSubscriptionSyncService) RemoveAccountKeysFromChannels(profile *SubscriptionProfile, account NewApiAccount) map[int64]struct{} {
 	removed := make(map[int64]struct{}, len(account.ProvisionedKeys))
-	if s.cfgManager == nil {
-		return removed
-	}
-	tokenIDs := make(map[int64]struct{}, len(account.ProvisionedKeys))
 	for _, k := range account.ProvisionedKeys {
-		tokenIDs[int64(k.TokenID)] = struct{}{}
+		removed[int64(k.TokenID)] = struct{}{}
 	}
+	s.removeTokenKeysFromChannels(profile, removed)
+	return removed
+}
+
+// removeTokenKeysFromChannels 按 tokenID 集合从订阅关联渠道剔除 key 配置与对应明文 key，
+// 返回发生剔除的渠道数。
+func (s *NewApiSubscriptionSyncService) removeTokenKeysFromChannels(profile *SubscriptionProfile, tokenIDs map[int64]struct{}) int {
+	if s.cfgManager == nil || len(tokenIDs) == 0 {
+		return 0
+	}
+	changedChannels := 0
 	for _, uid := range profile.LinkedChannelUIDs {
 		kind, index, channel, ok := findNewApiChannel(s.cfgManager, uid)
 		if !ok {
@@ -569,7 +576,6 @@ func (s *NewApiSubscriptionSyncService) RemoveAccountKeysFromChannels(profile *S
 		for _, cfg := range channel.APIKeyConfigs {
 			if cfg.SourceSubscriptionUID == profile.SubscriptionUID {
 				if _, owned := tokenIDs[cfg.SourceRemoteTokenID]; owned {
-					removed[cfg.SourceRemoteTokenID] = struct{}{}
 					if cfg.Key != "" {
 						removedKeys[cfg.Key] = struct{}{}
 					}
@@ -586,10 +592,12 @@ func (s *NewApiSubscriptionSyncService) RemoveAccountKeysFromChannels(profile *S
 			keptKeys = append(keptKeys, k)
 		}
 		if len(keptConfigs) != len(channel.APIKeyConfigs) || len(keptKeys) != len(channel.APIKeys) {
-			_, _ = updateChannelForKind(s.cfgManager, kind, index, config.UpstreamUpdate{APIKeys: keptKeys, APIKeyConfigs: keptConfigs})
+			if _, err := updateChannelForKind(s.cfgManager, kind, index, config.UpstreamUpdate{APIKeys: keptKeys, APIKeyConfigs: keptConfigs}); err == nil {
+				changedChannels++
+			}
 		}
 	}
-	return removed
+	return changedChannels
 }
 
 // accountKeyStatuses 生成指定账号 key 的状态条目。
@@ -601,7 +609,7 @@ func (s *NewApiSubscriptionSyncService) accountKeyStatuses(profile *Subscription
 			Name:                k.Name,
 			Group:               k.Group,
 			GroupMultiplier:     k.GroupMultiplier,
-			MaxGroupMultiplier:  derefFloat(profile.MaxGroupMultiplier),
+			MaxGroupMultiplier:  derefFloat(s.linkedChannelMaxGroupMultiplier(profile)),
 			SourceRemoteTokenID: int64(k.TokenID),
 			SyncStatus:          status,
 			Reason:              reason,
@@ -614,22 +622,39 @@ func (s *NewApiSubscriptionSyncService) accountKeyStatuses(profile *Subscription
 type newApiDesiredKey struct {
 	keyUID, name, group, status, reason string
 	tokenID                             int64
-	ratio, limit                        float64
+	ratio                               float64
 	updatedAt                           time.Time
 	expiresAt                           *time.Time
 }
 
-func buildNewApiDesired(profile *SubscriptionProfile, groups map[string]float64, now time.Time) ([]NewApiKeyStatus, []newApiDesiredKey) {
-	return buildDesiredForKeys(profile.SubscriptionUID, profile.ProvisionedKeys, groups, profile.MaxGroupMultiplier, now)
+// linkedChannelMaxGroupMultiplier 返回订阅关联渠道的渠道级分组倍率上限（展示与同步状态用）。
+// 找不到已配置上限的关联渠道时回退订阅 profile 记录的接入初始值。
+// 多渠道上限不同的极端场景取第一个命中渠道；调度闸门本身在 evaluator 内
+// 按 per-channel 的 UpstreamConfig.MaxGroupMultiplier 实时判定，不受此处影响。
+func (s *NewApiSubscriptionSyncService) linkedChannelMaxGroupMultiplier(profile *SubscriptionProfile) *float64 {
+	if s != nil && s.cfgManager != nil {
+		for _, uid := range profile.LinkedChannelUIDs {
+			if _, _, channel, ok := findNewApiChannel(s.cfgManager, uid); ok && channel.MaxGroupMultiplier != nil {
+				return channel.MaxGroupMultiplier
+			}
+		}
+	}
+	return profile.MaxGroupMultiplier
+}
+
+func (s *NewApiSubscriptionSyncService) buildNewApiDesired(profile *SubscriptionProfile, groups map[string]float64, now time.Time) ([]NewApiKeyStatus, []newApiDesiredKey) {
+	return buildDesiredForKeys(profile.SubscriptionUID, profile.ProvisionedKeys, groups, s.linkedChannelMaxGroupMultiplier(profile), now)
 }
 
 // buildDesiredForKeys 为任意一组 ProvisionedKeys 构造同步期望与状态。
 // 主账号传 profile.ProvisionedKeys，额外账号传 account.ProvisionedKeys + 该账号自己的分组倍率；
 // 这样不同账号即使同名分组倍率不同也能各自正确取 ratio。
-func buildDesiredForKeys(subscriptionUID string, keys []NewApiProvisionedKey, groups map[string]float64, maxGroupMultiplier *float64, now time.Time) ([]NewApiKeyStatus, []newApiDesiredKey) {
+// limitForDisplay 仅用于响应展示与同步状态预判；渠道配置落库时的 over_limit
+// 以各渠道自己的 MaxGroupMultiplier 为准（reconcileNewApiConfigs）。
+func buildDesiredForKeys(subscriptionUID string, keys []NewApiProvisionedKey, groups map[string]float64, limitForDisplay *float64, now time.Time) ([]NewApiKeyStatus, []newApiDesiredKey) {
 	statuses := make([]NewApiKeyStatus, 0, len(keys))
 	desired := make([]newApiDesiredKey, 0, len(keys))
-	limit := derefFloat(maxGroupMultiplier)
+	limit := derefFloat(limitForDisplay)
 	for _, owned := range keys {
 		keyUID := StableKeyUID(subscriptionUID, int64(owned.TokenID))
 		ratio, exists := groups[owned.Group]
@@ -637,13 +662,13 @@ func buildDesiredForKeys(subscriptionUID string, keys []NewApiProvisionedKey, gr
 		var expires *time.Time
 		if !exists {
 			ratio, status, reason = owned.GroupMultiplier, newApiSyncStatusRemoteMissing, "远端分组已消失"
-		} else if maxGroupMultiplier != nil && ratio > *maxGroupMultiplier {
+		} else if limitForDisplay != nil && ratio > *limitForDisplay {
 			status, reason = newApiSyncStatusOverLimit, fmt.Sprintf("远端倍率 %.4g 超过上限 %.4g", ratio, limit)
 		} else {
 			expiry := now.Add(newApiSyncTTL)
 			expires = &expiry
 		}
-		d := newApiDesiredKey{keyUID: keyUID, name: owned.Name, group: owned.Group, tokenID: int64(owned.TokenID), ratio: ratio, limit: limit, status: status, reason: reason, updatedAt: now, expiresAt: expires}
+		d := newApiDesiredKey{keyUID: keyUID, name: owned.Name, group: owned.Group, tokenID: int64(owned.TokenID), ratio: ratio, status: status, reason: reason, updatedAt: now, expiresAt: expires}
 		desired = append(desired, d)
 		item := NewApiKeyStatus{KeyUID: keyUID, Name: owned.Name, Group: owned.Group, GroupMultiplier: ratio, MaxGroupMultiplier: limit, SourceRemoteTokenID: int64(owned.TokenID), SyncStatus: status, UpdatedAt: now.UTC().Format(time.RFC3339), Reason: reason}
 		if expires != nil {
@@ -664,7 +689,7 @@ func (s *NewApiSubscriptionSyncService) reconcileChannels(profile *SubscriptionP
 		if !ok {
 			continue
 		}
-		merged, conflict := reconcileNewApiConfigs(channel.APIKeyConfigs, desired, profile.SubscriptionUID)
+		merged, conflict := reconcileNewApiConfigs(channel.APIKeyConfigs, desired, profile.SubscriptionUID, channel.MaxGroupMultiplier)
 		if conflict {
 			return changed, true, nil
 		}
@@ -679,7 +704,10 @@ func (s *NewApiSubscriptionSyncService) reconcileChannels(profile *SubscriptionP
 	return changed, false, nil
 }
 
-func reconcileNewApiConfigs(existing []config.APIKeyConfig, desired []newApiDesiredKey, subscriptionUID string) ([]config.APIKeyConfig, bool) {
+// reconcileNewApiConfigs 把 desired key 合并进渠道现有 key 配置。
+// channelMax 是该渠道的渠道级分组倍率上限：超过上限的 key 状态落为 over_limit
+// （不参与调度），key 级不再持久化上限字段（上限唯一真源是渠道级）。
+func reconcileNewApiConfigs(existing []config.APIKeyConfig, desired []newApiDesiredKey, subscriptionUID string, channelMax *float64) ([]config.APIKeyConfig, bool) {
 	out := append([]config.APIKeyConfig(nil), existing...)
 	byToken := make(map[int64]int)
 	byUID := make(map[string]int)
@@ -711,17 +739,22 @@ func reconcileNewApiConfigs(existing []config.APIKeyConfig, desired []newApiDesi
 		if cfg.SourceRemoteTokenID != 0 && cfg.SourceRemoteTokenID != d.tokenID {
 			return out, true
 		}
+		status, reason := d.status, d.reason
+		var expires *time.Time = d.expiresAt
+		if channelMax != nil && d.ratio > *channelMax {
+			status, reason, expires = newApiSyncStatusOverLimit, fmt.Sprintf("远端倍率 %.4g 超过上限 %.4g", d.ratio, *channelMax), nil
+		}
 		cfg.KeyUID = d.keyUID
 		cfg.MultiplierSource = newApiSyncSourceNewAPI
 		cfg.SourceSubscriptionUID = subscriptionUID
 		cfg.SourceRemoteTokenID = d.tokenID
 		cfg.QuotaGroup = d.group
 		cfg.GroupMultiplier = floatPtr(d.ratio)
-		cfg.MaxGroupMultiplier = floatPtr(d.limit)
+		cfg.MaxGroupMultiplier = nil
 		cfg.MultiplierUpdatedAt = timePtr(d.updatedAt)
-		cfg.MultiplierExpiresAt = d.expiresAt
-		cfg.MultiplierSyncStatus = d.status
-		cfg.MultiplierSyncError = d.reason
+		cfg.MultiplierExpiresAt = expires
+		cfg.MultiplierSyncStatus = status
+		cfg.MultiplierSyncError = reason
 		out[index] = cfg
 	}
 	return out, false
@@ -780,7 +813,7 @@ func (s *NewApiSubscriptionSyncService) markAllOwned(profile *SubscriptionProfil
 		}
 	}
 	for _, owned := range profile.ProvisionedKeys {
-		results = append(results, NewApiKeyStatus{KeyUID: StableKeyUID(profile.SubscriptionUID, int64(owned.TokenID)), Name: owned.Name, Group: owned.Group, GroupMultiplier: owned.GroupMultiplier, MaxGroupMultiplier: derefFloat(profile.MaxGroupMultiplier), SourceRemoteTokenID: int64(owned.TokenID), SyncStatus: status, Reason: reason})
+		results = append(results, NewApiKeyStatus{KeyUID: StableKeyUID(profile.SubscriptionUID, int64(owned.TokenID)), Name: owned.Name, Group: owned.Group, GroupMultiplier: owned.GroupMultiplier, MaxGroupMultiplier: derefFloat(s.linkedChannelMaxGroupMultiplier(profile)), SourceRemoteTokenID: int64(owned.TokenID), SyncStatus: status, Reason: reason})
 	}
 	return results
 }
@@ -862,9 +895,15 @@ func (s *NewApiSubscriptionSyncService) injectProvisionedKeys(profile *Subscript
 			cfg := &configs[match]
 			cfg.KeyUID, cfg.MultiplierSource = d.keyUID, newApiSyncSourceNewAPI
 			cfg.SourceSubscriptionUID, cfg.SourceRemoteTokenID = profile.SubscriptionUID, d.tokenID
-			cfg.QuotaGroup, cfg.GroupMultiplier, cfg.MaxGroupMultiplier = d.group, floatPtr(d.ratio), floatPtr(d.limit)
-			cfg.MultiplierUpdatedAt, cfg.MultiplierExpiresAt = timePtr(d.updatedAt), d.expiresAt
-			cfg.MultiplierSyncStatus, cfg.MultiplierSyncError = d.status, d.reason
+			cfg.QuotaGroup, cfg.GroupMultiplier = d.group, floatPtr(d.ratio)
+			cfg.MaxGroupMultiplier = nil
+			cfg.MultiplierUpdatedAt = timePtr(d.updatedAt)
+			status, reason, expires := d.status, d.reason, d.expiresAt
+			if channel.MaxGroupMultiplier != nil && d.ratio > *channel.MaxGroupMultiplier {
+				status, reason, expires = newApiSyncStatusOverLimit, fmt.Sprintf("远端倍率 %.4g 超过上限 %.4g", d.ratio, *channel.MaxGroupMultiplier), nil
+			}
+			cfg.MultiplierExpiresAt = expires
+			cfg.MultiplierSyncStatus, cfg.MultiplierSyncError = status, reason
 		}
 		// 注入的明文 key 须并入渠道 APIKeys：调度与 keypool 候选只遍历 APIKeys，
 		// 仅写 configs 的 key 不参与调用（此前添加账号/自愈注入的 key 实际不可调度）。
@@ -901,7 +940,11 @@ type newApiTokenHealer interface {
 // 用户误删渠道 key 后，常规同步只更新已存在 config、无法找回；此处按 desired 的
 // tokenID 从远端 token 列表取回明文（掩码经揭示端点换回），经 injectProvisionedKeys
 // 重建 config 并入 APIKeys。远端 token 也已删除的项跳过，绝不注入空 key。
-func (s *NewApiSubscriptionSyncService) healMissingProvisionedKeys(ctx context.Context, profile *SubscriptionProfile, adapter NewApiSyncAdapter, baseURL, accessToken, userID, authTokenMode string, desired []newApiDesiredKey) {
+// healMissingProvisionedKeys 对账关联渠道与本订阅拥有的自动接入 key：
+// 正向——渠道缺失的 key 按 tokenID 从远端列表找回并重新注入（掩码 key 经揭示端点换明文）；
+// 反向——远端已删除的 token 同步从渠道与 profile 清理（ownerAccountUID 为空表示订阅级凭证）。
+// 反向清理仅在远端列表成功拉全且非空时判定，防止接口异常导致误删。
+func (s *NewApiSubscriptionSyncService) healMissingProvisionedKeys(ctx context.Context, profile *SubscriptionProfile, adapter NewApiSyncAdapter, baseURL, accessToken, userID, authTokenMode string, desired []newApiDesiredKey, ownerAccountUID string) {
 	if s.cfgManager == nil || len(profile.LinkedChannelUIDs) == 0 || len(desired) == 0 {
 		return
 	}
@@ -919,12 +962,16 @@ func (s *NewApiSubscriptionSyncService) healMissingProvisionedKeys(ctx context.C
 		}
 		byToken := make(map[int64]struct{})
 		byUID := make(map[string]struct{})
+		hasOwnedConfig := false
 		for _, cfg := range channel.APIKeyConfigs {
 			if cfg.SourceRemoteTokenID > 0 {
 				byToken[int64(cfg.SourceRemoteTokenID)] = struct{}{}
 			}
 			if cfg.KeyUID != "" {
 				byUID[cfg.KeyUID] = struct{}{}
+			}
+			if cfg.SourceSubscriptionUID == profile.SubscriptionUID {
+				hasOwnedConfig = true
 			}
 		}
 		for _, d := range desired {
@@ -936,10 +983,11 @@ func (s *NewApiSubscriptionSyncService) healMissingProvisionedKeys(ctx context.C
 			}
 			missing = append(missing, d)
 		}
+		// 渠道里没有本订阅的任何 key 且无缺失时无需远端交互，避免空转请求。
+		if !hasOwnedConfig && len(missing) == 0 {
+			return
+		}
 		break
-	}
-	if len(missing) == 0 {
-		return
 	}
 
 	need := make(map[int64]struct{}, len(missing))
@@ -947,18 +995,18 @@ func (s *NewApiSubscriptionSyncService) healMissingProvisionedKeys(ctx context.C
 		need[d.tokenID] = struct{}{}
 	}
 	remote := make(map[int64]string, len(missing))
+	remoteIDs := make(map[int64]struct{})
+	listComplete := false
 	const pageSize = 100
-	for page := 1; len(need) > 0; page++ {
+	for page := 1; ; page++ {
 		tokens, err := healer.ListTokens(ctx, baseURL, accessToken, userID, authTokenMode, page, pageSize)
 		if err != nil {
-			log.Printf("[NewApi-Sync] 自愈拉取远端 token 列表失败 subscription=%s: %v", profile.SubscriptionUID, err)
+			log.Printf("[NewApi-Sync] 对账拉取远端 token 列表失败 subscription=%s: %v", profile.SubscriptionUID, err)
 			return
-		}
-		if len(tokens) == 0 {
-			break
 		}
 		for i := range tokens {
 			id := int64(tokens[i].ID)
+			remoteIDs[id] = struct{}{}
 			if _, wanted := need[id]; !wanted {
 				continue
 			}
@@ -975,26 +1023,79 @@ func (s *NewApiSubscriptionSyncService) healMissingProvisionedKeys(ctx context.C
 			delete(need, id)
 		}
 		if len(tokens) < pageSize {
+			listComplete = true
 			break
 		}
 	}
-	if len(remote) == 0 {
-		return
-	}
 
-	healed := make([]newApiDesiredKey, 0, len(remote))
-	plaintextByToken := make(map[int64]string, len(remote))
-	for _, d := range desired {
-		if key, found := remote[d.tokenID]; found {
-			healed = append(healed, d)
-			plaintextByToken[d.tokenID] = key
+	// 正向：远端仍在的缺失 key 重新注入渠道。
+	if len(remote) > 0 {
+		healed := make([]newApiDesiredKey, 0, len(remote))
+		plaintextByToken := make(map[int64]string, len(remote))
+		for _, d := range desired {
+			if key, found := remote[d.tokenID]; found {
+				healed = append(healed, d)
+				plaintextByToken[d.tokenID] = key
+			}
+		}
+		if len(healed) > 0 {
+			if err := s.injectProvisionedKeys(profile, healed, plaintextByToken); err != nil {
+				log.Printf("[NewApi-Sync] 自愈注入渠道失败 subscription=%s: %v", profile.SubscriptionUID, err)
+			} else {
+				log.Printf("[NewApi-Sync] 自愈找回自动接入 key subscription=%s count=%d tokens=%v", profile.SubscriptionUID, len(healed), needKeys(remote))
+			}
 		}
 	}
-	if err := s.injectProvisionedKeys(profile, healed, plaintextByToken); err != nil {
-		log.Printf("[NewApi-Sync] 自愈注入渠道失败 subscription=%s: %v", profile.SubscriptionUID, err)
-		return
+
+	// 反向：远端已删除的 token 从渠道与 profile 清理。
+	if listComplete && len(remoteIDs) > 0 {
+		stale := make([]newApiDesiredKey, 0)
+		for _, d := range desired {
+			if _, exists := remoteIDs[d.tokenID]; !exists {
+				stale = append(stale, d)
+			}
+		}
+		if len(stale) > 0 {
+			s.pruneRemoteDeletedKeys(profile, stale, ownerAccountUID)
+		}
 	}
-	log.Printf("[NewApi-Sync] 自愈找回自动接入 key subscription=%s count=%d tokens=%v", profile.SubscriptionUID, len(healed), needKeys(remote))
+}
+
+// pruneRemoteDeletedKeys 把远端已删除的 token 从关联渠道与订阅画像中移除。
+func (s *NewApiSubscriptionSyncService) pruneRemoteDeletedKeys(profile *SubscriptionProfile, stale []newApiDesiredKey, ownerAccountUID string) {
+	tokenIDs := make(map[int64]struct{}, len(stale))
+	staleIDs := make([]int64, 0, len(stale))
+	for _, d := range stale {
+		tokenIDs[d.tokenID] = struct{}{}
+		staleIDs = append(staleIDs, d.tokenID)
+	}
+	removed := s.removeTokenKeysFromChannels(profile, tokenIDs)
+	if s.store != nil {
+		_ = s.store.Patch(profile.SubscriptionUID, nil, func(p *SubscriptionProfile) error {
+			if ownerAccountUID == "" {
+				p.ProvisionedKeys = dropProvisionedKeysByTokenIDs(p.ProvisionedKeys, tokenIDs)
+				return nil
+			}
+			for i := range p.Accounts {
+				if p.Accounts[i].AccountUID == ownerAccountUID {
+					p.Accounts[i].ProvisionedKeys = dropProvisionedKeysByTokenIDs(p.Accounts[i].ProvisionedKeys, tokenIDs)
+				}
+			}
+			return nil
+		})
+	}
+	log.Printf("[NewApi-Sync] 远端已删除的自动接入 key 已清理 subscription=%s account=%s tokens=%v channels=%d", profile.SubscriptionUID, ownerAccountUID, staleIDs, removed)
+}
+
+func dropProvisionedKeysByTokenIDs(keys []NewApiProvisionedKey, tokenIDs map[int64]struct{}) []NewApiProvisionedKey {
+	kept := keys[:0]
+	for _, k := range keys {
+		if _, drop := tokenIDs[int64(k.TokenID)]; drop {
+			continue
+		}
+		kept = append(kept, k)
+	}
+	return kept
 }
 
 func needKeys(remote map[int64]string) []int64 {
@@ -1011,7 +1112,7 @@ func (s *NewApiSubscriptionSyncService) ReconcileProvisioned(profile *Subscripti
 		return nil
 	}
 	now := s.now()
-	_, desired := buildNewApiDesired(profile, profile.GroupMultipliers, now)
+	_, desired := s.buildNewApiDesired(profile, profile.GroupMultipliers, now)
 	if err := s.injectProvisionedKeys(profile, desired, plaintextByToken); err != nil {
 		return err
 	}
@@ -1040,7 +1141,7 @@ func (s *NewApiSubscriptionSyncService) ReconcileAccountProvisioned(profile *Sub
 		return fmt.Errorf("account_uid=%s 不存在", accountUID)
 	}
 	now := s.now()
-	_, desired := buildDesiredForKeys(profile.SubscriptionUID, account.ProvisionedKeys, groups, profile.MaxGroupMultiplier, now)
+	_, desired := buildDesiredForKeys(profile.SubscriptionUID, account.ProvisionedKeys, groups, s.linkedChannelMaxGroupMultiplier(profile), now)
 	if err := s.injectProvisionedKeys(profile, desired, plaintextByToken); err != nil {
 		return err
 	}

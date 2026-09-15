@@ -478,7 +478,7 @@ func formatMapAsOneLine(m map[string]interface{}) string {
 		}
 
 		// 对于长字符串字段（如 encrypted_content, arguments, output），进行截断
-		if k == "encrypted_content" || k == "arguments" || k == "output" || k == "text" {
+		if k == "encrypted_content" || k == "arguments" || k == "output" || k == "text" || k == "encrypted_function_args" {
 			if strVal, ok := v.(string); ok {
 				maxLen := 100
 				if k == "arguments" || k == "output" || k == "text" {

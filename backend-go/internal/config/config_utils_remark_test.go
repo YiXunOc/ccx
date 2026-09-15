@@ -77,6 +77,124 @@ func TestMigrateNameDoesNotReviveLogicalRemark(t *testing.T) {
 	if got := cfg.ChatUpstream[0].Name; got != "other-example-com" {
 		t.Errorf("trigger 渠道应完成名称重派生: %q", got)
 	}
+	// trigger 渠道备注为空（用户已删）：迁移改名后不得把旧名写回备注——
+	// 该写回即「删了保存再打开又出现」的复活根因（09-42 agentrouter 现场）。
+	if got := cfg.ChatUpstream[0].Remark; got != "" {
+		t.Errorf("trigger 渠道旧名被写进空备注（复活）: %q（应为空）", got)
+	}
+}
+
+// 回归：名字漂移触发迁移改名时，不得把旧渠道名写回用户已删除的空备注。
+// 旧名→备注保留是 2026-08 一次性存量迁移机制（自定义名→派生名过渡期防语义丢失），
+// 此后名字不再允许自定义，该机制只剩副作用：逻辑层同步/地址池调整等任何路径
+// 造成 Name≠派生值，下次保存（saveConfigLocked 每次都跑 migrateAllChannelNamesConfig）
+// 或重启（pureV3Load 加载路径）就会把旧名截断写回空备注，形成无限复活循环。
+func TestMigrateNameDoesNotWriteOldNameIntoClearedRemark(t *testing.T) {
+	cfg := &Config{
+		LogicalChannels: []LogicalChannel{
+			{
+				LogicalChannelUID: "lc_drift",
+				Name:              "custom-old-name",
+				Remark:            "", // 用户已删除
+				Kind:              "llm",
+				Protocols: []LogicalChannelProtocol{
+					{Kind: "messages", ChannelUID: "ch_drift"},
+				},
+			},
+		},
+		Upstream: []UpstreamConfig{
+			{
+				ChannelUID:        "ch_drift",
+				LogicalChannelUID: "lc_drift",
+				Name:              "custom-old-name", // 漂移态：≠派生值
+				LogicalName:       "custom-old-name",
+				Remark:            "", // 用户已删除的备注
+				BaseURL:           "https://seekai.cc",
+				BaseURLs:          []string{"https://seekai.cc"},
+				ServiceType:       "claude",
+				APIKeys:           []string{"sk-test-drift"},
+			},
+		},
+	}
+
+	if !migrateAllChannelNamesConfig(cfg) {
+		t.Fatal("漂移名应触发迁移改名")
+	}
+	if got := cfg.Upstream[0].Remark; got != "" {
+		t.Errorf("旧名被写回空备注（复活）: %q（应为空）", got)
+	}
+	if got := cfg.Upstream[0].Name; got != derivedSeekaiName() {
+		t.Errorf("漂移名应被重派生: %q", got)
+	}
+	// 逻辑层备注同样不得被动（改名同步允许，备注同步只随显式 remark 更新走）。
+	if got := cfg.LogicalChannels[0].Remark; got != "" {
+		t.Errorf("逻辑渠道备注被写回: %q（应为空）", got)
+	}
+}
+
+// 端到端：删除备注的渠道经历「保存→重载」完整周期（覆盖 saveConfigLocked 与
+// pureV3Load 两条迁移调用路径），物理卡/逻辑层/V3 持久形态的备注都保持为空。
+func TestDeletedRemarkSurvivesSaveReloadCycle(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.json")
+	cm, err := NewConfigManager(cfgFile, filepath.Join(dir, "backups"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm.mu.Lock()
+	cm.config.LogicalChannels = append(cm.config.LogicalChannels, LogicalChannel{
+		LogicalChannelUID: "lc_cycle",
+		Name:              "stale-name",
+		Remark:            "",
+		Kind:              "llm",
+		SiteIdentity:      SiteIdentityForBaseURL("https://seekai.cc"),
+		BaseURLs:          []string{"https://seekai.cc"},
+		Protocols: []LogicalChannelProtocol{
+			{Kind: "messages", ChannelUID: "ch_cycle", ServiceType: "claude", Enabled: true, Status: "active", Priority: 1},
+		},
+	})
+	cm.config.Upstream = append(cm.config.Upstream, UpstreamConfig{
+		ChannelUID:        "ch_cycle",
+		LogicalChannelUID: "lc_cycle",
+		Name:              "stale-name",
+		LogicalName:       "stale-name",
+		Remark:            "",
+		BaseURL:           "https://seekai.cc",
+		BaseURLs:          []string{"https://seekai.cc"},
+		ServiceType:       "claude",
+		APIKeys:           []string{"sk-test-cycle"},
+		Status:            "active",
+		Priority:          1,
+	})
+	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.mu.Unlock()
+		t.Fatalf("保存失败: %v", err)
+	}
+	cm.mu.Unlock()
+
+	cm2, err := NewConfigManager(cfgFile, filepath.Join(dir, "backups"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm2.mu.RLock()
+	defer cm2.mu.RUnlock()
+	for i := range cm2.config.Upstream {
+		if cm2.config.Upstream[i].ChannelUID == "ch_cycle" && cm2.config.Upstream[i].Remark != "" {
+			t.Errorf("重载后物理卡备注被复活: %q（应为空）", cm2.config.Upstream[i].Remark)
+		}
+	}
+	// 落盘的 ChannelsV3 物理形态同样必须干净（编辑弹窗从这里回填表单）。
+	for i := range cm2.config.ChannelsV3 {
+		v3 := &cm2.config.ChannelsV3[i]
+		if v3.ChannelUID != "lc_cycle" {
+			continue
+		}
+		for _, proto := range v3.Protocols {
+			if proto.Upstream.Remark != "" {
+				t.Errorf("落盘 V3 物理卡备注被复活: %q（应为空）", proto.Upstream.Remark)
+			}
+		}
+	}
 }
 
 // 端到端补充：落盘→重载后逻辑渠道备注同样保持为空（真实 config 管理器路径）。

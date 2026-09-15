@@ -22,7 +22,7 @@ export const claudeMessagesPresets: Record<string, ClaudeMessagesPreset> = {
   "deepseek": {
     "modelMapping": {
       "fable": "deepseek-v4-pro",
-      "haiku": "deepseek-v4-flash",
+      "haiku": "deepseek-flash",
       "opus": "deepseek-v4-pro",
       "sonnet": "deepseek-v4-pro"
     },
@@ -30,8 +30,10 @@ export const claudeMessagesPresets: Record<string, ClaudeMessagesPreset> = {
     "reasoningParamStyle": "reasoning",
     "authHeader": "",
     "normalizeSystemRoleToTopLevel": true,
-    "noVision": true,
-    "noVisionModels": [],
+    "noVision": false,
+    "noVisionModels": [
+      "deepseek-v4-pro"
+    ],
     "visionFallbackModel": "",
     "normalizeMetadataUserId": true,
     "stripBillingHeader": true

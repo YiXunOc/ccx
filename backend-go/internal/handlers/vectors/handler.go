@@ -154,9 +154,10 @@ func handleVectorsFailover(
 		userID,
 		model,
 		nil,
+		false,
 		agentRole,
 		newEmbeddingCompatibilityFilter(c, model, dimensions),
-		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
+		func(c *gin.Context, selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
 			channelIndex := selection.ChannelIndex
 			if upstream == nil {
@@ -330,6 +331,7 @@ func handleSuccess(c *gin.Context, resp *http.Response, envCfg *config.EnvConfig
 	}
 
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
+	utils.ForwardContentType(resp.Header, c.Writer)
 	c.Status(resp.StatusCode)
 	if _, err := c.Writer.Write(bodyBytes); err != nil {
 		return nil, err

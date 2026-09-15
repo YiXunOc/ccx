@@ -437,13 +437,8 @@ func migrateStaleChannelViewNames(cfg *Config) bool {
 			byUID[v.ChannelUID] = v
 			continue
 		}
-		old := current
-		if old != "" && strings.TrimSpace(v.Remark) == "" {
-			if remarkRuneCount(old) > channelNameRemarkMaxRunes {
-				old = string([]rune(old)[:channelNameRemarkMaxRunes])
-			}
-			v.Remark = old
-		}
+		// 只改名不写备注（与物理渠道侧 migrateAutoDeriveChannelNamesInSlice 同策）：
+		// 旧名→备注保留是一次性存量迁移机制，存续只会把用户删掉的备注复活。
 		v.Name = derived
 		byUID[v.ChannelUID] = v
 		changed = true
@@ -494,13 +489,7 @@ func migrateStaleChannelViewNamesFromDisk(cfg *Config) bool {
 			byUID[v.ChannelUID] = v
 			continue
 		}
-		old := current
-		if old != "" && strings.TrimSpace(v.Remark) == "" {
-			if remarkRuneCount(old) > channelNameRemarkMaxRunes {
-				old = string([]rune(old)[:channelNameRemarkMaxRunes])
-			}
-			v.Remark = old
-		}
+		// 只改名不写备注（同 migrateStaleChannelViewNames：旧名保留机制已随存量迁移退役）。
 		v.Name = derived
 		byUID[v.ChannelUID] = v
 		changed = true

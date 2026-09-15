@@ -317,6 +317,7 @@ type responsesFoldHTTPEmitter struct {
 	originalReq        *types.ResponsesRequest
 	outputCollector    *streamOutputCollector
 	reasoningCollector *thinkingcache.ResponsesStreamCollector
+	pseudoScanner      *common.PseudoToolCallMarkerScanner
 	preflightEvents    []string
 	preflightText      bytes.Buffer
 	committed          bool
@@ -340,10 +341,44 @@ func newResponsesFoldHTTPEmitter(
 		originalReq:        originalReq,
 		outputCollector:    newStreamOutputCollector(),
 		reasoningCollector: thinkingcache.NewResponsesStreamCollector(),
+		pseudoScanner:      &common.PseudoToolCallMarkerScanner{},
+	}
+}
+
+// observeStreamContent 流式观察器接线：fold 路径此前完全未接观察器，导致正向
+// 白名单学习（真实工具调用）与负反馈（伪标记文本）对 codex 主流路径全盲。
+// 全部客户端可见事件（含轮末冲刷的 buffered 输出）都会流经 emit，在此统一观测。
+func (e *responsesFoldHTTPEmitter) observeStreamContent(event map[string]interface{}) {
+	eventType, _ := event["type"].(string)
+	switch eventType {
+	case "response.output_text.delta":
+		if delta, _ := event["delta"].(string); delta != "" && e.pseudoScanner.Feed(delta) {
+			common.MarkPseudoToolCallMarker(e.c)
+		}
+	case "response.output_item.done":
+		item := mapFromInterface(event["item"])
+		switch item["type"] {
+		case "function_call", "custom_tool_call":
+			common.MarkStreamToolCallActivity(e.c)
+		case "message":
+			// 非 delta 形态上游（整体返回 message）的文本也要参与伪标记观测
+			if contents, ok := item["content"].([]interface{}); ok {
+				for _, content := range contents {
+					part := mapFromInterface(content)
+					if part["type"] != "output_text" {
+						continue
+					}
+					if text, _ := part["text"].(string); text != "" && e.pseudoScanner.Feed(text) {
+						common.MarkPseudoToolCallMarker(e.c)
+					}
+				}
+			}
+		}
 	}
 }
 
 func (e *responsesFoldHTTPEmitter) emit(event map[string]interface{}) error {
+	e.observeStreamContent(event)
 	eventString := formatResponsesFoldSSE(event)
 	if e.committed {
 		return e.writeEvent(eventString)
@@ -387,6 +422,14 @@ func (e *responsesFoldHTTPEmitter) emit(event map[string]interface{}) error {
 func (e *responsesFoldHTTPEmitter) commit() error {
 	if e.committed {
 		return nil
+	}
+	// 竞速提交裁决：fold 路径是 native responses 流的主出口，写 Header 前必须
+	// 仲裁——赢家 claim 桥接分支缓冲，败者返回 ErrRacingSuperseded 零字节退出
+	// （ForStream 版带伪工具标记软校验，同 43fc0967 给转换器路径补的闸门）。
+	// 这是当时漏掉的第四条路径：竞速武装后 fold 的全部写出只进分支缓冲、无人
+	// Commit，客户端拿到空 200（2026-09-12 晚间 native responses 流量全空实测）。
+	if !common.RacingClaimClientCommitForStream(e.c, e.preflightText.String()) {
+		return common.ErrRacingSuperseded
 	}
 	utils.ForwardResponseHeaders(e.resp.Header, e.c.Writer)
 	e.c.Header("Content-Type", "text/event-stream")

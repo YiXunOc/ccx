@@ -120,6 +120,7 @@
             :text="route.discoverySourceHint"
             location="top"
             max-width="320"
+            content-class="ccx-tooltip"
           >
             <template #activator="{ props: tooltipProps }">
               <v-chip v-bind="tooltipProps" size="x-small" variant="tonal" color="secondary">

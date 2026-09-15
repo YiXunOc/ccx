@@ -214,12 +214,18 @@ func classifyByErrorMessageWithLogTag(bodyBytes []byte, apiType string, logTag s
 	return false, false
 }
 
-// isAccountRateLimitExceededMap 判断错误对象是否表示火山账号级限流
-// (AccountRateLimitExceeded)。仅在 HTTP 429 分支使用，不能作为无状态码的
-// 全局 overloaded 标记。code/type/message/detail/msg 统一参与匹配：
-//   - 精确错误码 AccountRateLimitExceeded（大小写/分隔符无关）
+// isAccountRateLimitExceededMap 判断错误对象是否表示账号级限流。
+// 仅在 HTTP 429 分支使用，不能作为无状态码的全局 overloaded 标记。
+// code/type/message/detail/msg 统一参与匹配：
+//   - 精确错误码 AccountRateLimitExceeded（大小写/分隔符无关，火山系）
 //   - 规范化形式 account_rate_limit_exceeded
 //   - 消息兜底 "requests are too frequent"
+//   - new-api/one-api 系中文限流文案："请求数限制"（如"您已达到总请求数限制：
+//     1分钟内最多请求N次"）与"速率限制"——这类 429 不给 Retry-After，
+//     不识别时 AIMD 置信度停在 0.5 永远达不到采纳阈值，也不会触发 scope 冷却。
+//
+// 注意：英文通用文案（"too many requests"/"rate limit"）刻意不匹配——
+// 通用 429 只换 key 继续 failover，不升级为账号级冷却（既有测试锁定该边界）。
 func isAccountRateLimitExceededMap(m map[string]interface{}) bool {
 	combined := strings.ToLower(strings.Join([]string{
 		toStringField(m, "code"),
@@ -237,6 +243,10 @@ func isAccountRateLimitExceededMap(m map[string]interface{}) bool {
 	if strings.Contains(combined, "requests are too frequent") {
 		return true
 	}
+	// new-api/one-api 系中文限流文案
+	if strings.Contains(combined, "请求数限制") || strings.Contains(combined, "速率限制") {
+		return true
+	}
 	return false
 }
 
@@ -251,8 +261,9 @@ func normalizeAlnum(s string) string {
 	return b.String()
 }
 
-// IsUpstreamAccountRateLimited 判断上游响应是否为火山账号级限流
-// (AccountRateLimitExceeded)。仅在 HTTP 429 时解析 body，避免把账号级限流
+// IsUpstreamAccountRateLimited 判断上游响应是否为账号级限流
+// （火山 AccountRateLimitExceeded / new-api 系中文限流文案，见 isAccountRateLimitExceededMap）。
+// 仅在 HTTP 429 时解析 body，避免把账号级限流
 // 混入通用 CPU/service overloaded 标记。
 // 命中后调用方应对当前 key/quota scope 施加短期冷却，而非冻结整个渠道；
 // 同渠道其他独立账号可继续 failover。
@@ -1189,7 +1200,12 @@ func isModelRoutingError(bodyBytes []byte) bool {
 }
 
 // keyModelRestrictionReason 只识别能归因到当前 Key 的模型或模型工具权限错误。
-// 中转站 "no available channel" 属于 relay 级临时耗尽，只允许 failover，不能禁用健康 Key。
+// 中转站 "no available channel"（无分组信息）属于 relay 级临时耗尽，只允许 failover，
+// 不能禁用健康 Key；带 "under group" 的是分组缺失——分组内容由站点运营方配置，
+// 分组不含该模型时同 Key 重试必然重复 400（实测 runanytime 7 把 key 分属
+// Gemini/Grok/ClaudeCode 等组，仅 2 把能服务 gpt-5.6-sol，其余每个请求白烧一轮
+// 400）。按 (Key,模型) 确定性失败处理走限时规避（1 小时恢复），即便撞上 relay
+// 上游池短暂全灭也能自愈。
 func keyModelRestrictionReason(bodyBytes []byte) string {
 	var errResp map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &errResp); err != nil {
@@ -1202,6 +1218,9 @@ func keyModelRestrictionReason(bodyBytes []byte) string {
 
 	code := strings.ToLower(strings.TrimSpace(toStringField(errObj, "code")))
 	message := strings.ToLower(strings.TrimSpace(toStringField(errObj, "message")))
+	if strings.Contains(message, "no available channel for model") && strings.Contains(message, "under group") {
+		return "model_not_in_key_group"
+	}
 	if strings.Contains(message, "no available channel for model") ||
 		strings.Contains(message, "under group") ||
 		strings.Contains(message, "(distributor)") {

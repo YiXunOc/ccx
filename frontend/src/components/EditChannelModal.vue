@@ -83,6 +83,7 @@
                 :disabled-keys="visibleDisabledKeys"
                 :disabled-key-models="visibleDisabledKeyModels"
                 :disabled-group-models="visibleDisabledGroupModels"
+                :pending-group-model-disables="pendingGroupModelDisables"
                 :model-options="targetModelOptions"
                 :api-key-configs="form.apiKeyConfigs"
                 :key-models-status="keyModelsStatus"
@@ -96,6 +97,7 @@
                 :channel-id="props.channel?.index"
                 :channel-uid="props.channel?.channelUid"
                 :channel-kind="props.channelType"
+                :channel-max-group-multiplier="props.channel?.maxGroupMultiplier"
                 :dialog-open="props.show"
                 :proxy-url="form.proxyUrl"
                 :account-uid="props.channel?.accountUid"
@@ -105,7 +107,8 @@
                 @update:proxy-url="form.proxyUrl = $event"
                 @restore-key="restoreDisabledKey"
                 @restore-key-model="restoreDisabledKeyModel"
-                @disable-group-model="disableGroupModel"
+                @stage-group-model-disable="stageGroupModelDisable"
+                @unstage-group-model-disable="unstageGroupModelDisable"
                 @restore-group-model="restoreDisabledGroupModel"
                 @remove-key="removeDisabledKey"
                 @suspend-key="suspendKey"
@@ -127,6 +130,7 @@
                 :base-url="props.channel?.baseUrl"
                 :channel-uid="props.channel?.channelUid"
                 :channel-kind="props.channelType"
+                :channel-max-group-multiplier="props.channel?.maxGroupMultiplier"
                 :is-generic="isGenericAutoManagedChannel"
                 :auto-managed-kind="props.channel?.autoManagedKind"
                 :channel-proxy-url="form.proxyUrl"
@@ -175,6 +179,25 @@
                   class="proxy-direct-row-switch"
                   :disabled="!form.proxyUrl?.trim()"
                   @update:model-value="updateForm({ proxyPreferDirect: $event })"
+                />
+              </div>
+
+              <!-- 竞速参与：卡片式设置行（参与=可作主触发也可作影子目标）。
+                   后端默认开启：未显式配置（nil）的渠道开关显示为开，仅显式 false 显示为关；
+                   未触碰开关保存时 racing 保持缺省，渠道继续跟随全局/默认值。 -->
+              <div class="proxy-direct-row mt-4" :class="{ 'proxy-direct-row--on': form.racing?.enabled !== false }">
+                <v-icon size="20" class="proxy-direct-row-icon">mdi-flag-checkered</v-icon>
+                <div class="flex-grow-1">
+                  <div class="text-body-2 font-weight-medium">{{ t('channelEditor.transport.racing.label') }}</div>
+                  <div class="text-caption text-medium-emphasis">{{ t('channelEditor.transport.racing.hint') }}</div>
+                </div>
+                <v-switch
+                  :model-value="form.racing?.enabled !== false"
+                  color="primary"
+                  density="compact"
+                  hide-details
+                  class="proxy-direct-row-switch"
+                  @update:model-value="updateForm({ racing: { enabled: $event === true } })"
                 />
               </div>
 
@@ -256,6 +279,24 @@
                   </v-col>
                 </v-row>
                 <div class="text-caption text-medium-emphasis mt-1">{{ t('channelEditor.billing.example') }}</div>
+              </div>
+
+              <!-- 渠道级分组倍率安全上限 -->
+              <div class="mt-6">
+                <v-text-field
+                  :model-value="form.maxGroupMultiplier"
+                  :label="t('channelEditor.billing.maxGroupMultiplier.label')"
+                  :hint="t('channelEditor.billing.maxGroupMultiplier.hint')"
+                  persistent-hint
+                  prepend-inner-icon="mdi-shield-half-full"
+                  variant="outlined"
+                  density="comfortable"
+                  type="number"
+                  step="any"
+                  min="0"
+                  clearable
+                  @update:model-value="updateForm({ maxGroupMultiplier: $event })"
+                />
               </div>
             </section>
           </v-form>
@@ -421,6 +462,9 @@ const {
   visibleDisabledGroupModels,
   disableGroupModel,
   restoreDisabledGroupModel,
+  pendingGroupModelDisables,
+  stageGroupModelDisable,
+  unstageGroupModelDisable,
   suspendingKey,
   suspendKey,
   resumeKey,

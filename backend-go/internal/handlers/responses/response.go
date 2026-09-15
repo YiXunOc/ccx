@@ -171,6 +171,9 @@ func handleSuccess(
 		normalizeResponsesUsageToOpenAISemantics(&responsesResp.Usage)
 	}
 
+	if !common.RacingClaimClientCommit(c) {
+		return nil, common.ErrRacingSuperseded
+	}
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
 	c.JSON(200, responsesResp)
 

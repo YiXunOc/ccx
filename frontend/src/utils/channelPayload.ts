@@ -39,6 +39,16 @@ export interface EmbeddingCapabilityRow {
 
 type SelectableString = string | { title?: string; value?: unknown } | null | undefined
 
+/**
+ * 归一化渠道级分组倍率上限：空值/非法值/非正数 → null（不启用闸门），其余返回正数。
+ * 表单原始值与渠道视图值的比较、下发前的清零判断统一走此口径。
+ */
+export function normalizeMaxGroupMultiplier(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
 export interface ChannelFormLike {
   name: string
   remark?: string
@@ -68,6 +78,7 @@ export interface ChannelFormLike {
   customHeaders: Record<string, string>
   proxyUrl: string
   costMultiplier?: string | number | null
+  maxGroupMultiplier?: string | number | null
   channelPaymentCurrency?: string | null
   channelPaymentAmount?: string | number | null
   channelCreditCurrency?: string | null
@@ -614,6 +625,8 @@ export function buildChannelPayload(
   // 渠道级计费覆盖：倍率 >0 生效；留空/0 发 0 让后端清零
   const costMultiplier = Number(form.costMultiplier)
   channelData.costMultiplier = Number.isFinite(costMultiplier) && costMultiplier > 0 ? costMultiplier : 0
+  const maxGroupMultiplier = normalizeMaxGroupMultiplier(form.maxGroupMultiplier)
+  channelData.maxGroupMultiplier = maxGroupMultiplier ?? 0
   // 充值→渠道到账换算：币种 trim，金额 >0 生效（0/空发 0 清零）
   channelData.channelPaymentCurrency = (form.channelPaymentCurrency || '').trim()
   const channelPaymentAmount = Number(form.channelPaymentAmount)

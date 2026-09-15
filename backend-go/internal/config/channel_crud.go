@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log"
+	"math"
 	"strings"
 
 	"github.com/BenedictKing/ccx/internal/utils"
@@ -359,6 +360,10 @@ func applyUpstreamUpdateFields(upstream *UpstreamConfig, updates UpstreamUpdate)
 	if updates.FastMode != nil {
 		upstream.FastMode = *updates.FastMode
 	}
+	if updates.Racing != nil {
+		racingUpdate := *updates.Racing
+		upstream.Racing = &racingUpdate
+	}
 	if updates.InsecureSkipVerify != nil {
 		upstream.InsecureSkipVerify = *updates.InsecureSkipVerify
 	}
@@ -500,6 +505,18 @@ func applyUpstreamUpdateFields(upstream *UpstreamConfig, updates UpstreamUpdate)
 		} else {
 			v := *updates.CostMultiplier
 			upstream.CostMultiplier = &v
+		}
+	}
+	// 渠道级分组倍率上限：0 视为清除（置 nil=不启用闸门）；须为有限非负数
+	if updates.MaxGroupMultiplier != nil {
+		v := *updates.MaxGroupMultiplier
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			return false, fmt.Errorf("maxGroupMultiplier 必须是有限且非负数")
+		}
+		if v == 0 {
+			upstream.MaxGroupMultiplier = nil
+		} else {
+			upstream.MaxGroupMultiplier = &v
 		}
 	}
 	// 充值→渠道到账换算：金额 <=0 置 nil；币种 trim（空串表示清除该侧）

@@ -94,15 +94,19 @@ type RequestRecord struct {
 	CacheCreationInputTokens int64
 	CacheReadInputTokens     int64
 	ProxyKeyMask             string // 代理 Key 掩码（用于成本报表按用户分组，由 RecordRequestConnected 传入）
-	KeyUID                   string
-	SubscriptionUID          string
-	ExchangeSnapshotVersion  uint64
-	ListCostUSD              float64
-	EffectiveCostUSD         float64
-	EffectiveCostMultiplier  float64
-	EffectiveCostAvailable   bool
-	EffectiveCostReason      string
-	ConsumptionPolicy        string
+	// CorrelationID 最终用户请求关联 ID：同一用户请求的主/影子/failover 各次尝试
+	// 共享（multi_channel_failover 入口生成）；空为未知（旧记录/非代理来源）。
+	// 聚合口径「真实用户请求数」= COUNT(DISTINCT correlation_id)。
+	CorrelationID           string
+	KeyUID                  string
+	SubscriptionUID         string
+	ExchangeSnapshotVersion uint64
+	ListCostUSD             float64
+	EffectiveCostUSD        float64
+	EffectiveCostMultiplier float64
+	EffectiveCostAvailable  bool
+	EffectiveCostReason     string
+	ConsumptionPolicy       string
 	// 请求侧 tool_result 压缩遥测（由 RecordRequestCompression 附加，finalize 时持久化）
 	Compressed                  bool
 	CompressionOriginalTokens   int64
@@ -184,6 +188,9 @@ type TimeWindowStats struct {
 	SuccessCount int64   `json:"successCount,omitempty"`
 	FailureCount int64   `json:"failureCount,omitempty"`
 	SuccessRate  float64 `json:"successRate"`
+	// UserRequestCount 真实用户请求数（COUNT(DISTINCT correlation_id)，空关联 ID 不计）。
+	// 与 RequestCount（上游尝试口径）对照可见竞速/failover 放大倍数。
+	UserRequestCount int64 `json:"userRequestCount,omitempty"`
 	// 连接取得耗时从发起上游请求到 httptrace.GotConn；仅统计最终成功请求。
 	ConnectSampleCount  int64 `json:"connectSampleCount,omitempty"`
 	P95ConnectLatencyMs int64 `json:"p95ConnectLatencyMs,omitempty"`
@@ -393,6 +400,7 @@ func (m *MetricsManager) loadFromStore() error {
 				OutputTokens:             r.OutputTokens,
 				CacheCreationInputTokens: r.CacheCreationTokens,
 				CacheReadInputTokens:     r.CacheReadTokens,
+				CorrelationID:            r.CorrelationID,
 			})
 
 			metrics.RequestCount++

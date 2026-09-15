@@ -23,11 +23,11 @@ When Kimi is added from CCX's automatic provider flow (also available as `Kimi C
 
 | Membership | Models | Context window |
 |------------|--------|----------------|
-| Andante | `kimi-for-coding` | 256K |
-| Moderato | `k3`, `kimi-for-coding` | 256K |
-| Allegretto and above | `k3`, `kimi-for-coding`, `kimi-for-coding-highspeed` | Up to 1M for K3; 256K for the other models |
+| Andante | `kimi-for-coding` | 1M |
+| Moderato | `k3`, `kimi-for-coding` | K3 256K; `kimi-for-coding` 1M |
+| Allegretto and above | `k3`, `kimi-for-coding`, `kimi-for-coding-highspeed` | Up to 1M for K3; `kimi-for-coding` 1M; highspeed 256K |
 
-`k3` supports `low`, `high`, and `max` reasoning effort. Thinking stays enabled for the K2.7 Code models. Disabling thinking routes K3 and K2.7 Code to K2.6.
+Both `k3` and `kimi-for-coding` support `low`, `high`, and `max` reasoning effort (default `high` for `k3`, default `max` for `kimi-for-coding`). Disabling thinking routes K3-series and `kimi-for-coding` requests to K2.8 Preview (non-thinking); thinking stays enabled server-side for `kimi-for-coding-highspeed`.
 
 The `k3[1m]` form is only a Claude Code environment-variable hint. API requests and CCX model fields use `k3`.
 
@@ -64,7 +64,7 @@ Kimi Code does not require mapping `opus`, `sonnet`, or `haiku` to a Claude mode
 | Model | Description |
 |-------|-------------|
 | `k3` | Kimi K3 flagship coding model; 256K on Moderato and up to 1M on Allegretto+; supports `low` / `high` / `max` |
-| `kimi-for-coding` | Kimi K2.7 Code, available to all Kimi Code memberships with server-side thinking |
+| `kimi-for-coding` | Kimi K2.8 Preview (model ID unchanged since 2026-09, underlying model upgraded); overall performance close to K3, 1M context, supports `low` / `high` / `max` (default `max`), available to all memberships |
 | `kimi-for-coding-highspeed` | Kimi K2.7 Code HighSpeed, about 5-6x faster output with higher usage; Allegretto+ |
 | `kimi-k2.7` | Latest pay-as-you-go model, native multimodal Agentic model |
 | `kimi-k2.6` | Multimodal Agentic model, 1T total / 32B active |

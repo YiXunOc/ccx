@@ -168,7 +168,7 @@ func TestResolveAgentModelProfile_KimiCodeBuiltins(t *testing.T) {
 	}{
 		{model: "k3", context: 262144, maxContext: 1048576, efforts: []string{"low", "high", "max"}},
 		{model: "k3[1m]", context: 1048576, maxContext: 1048576, efforts: []string{"low", "high", "max"}},
-		{model: "kimi-for-coding", context: 262144, maxContext: 0},
+		{model: "kimi-for-coding", context: 1048576, maxContext: 0, efforts: []string{"low", "high", "max"}},
 		{model: "kimi-for-coding-highspeed", context: 262144, maxContext: 0},
 	}
 	for _, tt := range tests {
@@ -285,7 +285,7 @@ func TestResolveUpstreamCapability_KimiCodeModels(t *testing.T) {
 		// kimi-k3 是官方 API 模型 ID（非 Kimi Code CLI 的 k3/k3[1m] 别名），文档确认为 1M 上下文
 		// （platform.kimi.ai/docs/overview 等多处来源一致）；不是"256K 版 k3"的同义词。
 		{model: "kimi-k3", context: 1048576, maxOutput: 131072, reasoning: []string{"low", "high", "max"}, displayName: "Kimi K3 (1M)", wantThinking: "thinking"},
-		{model: "kimi-for-coding", context: 262144, maxOutput: 32768, reasoning: []string{"high"}, displayName: "Kimi K2.7 Code (Kimi Code 会员)", wantThinking: "thinking"},
+		{model: "kimi-for-coding", context: 1048576, maxOutput: 32768, reasoning: []string{"low", "high", "max"}, displayName: "Kimi K2.8 Preview (Kimi Code 会员)", wantThinking: "thinking"},
 		{model: "kimi-for-coding-highspeed", context: 262144, maxOutput: 32768, reasoning: []string{"high"}, displayName: "Kimi K2.7 Code HighSpeed", wantThinking: "thinking"},
 	}
 	for _, tt := range tests {
@@ -574,15 +574,64 @@ func TestResolveUpstreamCapability_GLM52BareNotAtomGit(t *testing.T) {
 	}
 }
 
+func TestResolveUpstreamCapability_DeepSeekV41Flash(t *testing.T) {
+	// DeepSeek V4.1 Flash（2026-09-10 发布）是独立 canonical model：
+	// 官方 API 别名 deepseek-flash，原生多模态（vision），区别于已下线的 v4-flash / v4-flash-vision-exp。
+	resolved := ResolveUpstreamCapability("deepseek-flash", nil, nil)
+	if !resolved.Known || resolved.Source != "builtin" {
+		t.Fatalf("resolved = %+v, want builtin known", resolved)
+	}
+	capability := resolved.Capability
+	if capability.Provider != "deepseek" {
+		t.Fatalf("Provider = %q, want deepseek", capability.Provider)
+	}
+	if capability.DisplayName != "DeepSeek V4.1 Flash" {
+		t.Fatalf("DisplayName = %q, want DeepSeek V4.1 Flash", capability.DisplayName)
+	}
+	if capability.ContextWindowTokens != 1000000 {
+		t.Fatalf("ContextWindowTokens = %d, want 1000000", capability.ContextWindowTokens)
+	}
+	if capability.MaxOutputTokens != 384000 {
+		t.Fatalf("MaxOutputTokens = %d, want 384000", capability.MaxOutputTokens)
+	}
+	if !capability.Capabilities["vision"] {
+		t.Fatalf("Capabilities = %v, want vision (native multimodal)", capability.Capabilities)
+	}
+	if !capability.Capabilities["fimCompletion"] || !capability.Capabilities["toolCalls"] {
+		t.Fatalf("Capabilities = %v, want fimCompletion and toolCalls", capability.Capabilities)
+	}
+	if !containsString(capability.ReasoningEfforts, "low") {
+		t.Fatalf("ReasoningEfforts = %v, want low/high/max", capability.ReasoningEfforts)
+	}
+}
+
 func TestResolveUpstreamCapability_DeepSeekV4DatedSuffixes(t *testing.T) {
 	// 部分渠道以日期后缀形式发布新模型（DeepSeek 惯用 -MMDD，如 deepseek-v3-0324），
 	// 这些变体必须归一到同一内置能力条目，否则定价/上下文窗口会丢失。
+	// 注意：V4 Flash / V4 Flash Vision Exp 已于 2026-09-10 下线并路由至 V4.1 Flash，
+	// 官方按 Flash 新价计费（缓存未命中 ¥1 / 输出 ¥4），legacy 条目定价已同步为新价。
 	tests := []struct {
 		name                string
 		models              []string
 		inputCacheMissPrice float64
 		outputPrice         float64
 	}{
+		{
+			name: "v4.1-flash",
+			models: []string{
+				"deepseek-v4.1-flash",
+				"deepseek-flash",
+				"DeepSeek-V4.1-Flash",
+				"deepseek-v4.1-flash-0910",
+				"deepseek-v4.1-flash-2026-09-10",
+				"deepseek-v4.1-flash-260910",
+				"deepseek-v4.1-flash-20260910",
+				"deepseek-ai/DeepSeek-V4.1-Flash",
+				"deepseek-ai/deepseek-flash",
+			},
+			inputCacheMissPrice: 1,
+			outputPrice:         4,
+		},
 		{
 			name: "flash",
 			models: []string{
@@ -593,8 +642,23 @@ func TestResolveUpstreamCapability_DeepSeekV4DatedSuffixes(t *testing.T) {
 				"deepseek-v4-flash-20260731",
 				"deepseek-ai/deepseek-v4-flash-0731",
 			},
-			inputCacheMissPrice: 1.5,
-			outputPrice:         4.5,
+			inputCacheMissPrice: 1,
+			outputPrice:         4,
+		},
+		{
+			name: "flash-vision",
+			models: []string{
+				"deepseek-v4-flash-vision-exp",
+				"deepseek-v4-flash-vision",
+				"DeepSeek-V4-Flash-Vision-Exp",
+				"deepseek-v4-flash-vision-0821",
+				"deepseek-v4-flash-vision-2026-08-21",
+				"deepseek-v4-flash-vision-260821",
+				"deepseek-v4-flash-vision-20260821",
+				"deepseek-ai/deepseek-v4-flash-vision-exp",
+			},
+			inputCacheMissPrice: 1,
+			outputPrice:         4,
 		},
 		{
 			name: "pro",
@@ -843,6 +907,67 @@ func TestResolveUpstreamCapability_ClaudeMythos51Variants(t *testing.T) {
 			if capability.DisplayName != tt.displayName || capability.ContextWindowTokens != 1_000_000 ||
 				capability.MaxOutputTokens != 128_000 || !capability.Capabilities["reasoning"] ||
 				!capability.Capabilities["vision"] || !capability.Capabilities["toolCalls"] {
+				t.Fatalf("capability = %+v for model %s", capability, tt.model)
+			}
+		})
+	}
+}
+
+func TestResolveUpstreamCapability_GPTImage25Variants(t *testing.T) {
+	tests := []struct {
+		model       string
+		displayName string
+	}{
+		{model: "gpt-image-2.5", displayName: "GPT Image 2.5"},
+		{model: "gpt-image-2.5-2026-09-08", displayName: "GPT Image 2.5"},
+		{model: "openai/gpt-image-2.5", displayName: "GPT Image 2.5"},
+		// Flare / Sunburst 是独立 tier，不归并到 2.5 家族别名
+		{model: "gpt-image-2.5-flare", displayName: "GPT Image 2.5 Flare"},
+		{model: "gpt-image-2.5-flare-2026-09-08", displayName: "GPT Image 2.5 Flare"},
+		{model: "openai/gpt-image-2.5-flare", displayName: "GPT Image 2.5 Flare"},
+		{model: "GPT-Image-2.5-Flare", displayName: "GPT Image 2.5 Flare"},
+		{model: "gpt-image-2.5-sunburst", displayName: "GPT Image 2.5 Sunburst"},
+		{model: "gpt-image-2.5-sunburst-2026-09-08", displayName: "GPT Image 2.5 Sunburst"},
+		{model: "openai/gpt-image-2.5-sunburst", displayName: "GPT Image 2.5 Sunburst"},
+		{model: "GPT-Image-2.5-Sunburst", displayName: "GPT Image 2.5 Sunburst"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			resolved := ResolveUpstreamCapability(tt.model, nil, nil)
+			if !resolved.Known || resolved.Source != "builtin" {
+				t.Fatalf("resolved = %+v, want builtin capability for %s", resolved, tt.model)
+			}
+			capability := resolved.Capability
+			if capability.DisplayName != tt.displayName || capability.Provider != "openai" ||
+				!capability.Capabilities["imageGeneration"] {
+				t.Fatalf("capability = %+v for model %s", capability, tt.model)
+			}
+		})
+	}
+}
+
+func TestResolveUpstreamCapability_Wan30VideoModels(t *testing.T) {
+	tests := []struct {
+		model       string
+		displayName string
+	}{
+		{model: "wan3.0-video", displayName: "Wan 3.0 Video"},
+		{model: "dashscope/wan3.0-video", displayName: "Wan 3.0 Video"},
+		{model: "Wan3.0-Video", displayName: "Wan 3.0 Video"},
+		{model: "wan3.0-video-prime", displayName: "Wan 3.0 Video Prime"},
+		{model: "dashscope/wan3.0-video-prime", displayName: "Wan 3.0 Video Prime"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			resolved := ResolveUpstreamCapability(tt.model, nil, nil)
+			if !resolved.Known || resolved.Source != "builtin" {
+				t.Fatalf("resolved = %+v, want builtin capability for %s", resolved, tt.model)
+			}
+			capability := resolved.Capability
+			if capability.DisplayName != tt.displayName || capability.Provider != "dashscope" ||
+				!capability.Capabilities["videoGeneration"] {
 				t.Fatalf("capability = %+v for model %s", capability, tt.model)
 			}
 		})

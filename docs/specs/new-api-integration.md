@@ -67,7 +67,7 @@
 ## 3. 数据模型：账号/key/凭证/渠道映射
 
 ### 3.1 订阅画像 `SubscriptionProfile`（`internal/autopilot/subscription_profile.go:15`）
-new-api 专用字段（行 62-94）：`Provider="new_api"`、`BaseURL`、`AccessToken`（敏感，明文序列化进 `profile_json`，API 响应脱敏）、`UserID`、`AuthTokenMode`、`ProxyURL`、`ProxyPreferDirect`（订阅级代理：绑定/同步经代理访问，直连优先开启时先直连、失败回退代理）、`ProvisionKeyName`、`ProvisionGroup`、`ProvisionGroupRatio`、`MaxGroupMultiplier`、`ProvisionModels`、`ProvisionedTokenID`、`ProvisionedKeys []NewApiProvisionedKey`、`AvailableModels`、`GroupMultipliers map[string]float64`、`Accounts []NewApiAccount`（账号级 `ProxyURL/ProxyPreferDirect` 为空时继承订阅级）。计费条款为四字段币种/金额模型 `PaymentAmount/PaymentUnit/CreditAmount/CreditUnit`（行 37-40；旧 `RechargeMultiplier` 单字段已移除，`a96098da`，旧 JSON 键加载时自动忽略）。
+new-api 专用字段（行 62-94）：`Provider="new_api"`、`BaseURL`、`AccessToken`（敏感，明文序列化进 `profile_json`，API 响应脱敏）、`UserID`、`AuthTokenMode`、`ProxyURL`、`ProxyPreferDirect`（订阅级代理：绑定/同步经代理访问，直连优先开启时先直连、失败回退代理）、`ProvisionKeyName`、`ProvisionGroup`、`ProvisionGroupRatio`、`MaxGroupMultiplier`（接入时初始渠道上限的记录；运行时真源是渠道级 `UpstreamConfig.MaxGroupMultiplier`，仅作建 key 阈值回退与展示）、`ProvisionModels`、`ProvisionedTokenID`、`ProvisionedKeys []NewApiProvisionedKey`、`AvailableModels`、`GroupMultipliers map[string]float64`、`Accounts []NewApiAccount`（账号级 `ProxyURL/ProxyPreferDirect` 为空时继承订阅级）。计费条款为四字段币种/金额模型 `PaymentAmount/PaymentUnit/CreditAmount/CreditUnit`（行 37-40；旧 `RechargeMultiplier` 单字段已移除，`a96098da`，旧 JSON 键加载时自动忽略）。
 
 - `NewApiProvisionedKey`（行 104）：`Name, Group, GroupMultiplier, TokenID, KeyUID`（**无明文 key**）
 - `NewApiAccount`（行 114）：`AccountUID, AccessToken, UserID, AuthTokenMode, DisplayName, Balance, Status, ProvisionedKeys[], LastSyncError, LastCheckedAt, CreatedAt`
@@ -89,10 +89,11 @@ SubscriptionProfile (subscriptionUid, provider=new_api, accessToken, accounts[])
   └── LinkedChannelUIDs[] ──────────────────┐
                                             ▼
 UpstreamConfig (channelUid, autoManagedKind=new_api)
+  ├── MaxGroupMultiplier (渠道级分组倍率上限，唯一运行时真源；接入阈值作为初始值写入)
   └── APIKeyConfigs[] (key 明文 + KeyUID
         + SourceSubscriptionUID = subscriptionUid
         + SourceRemoteTokenId  = tokenId          ← ownership 绑定
-        + QuotaGroup / GroupMultiplier / MaxGroupMultiplier
+        + QuotaGroup / GroupMultiplier            ← key 级上限已废弃（渠道级统一）
         + MultiplierSource=new_api / SyncStatus / ExpiresAt)
 ```
 `KeyUID = StableKeyUID(subscriptionUID, tokenID)`（`newapi_subscription_sync_service.go:775`，sha256 前 8 字节，前缀 `kuid_`）。tokenID 站点级唯一，主账号与多账号 key 共存不撞号。
@@ -106,7 +107,7 @@ UpstreamConfig (channelUid, autoManagedKind=new_api)
 - 后台循环：`Start`（行 159）启动 30 分钟周期 ticker（`newApiSyncDefaultInterval` 行 93），tick 到达时调用 `SweepAll` 并发刷新所有 new-api 订阅。`Stop` 优雅停止循环。初始启动时还会通过 `SyncAllNewAPIAsync` 先做一次性全量同步。
 - `SyncNow`（行 271）：verify → FetchGroups（校验非负有限，`finiteNonNegative`）→ FetchModels → `Patch` 回写余额/分组/模型/KeyUID/ratio → `reconcileChannels`（行 620）把 desired key 元数据合并进关联渠道的 `APIKeyConfigs`（ownership 冲突→`relink_required`）→ 模型哈希变化触发 Discovery；主账号凭证为空时（行 291，账号平权）跳过站点级同步仅同步子账号
 - `reconcileNewApiConfigs`（行 645）：按 `SourceRemoteTokenID`/`KeyUID` 匹配，跨订阅 ownership 冲突返回 conflict。匹配维度只有这两个字段——渠道 key 被误删后常规 reconcile 无法找回，由 `healMissingProvisionedKeys`（行 867）自愈：SyncNow/syncOneAccount 在 reconcile 后检查关联渠道是否缺失 desired key，缺失时按 tokenID 分页拉远端 token 列表（`ListTokens`），掩码 key 经揭示端点（`GetTokenKey`）换回明文并规范 `sk-` 前缀，再走 `injectProvisionedKeys` 重建 config；远端 token 也已删除的项跳过，绝不注入空 key（测试 fake 未实现 `newApiTokenHealer` 接口时自愈自动跳过）
-- `buildDesiredForKeys`：计算每 key 的 syncStatus（`fresh`/`over_limit`/`remote_group_missing`）+ TTL（`newApiSyncTTL=35m` 行 26）
+- `buildDesiredForKeys`：计算每 key 的 syncStatus（`fresh`/`remote_group_missing`）+ TTL（`newApiSyncTTL=35m` 行 26）。`over_limit` 不在 desired 层预判，而是在 `reconcileNewApiConfigs`/`injectProvisionedKeys` 写入渠道配置时按**该渠道**的 `UpstreamConfig.MaxGroupMultiplier` 实时判定（多渠道上限不同也各自正确）；desired 构造时的展示上限经 `linkedChannelMaxGroupMultiplier` 取关联渠道值（回退 profile 接入初始值）
 - `injectProvisionedKeys`（行 799）/`ReconcileProvisioned`（行 972）/`ReconcileAccountProvisioned`（行 991）：provision/加账号/自愈后把明文 key 注入渠道；注入的明文同时并入渠道 `APIKeys`（调度与 keypool 候选只遍历 `APIKeys`，仅写 configs 的 key 不参与调用）
 - `RemoveAccountKeysFromChannels`（行 516）：删账号/删主账号时剔除渠道 key
 - 状态常量（行 17-24）：`fresh/over_limit/sync_error/relink_required/stale/remote_group_missing`
@@ -115,8 +116,8 @@ UpstreamConfig (channelUid, autoManagedKind=new_api)
 
 ### 4.1 渠道纳入调度（provision 落地）
 `handleNewApiProvision`（`handlers_newapi.go:427`）第 5 步：
-- 同站点合并 `findNewApiMergeTarget`（行 317，规范化 baseURL 去尾 `/`、忽略大小写、跳过带 `providerId` 的渠道、优先 active），合并时保留已有纯 key、去重追加新 key、补 `AutoManagedKind="new_api"`
-- 否则新建，`kindToDefaultServiceType`（`handlers_auto_managed.go`）推导 serviceType，`GenerateChannelUID` 生成稳定 UID
+- 同站点合并 `findNewApiMergeTarget`（行 317，规范化 baseURL 去尾 `/`、忽略大小写、跳过带 `providerId` 的渠道、优先 active），合并时保留已有纯 key、去重追加新 key、补 `AutoManagedKind="new_api"`；渠道级 `MaxGroupMultiplier` 仅在目标渠道尚未设置时写入本次接入阈值（不覆盖用户已调过的渠道上限）
+- 否则新建，`kindToDefaultServiceType`（`handlers_auto_managed.go`）推导 serviceType，`GenerateChannelUID` 生成稳定 UID，接入阈值直接作为新建渠道的 `MaxGroupMultiplier` 初始值
 - 第 6 步 `Store.LinkChannel`，第 7 步 `deps.Runner.TriggerDiscovery`（`auto_discovery.go:297`）
 
 ### 4.2 分组安全闸门 `resolveNewApiProvisionGroups`（`newapi_group_guard.go:24`）
@@ -128,8 +129,8 @@ UpstreamConfig (channelUid, autoManagedKind=new_api)
 - 只有调用方**显式**传 `provisionGroup` 时才进入单分组模式。
 - `groupFetchError`、无合格分组、倍率阈值非法时均阻断，不创建任何部分 key。
 
-### 4.3 调度期成本闸门 `IsAPIKeyGroupMultiplierAllowed`（`internal/config/key_group_multiplier.go:79`）
-`GetNextAPIKey`（`config.go:1447/1459`）与 keypool 选 key 时调用 `EvaluateAPIKeyMultiplierEligibility`（行 27）：`new_api` 源需 `SourceSubscriptionUID`+`SourceRemoteTokenID` 有效、status=`fresh` 且未过期，否则 `stale/over_limit/relink_required` 一律不参与调度。这是把 new-api 分组倍率纳入调度的核心闸门。
+### 4.3 调度期成本闸门 `IsAPIKeyGroupMultiplierAllowed`（`internal/config/key_group_multiplier.go`）
+`GetNextAPIKey`（`config.go`）与 keypool 选 key 时调用 `EvaluateAPIKeyMultiplierEligibility(cfg, channelMax, now)`：第二参数是渠道级 `UpstreamConfig.MaxGroupMultiplier`（nil=不启用闸门），`GroupMultiplier > channelMax` 判 `over_group_limit`；`new_api` 源还需 `SourceSubscriptionUID`+`SourceRemoteTokenID` 有效、status=`fresh` 且未过期，否则 `stale/over_limit/relink_required` 一律不参与调度。这是把 new-api 分组倍率纳入调度的核心闸门。
 
 ### 4.4 SmartRouter 候选过滤/成本评分
 `main.go:788` `SetCandidateFilterProvider` 注入 `SmartRouter.CandidateFilterForWithActual`。`buildChannelEntry` 在有汇率图 + 到账规则时，用带 `SourceSubscriptionUID` 且 `GroupMultiplier` 的 key 配置调用 `ResolveEffectiveCostUSD`（`key_endpoint_profile.go:360`）算真实 effective USD 成本，替代标价。`EffectiveMultiplier = GroupMultiplier × TimeMultiplier × PaymentAmount×PaymentUSDPrice / (CreditAmount×CreditUSDPrice)`（行 416）。到账规则有两条入口：**订阅级** billing-terms（`PaymentAmount/CreditAmount` 四字段）与**渠道级**计费四字段（`UpstreamConfig.ChannelPayment*/ChannelCredit*`，`49f28b3e`），后者使无订阅 billing-terms 的渠道也能算 effective cost。
@@ -156,7 +157,7 @@ UpstreamConfig (channelUid, autoManagedKind=new_api)
   - **同样先 verify，再使用 verify 返回的 `groups` + `availableModels` 计算全部合格分组**
   - 绑定主账号与追加账号都显式传 `provisionAllEligibleGroups=true`、`maxGroupMultiplier`（当前默认 1.0）与 `availableModels`
   - `groupFetchError`、无合格组、verify 失败时均阻断提交，不允许 fallback 到 `default`
-- key 倍率编辑 `edit-channel/ApiKeyManagementSection.vue`：`openMultiplierEditor` → `patchKeyMultiplier`；`new_api` 源 key 的 `groupMultiplier` 后端拒绝手改（`handlers_key_multiplier.go:158`，409 Conflict「new_api key 的 groupMultiplier 由远端同步，不能手动修改」），仅允许改 `maxGroupMultiplier`（前端也据此限制）；状态色 `multiplierStatusColor`/`multiplierStatusLabel`（`utils/subscriptionBilling.ts`）。定位符为 `KeyUID`，非 new-api key（托管账号手工 key 等）无 `KeyUID` 时后端兜底匹配 `CredentialUID`、前端行数据以 `keyUid ?? credentialUid` 回填，倍率编辑入口对全部可编辑 key 可见（`bb736eef` 及后续兜底修复）。
+- key 倍率编辑 `edit-channel/ApiKeyManagementSection.vue`（行内展开、变更即保存）：策略选择/倍率定稿 → `patchKeyMultiplier`；`new_api` 源 key 的 `groupMultiplier` 后端拒绝手改（`handlers_key_multiplier.go:158`，409 Conflict「new_api key 的 groupMultiplier 由远端同步，不能手动修改」），Key 级上限字段已随渠道级统一而移除，行内面板仅允许改 `consumptionPolicy`（渠道上限在渠道编辑计费区调整）；状态色 `multiplierStatusColor`/`multiplierStatusLabel`（`utils/subscriptionBilling.ts`）。定位符为 `KeyUID`，非 new-api key（托管账号手工 key 等）无 `KeyUID` 时后端兜底匹配 `CredentialUID`、前端行数据以 `keyUid ?? credentialUid` 回填，倍率编辑入口对全部可编辑 key 可见（`bb736eef` 及后续兜底修复）。
 
 ### 5.3 API 服务层（`frontend/src/services/api.ts`）
 `verifyNewApiSubscription`(1473) / `provisionNewApiSubscription`(1481) / `updateNewApiCredentials`(1490) / `getSubscriptionAccounts`(1497) / `addSubscriptionAccount`(1502) / `deleteSubscriptionAccount`(1510) / `deleteSubscriptionPrimaryAccount`(1517，账号平权) / `refreshSubscriptionAccount`(1524) / `updateSubscriptionAccountCredentials`(1531，62d2d46d，面板已不再调用) / `refreshSubscription`(1436) / `patchKeyMultiplier`(1460) / `linkSubscriptionChannel`(1422) / `unlinkSubscriptionChannel`(1429)。类型定义在 `api-types.ts`：`NewApiVerifyRequest/Response`、`NewApiProvisionRequest/Response`、`NewApiProvisionedKey(Info)`、`NewApiAccountItem`、`NewApiCredentialsUpdateRequest`、`NewApiKeyStatus`、`NewApiSyncResult`、`APIKeyConfig`。
@@ -266,12 +267,13 @@ SubscriptionProfile (subscriptionUid)
 
 UpstreamConfig (channelUid, autoManagedKind=new_api)
   ├── APIKeys[]  (调度池；注入的明文 key 一并并入)
+  ├── MaxGroupMultiplier（渠道级上限，接入阈值作为初始值；调整走渠道编辑）
   └── APIKeyConfigs[]
         ├── Key (明文)
         ├── KeyUID = StableKeyUID(subscriptionUID, tokenID)
         ├── SourceSubscriptionUID = subscriptionUid
         ├── SourceRemoteTokenID = tokenID
-        ├── QuotaGroup / GroupMultiplier / MaxGroupMultiplier
+        ├── QuotaGroup / GroupMultiplier
         └── MultiplierSource = new_api / SyncStatus / ExpiresAt
 ```
 
@@ -302,7 +304,7 @@ UpstreamConfig (channelUid, autoManagedKind=new_api)
     ▼
 [状态计算]
     ├─ fresh: 正常
-    ├─ over_limit: ratio > maxGroupMultiplier
+    ├─ over_limit: ratio > 渠道级 UpstreamConfig.MaxGroupMultiplier（写入渠道配置时按各渠道判定）
     ├─ stale: 超过 TTL 未同步
     ├─ relink_required: ownership 冲突
     └─ remote_group_missing: 远端分组已删除

@@ -18,8 +18,9 @@ func stubLearnedToolCallUnsupported(t *testing.T, unsupported map[string]bool) {
 }
 
 // 注册表支持 + 实测不能执行工具调用 → 收紧为不支持（seekai 类假渠道正是此场景）。
+// 学习键为稳定路由身份：渠道无逻辑 UID 时回退物理 UID#协议（ch_relay#messages）。
 func TestLearnedToolCallUnsupportedOverridesRegistrySupport(t *testing.T) {
-	stubLearnedToolCallUnsupported(t, map[string]bool{"ch_relay|fake-model": true})
+	stubLearnedToolCallUnsupported(t, map[string]bool{"ch_relay#messages|fake-model": true})
 
 	router := NewSmartRouter(nil, nil, nil, nil)
 	upstream := &config.UpstreamConfig{

@@ -3,13 +3,27 @@
     <v-card>
       <v-card-title class="d-flex align-center justify-space-between">
         <span class="dialog-title">{{ t('channelLogs.title', { channel: channelName }) }}</span>
-        <v-tooltip :text="t('app.actions.close') + ' (Esc)'" location="bottom" content-class="ccx-tooltip">
-          <template #activator="{ props: tooltipProps }">
-            <v-btn icon size="small" variant="text" v-bind="tooltipProps" @click="$emit('update:modelValue', false)">
-              <v-icon>mdi-close</v-icon>
-            </v-btn>
-          </template>
-        </v-tooltip>
+        <div class="d-flex align-center ga-2">
+          <v-btn-toggle
+            v-model="logViewMode"
+            mandatory
+            density="compact"
+            variant="outlined"
+            divided
+            class="log-view-toggle"
+          >
+            <v-btn value="all" size="x-small">{{ t('channelLogs.filter.all') }}</v-btn>
+            <v-btn value="final" size="x-small">{{ t('channelLogs.filter.final') }}</v-btn>
+            <v-btn value="racing" size="x-small">{{ t('channelLogs.filter.racing') }}</v-btn>
+          </v-btn-toggle>
+          <v-tooltip :text="t('app.actions.close') + ' (Esc)'" location="bottom" content-class="ccx-tooltip">
+            <template #activator="{ props: tooltipProps }">
+              <v-btn icon size="small" variant="text" v-bind="tooltipProps" @click="$emit('update:modelValue', false)">
+                <v-icon>mdi-close</v-icon>
+              </v-btn>
+            </template>
+          </v-tooltip>
+        </div>
       </v-card-title>
       <v-divider />
       <v-card-text class="pa-0 channel-logs-scroll">
@@ -56,11 +70,17 @@
 
         <!-- Log list -->
         <v-list v-else density="comfortable" class="pa-0">
-          <template v-for="(log, i) in logs" :key="i">
-            <v-list-item :class="['log-item', { 'bg-error-subtle': log.status === 'failed' }]" @click="toggleExpand(i)">
+          <div v-if="!displayRows.length" class="text-center py-8 text-medium-emphasis text-caption">
+            {{ t('channelLogs.noMatch') }}
+          </div>
+          <template v-for="(row, i) in displayRows" :key="row.key">
+            <v-list-item
+              :class="['log-item', { 'bg-error-subtle': row.log.status === 'failed', 'log-attempt-item': row.isAttempt }]"
+              @click="onLogRowClick(row)"
+            >
               <template #append>
                 <v-tooltip
-                  :text="copiedLogKey === getLogCopyKey(log, i) ? t('channelLogs.copiedEntry') : t('channelLogs.copyEntry')"
+                  :text="copiedLogKey === row.key ? t('channelLogs.copiedEntry') : t('channelLogs.copyEntry')"
                   location="left"
                   content-class="ccx-tooltip"
                 >
@@ -71,28 +91,28 @@
                       size="x-small"
                       variant="flat"
                       class="log-copy-btn"
-                      :class="{ 'log-copy-btn--visible': copiedLogKey === getLogCopyKey(log, i) }"
+                      :class="{ 'log-copy-btn--visible': copiedLogKey === row.key }"
                       :aria-label="t('channelLogs.copyEntry')"
-                      @click.stop="copyLogEntry(log, i)"
+                      @click.stop="copyLogEntry(row.log, row.key)"
                     >
-                      <v-icon size="16">{{ copiedLogKey === getLogCopyKey(log, i) ? 'mdi-check' : 'mdi-content-copy' }}</v-icon>
+                      <v-icon size="16">{{ copiedLogKey === row.key ? 'mdi-check' : 'mdi-content-copy' }}</v-icon>
                     </v-btn>
                   </template>
                 </v-tooltip>
               </template>
               <template #prepend>
                 <v-chip
-                  v-if="log.statusCode > 0"
-                  :color="statusColor(log.statusCode)"
+                  v-if="row.log.statusCode > 0"
+                  :color="statusColor(row.log.statusCode)"
                   size="small"
                   variant="flat"
                   class="mr-2 font-weight-bold log-status-chip"
-                  :class="{ 'log-status-chip--in-progress': isInProgress(log.status) }"
+                  :class="{ 'log-status-chip--in-progress': isInProgress(row.log.status) }"
                 >
-                  {{ log.statusCode }}
+                  {{ row.log.statusCode }}
                 </v-chip>
                 <v-chip
-                  v-else-if="isInProgress(log.status)"
+                  v-else-if="isInProgress(row.log.status)"
                   size="small"
                   variant="flat"
                   class="mr-2 font-weight-bold log-status-chip log-status-chip--placeholder log-status-chip--in-progress"
@@ -104,112 +124,124 @@
                 </v-chip>
               </template>
               <v-list-item-title class="d-flex align-center ga-2 flex-wrap log-summary">
-                <span class="text-medium-emphasis log-meta">{{ formatTime(log.timestamp) }}</span>
-                <v-chip v-if="log.status" size="small" :color="requestStatusColor(log.status)" variant="tonal" class="text-uppercase">
-                  {{ requestStatusText(log.status) }}
+                <span class="text-medium-emphasis log-meta">{{ formatTime(row.log.timestamp) }}</span>
+                <v-chip v-if="row.log.status" size="small" :color="requestStatusColor(row.log.status)" variant="tonal" class="text-uppercase">
+                  {{ requestStatusText(row.log.status) }}
                 </v-chip>
-                <v-chip v-if="log.interfaceType" size="small" :color="interfaceTypeColor(log.interfaceType)" variant="tonal" class="text-uppercase">
-                  {{ log.interfaceType }}
+                <v-chip v-if="!row.isAttempt && row.group.entries.length > 1" size="small" color="primary" variant="flat">
+                  {{ t('channelLogs.attempts', { count: row.group.entries.length }) }}
                 </v-chip>
-                <v-chip v-if="log.agentRole === 'subagent'" size="small" color="warning" variant="tonal" class="text-uppercase">
+                <v-chip v-if="row.log.interfaceType" size="small" :color="interfaceTypeColor(row.log.interfaceType)" variant="tonal" class="text-uppercase">
+                  {{ row.log.interfaceType }}
+                </v-chip>
+                <v-chip v-if="row.log.agentRole === 'subagent'" size="small" color="warning" variant="tonal" class="text-uppercase">
                   SUBAGENT
-                  <span v-if="log.agentConfidence === 'heuristic'" class="ml-1" style="opacity:.7">?</span>
+                  <span v-if="row.log.agentConfidence === 'heuristic'" class="ml-1" style="opacity:.7">?</span>
                 </v-chip>
-                <v-chip v-else-if="log.agentRole === 'main'" size="small" color="success" variant="tonal" class="text-uppercase">
+                <v-chip v-else-if="row.log.agentRole === 'main'" size="small" color="success" variant="tonal" class="text-uppercase">
                   MAIN
                 </v-chip>
-                <v-chip v-if="log.operation" size="small" color="info" variant="tonal" class="text-uppercase">
-                  {{ log.operation }}
+                <v-chip v-if="row.log.operation" size="small" color="info" variant="tonal" class="text-uppercase">
+                  {{ row.log.operation }}
                 </v-chip>
-                <v-chip v-if="log.requestSource === 'capability_test'" size="small" color="warning" variant="tonal">
+                <v-chip v-if="row.log.requestSource === 'capability_test'" size="small" color="warning" variant="tonal">
                   {{ t('channelLogs.sourceCapabilityTest') }}
                 </v-chip>
-                <v-chip v-else-if="log.requestSource === 'healthcheck'" size="small" color="default" variant="tonal">
+                <v-chip v-else-if="row.log.requestSource === 'healthcheck'" size="small" color="default" variant="tonal">
                   {{ t('channelLogs.sourceHealthCheck') }}
                 </v-chip>
-                <span v-if="log.originalModel" class="text-medium-emphasis log-meta">{{ log.originalModel }} →</span>
-                <span class="font-weight-medium log-model">{{ log.model }}</span>
+                <v-chip v-if="row.log.racingStatus === 'won'" size="small" color="success" variant="flat" prepend-icon="mdi-flag-checkered">
+                  {{ t('channelLogs.racing.won') }}
+                </v-chip>
+                <v-chip v-if="row.log.racingStatus === 'lost'" size="small" color="default" variant="outlined" prepend-icon="mdi-flag-outline">
+                  {{ t('channelLogs.racing.lost') }}
+                </v-chip>
+                <span v-if="row.log.originalModel" class="text-medium-emphasis log-meta">{{ row.log.originalModel }} →</span>
+                <span class="font-weight-medium log-model">{{ row.log.model }}</span>
                 <v-chip
-                  v-if="singleReasoningEffort(log)"
+                  v-if="singleReasoningEffort(row.log)"
                   size="small"
-                  :color="reasoningEffortColor(singleReasoningEffort(log))"
+                  :color="reasoningEffortColor(singleReasoningEffort(row.log))"
                   variant="tonal"
                   class="log-reasoning-chip"
-                  :title="singleReasoningEffort(log)"
+                  :title="singleReasoningEffort(row.log)"
                 >
-                  {{ formatReasoningEffort(singleReasoningEffort(log)) }}
+                  {{ formatReasoningEffort(singleReasoningEffort(row.log)) }}
                 </v-chip>
                 <template v-else>
                   <v-chip
-                    v-if="log.originalReasoningEffort"
+                    v-if="row.log.originalReasoningEffort"
                     size="small"
-                    :color="reasoningEffortColor(log.originalReasoningEffort)"
+                    :color="reasoningEffortColor(row.log.originalReasoningEffort)"
                     variant="tonal"
                     class="log-reasoning-chip"
-                    :title="log.originalReasoningEffort"
+                    :title="row.log.originalReasoningEffort"
                   >
-                    {{ t('channelLogs.reasoning.original') }} {{ formatReasoningEffort(log.originalReasoningEffort) }}
+                    {{ t('channelLogs.reasoning.original') }} {{ formatReasoningEffort(row.log.originalReasoningEffort) }}
                   </v-chip>
                   <v-chip
-                    v-if="log.actualReasoningEffort"
+                    v-if="row.log.actualReasoningEffort"
                     size="small"
-                    :color="reasoningEffortColor(log.actualReasoningEffort)"
+                    :color="reasoningEffortColor(row.log.actualReasoningEffort)"
                     variant="flat"
                     class="log-reasoning-chip"
-                    :title="log.actualReasoningEffort"
+                    :title="row.log.actualReasoningEffort"
                   >
-                    {{ t('channelLogs.reasoning.actual') }} {{ formatReasoningEffort(log.actualReasoningEffort) }}
+                    {{ t('channelLogs.reasoning.actual') }} {{ formatReasoningEffort(row.log.actualReasoningEffort) }}
                   </v-chip>
                 </template>
-                <code class="text-caption bg-surface pa-1 rounded log-inline-code log-key-mask">{{ log.keyMask }}</code>
-                <code v-if="log.baseUrl" class="text-caption bg-surface pa-1 rounded log-inline-code log-base-url" :title="log.baseUrl">{{ log.baseUrl }}</code>
-                <v-chip v-if="log.isRetry" size="small" color="warning" variant="tonal">{{ t('channelLogs.retry') }}</v-chip>
-                <template v-if="calculateDurations(log)">
-                  <span v-if="calculateDurations(log)!.connectMs !== null" class="text-medium-emphasis log-meta">
-                    {{ t('channelLogs.duration.connect') }} {{ formatDurationSeconds(calculateDurations(log)!.connectMs!) }}
+                <code class="text-caption bg-surface pa-1 rounded log-inline-code log-key-mask">{{ row.log.keyMask }}</code>
+                <code v-if="row.log.baseUrl" class="text-caption bg-surface pa-1 rounded log-inline-code log-base-url" :title="row.log.baseUrl">{{ row.log.baseUrl }}</code>
+                <v-chip v-if="row.log.isRetry" size="small" color="warning" variant="tonal">{{ t('channelLogs.retry') }}</v-chip>
+                <template v-if="calculateDurations(row.log)">
+                  <span v-if="calculateDurations(row.log)!.connectMs !== null" class="text-medium-emphasis log-meta">
+                    {{ t('channelLogs.duration.connect') }} {{ formatDurationSeconds(calculateDurations(row.log)!.connectMs!) }}
                   </span>
-                  <span v-if="calculateDurations(log)!.firstByteMs !== null" class="text-medium-emphasis log-meta">
-                    {{ t('channelLogs.duration.firstByte') }} {{ formatDurationSeconds(calculateDurations(log)!.firstByteMs!) }}
+                  <span v-if="calculateDurations(row.log)!.firstByteMs !== null" class="text-medium-emphasis log-meta">
+                    {{ t('channelLogs.duration.firstByte') }} {{ formatDurationSeconds(calculateDurations(row.log)!.firstByteMs!) }}
                   </span>
-                  <span v-if="calculateDurations(log)!.totalMs !== null" class="text-medium-emphasis log-meta">
-                    {{ t('channelLogs.duration.total') }} {{ formatDurationSeconds(calculateDurations(log)!.totalMs!) }}
+                  <span v-if="calculateDurations(row.log)!.totalMs !== null" class="text-medium-emphasis log-meta">
+                    {{ t('channelLogs.duration.total') }} {{ formatDurationSeconds(calculateDurations(row.log)!.totalMs!) }}
                   </span>
                 </template>
-                <span v-else class="text-medium-emphasis log-meta">{{ formatDurationSeconds(log.durationMs) }}</span>
-                <v-chip v-if="log.selectionReason" size="small" color="secondary" variant="tonal" :title="log.selectionReason">
-                  {{ t('channelLogs.selectionReason') }} {{ log.selectionReason }}
+                <span v-else class="text-medium-emphasis log-meta">{{ formatDurationSeconds(row.log.durationMs) }}</span>
+                <v-chip v-if="row.log.selectionReason" size="small" color="secondary" variant="tonal" :title="row.log.selectionReason">
+                  {{ t('channelLogs.selectionReason') }} {{ row.log.selectionReason }}
                 </v-chip>
                 <v-chip
-                  v-if="log.autopilotTraceUid"
+                  v-if="row.log.autopilotTraceUid"
                   size="small"
                   color="info"
                   variant="outlined"
                   prepend-icon="mdi-chart-timeline-variant"
                   :title="t('channelLogs.viewAutopilotTrace')"
-                  @click.stop="openAutopilotTrace(log.autopilotTraceUid)"
+                  @click.stop="openAutopilotTrace(row.log.autopilotTraceUid)"
                 >
-                  {{ t('channelLogs.autopilotTrace') }} {{ log.autopilotTraceUid.slice(0, 12) }}...
+                  {{ t('channelLogs.autopilotTrace') }} {{ row.log.autopilotTraceUid.slice(0, 12) }}...
                 </v-chip>
-                <span v-if="log.firstContentLatencyMs" class="text-medium-emphasis log-meta">
-                  {{ t('channelLogs.duration.firstContent') }} {{ formatDurationSeconds(log.firstContentLatencyMs) }}
+                <span v-if="row.log.firstContentLatencyMs" class="text-medium-emphasis log-meta">
+                  {{ t('channelLogs.duration.firstContent') }} {{ formatDurationSeconds(row.log.firstContentLatencyMs) }}
                 </span>
-                <span v-if="log.maxStreamIdleMs" class="text-medium-emphasis log-meta">
-                  {{ t('channelLogs.duration.maxStreamIdle') }} {{ formatDurationSeconds(log.maxStreamIdleMs) }}
+                <span v-if="row.log.maxStreamIdleMs" class="text-medium-emphasis log-meta">
+                  {{ t('channelLogs.duration.maxStreamIdle') }} {{ formatDurationSeconds(row.log.maxStreamIdleMs) }}
                 </span>
-                <span v-if="log.maxToolCallIdleMs" class="text-medium-emphasis log-meta">
-                  {{ t('channelLogs.duration.maxToolCallIdle') }} {{ formatDurationSeconds(log.maxToolCallIdleMs) }}
+                <span v-if="row.log.maxToolCallIdleMs" class="text-medium-emphasis log-meta">
+                  {{ t('channelLogs.duration.maxToolCallIdle') }} {{ formatDurationSeconds(row.log.maxToolCallIdleMs) }}
                 </span>
+                <v-icon v-if="!row.isAttempt && isGroupExpandable(row.group)" size="small" class="log-group-chevron">
+                  {{ expandedGroupKey === row.group.key ? 'mdi-chevron-up' : 'mdi-chevron-down' }}
+                </v-icon>
               </v-list-item-title>
             </v-list-item>
             <!-- 展开的诊断详情 -->
             <v-expand-transition>
-              <div v-if="expandedIndex === i && hasLogDetails(log)" class="px-4 py-2 log-detail-info">
-                <div v-if="log.errorInfo">
-                  {{ formatErrorInfo(log.errorInfo) }}
+              <div v-if="expandedLogKey === row.key && hasLogDetails(row.log)" class="px-4 py-2 log-detail-info">
+                <div v-if="row.log.errorInfo">
+                  {{ formatErrorInfo(row.log.errorInfo) }}
                 </div>
               </div>
             </v-expand-transition>
-            <v-divider v-if="i < logs.length - 1" />
+            <v-divider v-if="i < displayRows.length - 1" />
           </template>
         </v-list>
       </v-card-text>
@@ -224,7 +256,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { api, type ChannelBreakerEvidence, type ChannelKind, type ChannelLogEntry, type ChannelProtocolRoute } from '../services/api'
 import { useI18n } from '../i18n'
 import { useGlobalTick } from '../composables/useGlobalTick'
@@ -248,9 +280,29 @@ const logs = ref<ChannelLogEntry[]>([])
 const breakerEvidence = ref<ChannelBreakerEvidence | null>(null)
 const isLoading = ref(false)
 const autoRefresh = ref(true)
-const expandedIndex = ref<number | null>(null)
+// 展开状态以稳定 key 记录（correlationId/requestId），列表刷新重排后不会错位
+const expandedGroupKey = ref<string | null>(null)
+const expandedLogKey = ref<string | null>(null)
 const copiedLogKey = ref<string | null>(null)
 let copyLogResetTimer: ReturnType<typeof setTimeout> | null = null
+
+// 日志视图过滤：全部（组可展开看尝试明细）/ 仅最终交付（折叠组行，不展开明细）/ 含竞速放大（仅竞速相关组）
+type LogViewMode = 'all' | 'final' | 'racing'
+const logViewMode = ref<LogViewMode>('all')
+
+interface LogGroup {
+  key: string
+  entries: ChannelLogEntry[]
+  representative: ChannelLogEntry
+  hasRacing: boolean
+}
+
+interface LogDisplayRow {
+  key: string
+  log: ChannelLogEntry
+  group: LogGroup
+  isAttempt: boolean
+}
 
 // Autopilot Trace 详情对话框
 const autopilotDetailOpen = ref(false)
@@ -266,14 +318,10 @@ let pollingActive = false
 const startPolling = () => { pollingActive = true }
 const stopPolling = () => { pollingActive = false }
 
-const getLogCopyKey = (log: ChannelLogEntry, index: number): string => {
-  return log.requestId || `${log.timestamp}-${index}`
-}
-
-const copyLogEntry = async (log: ChannelLogEntry, index: number) => {
+const copyLogEntry = async (log: ChannelLogEntry, key: string) => {
   try {
     await writeClipboardText(JSON.stringify(log, null, 2))
-    copiedLogKey.value = getLogCopyKey(log, index)
+    copiedLogKey.value = key
     if (copyLogResetTimer) clearTimeout(copyLogResetTimer)
     copyLogResetTimer = setTimeout(() => {
       copiedLogKey.value = null
@@ -284,8 +332,68 @@ const copyLogEntry = async (log: ChannelLogEntry, index: number) => {
   }
 }
 
-const toggleExpand = (i: number) => {
-  expandedIndex.value = expandedIndex.value === i ? null : i
+const isRacingLost = (log: ChannelLogEntry): boolean =>
+  log.racingStatus === 'lost' || log.status === 'racing_lost'
+
+// 组的「最终结局」：成功交付的那条 > 最新的非竞速败出 > 最新一条（entries 已按时间倒序，越靠前越新）
+const pickRepresentative = (entries: ChannelLogEntry[]): ChannelLogEntry => {
+  return entries.find(e => e.success && e.status === 'completed')
+    ?? entries.find(e => !isRacingLost(e))
+    ?? entries[0]
+}
+
+const hasRacingInfo = (log: ChannelLogEntry): boolean =>
+  Boolean(log.racingRole) || Boolean(log.racingStatus) || (log.selectionReason ?? '').toLowerCase().includes('racing')
+
+// 按用户请求关联 ID 折叠：同一 correlationId 的多条上游尝试归为一组；无 ID 的条目自成一组
+const groupLogs = (entries: ChannelLogEntry[]): LogGroup[] => {
+  const grouped = new Map<string, ChannelLogEntry[]>()
+  for (const entry of entries) {
+    const key = entry.requestCorrelationId
+      ? `cid:${entry.requestCorrelationId}`
+      : `single:${entry.requestId || entry.timestamp}`
+    const list = grouped.get(key)
+    if (list) list.push(entry)
+    else grouped.set(key, [entry])
+  }
+  return Array.from(grouped, ([key, list]) => ({
+    key,
+    entries: list,
+    representative: pickRepresentative(list),
+    hasRacing: list.some(hasRacingInfo),
+  }))
+}
+
+// 50 条截断作用于折叠后的组（即 50 组），对应原来的 50 条上限
+const logGroups = computed(() => groupLogs(logs.value).slice(0, 50))
+
+const visibleGroups = computed(() =>
+  logViewMode.value === 'racing' ? logGroups.value.filter(g => g.hasRacing) : logGroups.value
+)
+
+// 拍平为渲染行：组行（最终结局）+ 展开时的尝试明细行，明细行复用同一渲染
+const displayRows = computed<LogDisplayRow[]>(() => {
+  const rows: LogDisplayRow[] = []
+  for (const group of visibleGroups.value) {
+    rows.push({ key: group.key, log: group.representative, group, isAttempt: false })
+    if (group.entries.length > 1 && expandedGroupKey.value === group.key) {
+      group.entries.forEach((entry, j) => {
+        rows.push({ key: `${group.key}#${entry.requestId || j}`, log: entry, group, isAttempt: true })
+      })
+    }
+  }
+  return rows
+})
+
+const isGroupExpandable = (group: LogGroup): boolean =>
+  group.entries.length > 1 && logViewMode.value !== 'final'
+
+const onLogRowClick = (row: LogDisplayRow) => {
+  if (!row.isAttempt && isGroupExpandable(row.group)) {
+    expandedGroupKey.value = expandedGroupKey.value === row.group.key ? null : row.group.key
+    return
+  }
+  expandedLogKey.value = expandedLogKey.value === row.key ? null : row.key
 }
 
 const hasLogDetails = (log: ChannelLogEntry): boolean => {
@@ -304,6 +412,7 @@ const requestStatusColor = (status: string): string => {
     case 'failed': return 'error'
     case 'cancelled':
     case 'canceled': return 'warning'
+    case 'racing_lost': return 'secondary'
     case 'streaming': return 'info'
     case 'first_byte': return 'primary'
     case 'connecting': return 'warning'
@@ -322,6 +431,7 @@ const requestStatusText = (status: string): string => {
     case 'failed': return t('channelLogs.status.failed')
     case 'cancelled':
     case 'canceled': return t('channelLogs.status.cancelled')
+    case 'racing_lost': return t('channelLogs.status.racingLost')
     default: return status
   }
 }
@@ -437,7 +547,6 @@ const fetchLogs = async () => {
     logs.value = results
       .flatMap(result => result.status === 'fulfilled' ? (result.value.logs || []) : [])
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-      .slice(0, 50)
     // 日志为空但渠道熔断时，后端会给出熔断成因依据；取最严重的一条展示
     breakerEvidence.value = results
       .flatMap(result => (result.status === 'fulfilled' && result.value.breakerEvidence)
@@ -463,7 +572,8 @@ logsTick.onTick(() => {
 watch(() => props.modelValue, (open) => {
   if (open) {
     logs.value = []
-    expandedIndex.value = null
+    expandedGroupKey.value = null
+    expandedLogKey.value = null
     fetchLogs()
     if (autoRefresh.value) startPolling()
   } else {
@@ -475,9 +585,16 @@ watch(() => props.modelValue, (open) => {
 watch([() => props.channelIndex, () => props.channelType, () => props.protocolRoutes], () => {
   if (props.modelValue) {
     logs.value = []
-    expandedIndex.value = null
+    expandedGroupKey.value = null
+    expandedLogKey.value = null
     fetchLogs()
   }
+})
+
+// 切换过滤模式时收起展开态，避免「仅最终交付」下残留明细
+watch(logViewMode, () => {
+  expandedGroupKey.value = null
+  expandedLogKey.value = null
 })
 
 watch(autoRefresh, (v) => {
@@ -518,6 +635,15 @@ onUnmounted(() => {
   padding-top: 10px;
   padding-inline-end: var(--log-copy-gutter) !important;
   padding-bottom: 10px;
+}
+
+.log-attempt-item {
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  padding-inline-start: 32px;
+}
+
+.log-group-chevron {
+  color: rgba(var(--v-theme-on-surface), 0.54);
 }
 
 .log-item :deep(.v-list-item__append) {
@@ -600,6 +726,28 @@ onUnmounted(() => {
 .log-summary {
   font-size: 0.875rem;
   line-height: 1.6;
+}
+
+/* 右上过滤切换：标签禁换行防纵向堆叠，标题过长优先收缩标题（text-truncate 省略号） */
+.dialog-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Vuetify reset 层让按钮字号继承容器（card-title 22px），须显式钉住，
+   口径对齐图表控件 chart-control-btn（11px/600） */
+.log-view-toggle :deep(.v-btn) {
+  min-width: auto;
+  padding-inline: 8px;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0 !important;
+}
+
+.log-view-toggle :deep(.v-btn__content) {
+  white-space: nowrap;
 }
 
 .log-meta {

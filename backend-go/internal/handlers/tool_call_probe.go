@@ -112,19 +112,38 @@ func buildCapabilityToolCallProbeRequest(protocol, baseURL, actualModel string, 
 
 // recordToolCallProbeResult 把探针的可学习结论写入共享兼容性记忆。
 // 仅实测确认不支持（ConfirmedUnsupported）且渠道有 ChannelUID 时记录；仅首次记录时打日志。
-func recordToolCallProbeResult(channel *config.UpstreamConfig, apiKey, actualModel string, summary ToolCallProbeSummary) {
+// protocol 为该探针的执行协议（messages/chat/responses/gemini），与渠道一起构成
+// 稳定路由身份（config.ToolRouteIdentity）——物理 UID 重铸后学习不失效。
+func recordToolCallProbeResult(channel *config.UpstreamConfig, apiKey, actualModel, protocol string, summary ToolCallProbeSummary) {
 	if channel == nil || channel.ChannelUID == "" || actualModel == "" {
 		return
 	}
-	if !summary.Tested || summary.Supported || !summary.ConfirmedUnsupported {
+	if !summary.Tested {
 		return
 	}
 	cache := config.SharedChannelCompatCache()
 	if cache == nil {
 		return
 	}
+	routeIdentity := config.ToolRouteIdentity(channel, protocol)
+	if routeIdentity == "" {
+		return
+	}
 	keyHash := autopilot.KeyHashFromAPIKey(apiKey)
-	if cache.Record(channel.ChannelUID, keyHash, actualModel,
+	// 正向结论：实测返回了真实工具调用 → 记入正向白名单（agentic 流量
+	// 的候选来源；路由内存在任一验证组合时，带工具请求只从验证组合产生）。
+	if summary.Supported {
+		if cache.Record(routeIdentity, keyHash, actualModel,
+			config.TraitVerifiedToolCalls, true, config.CompatSourceProbe, summary.Evidence) {
+			log.Printf("[CapabilityTest-ToolCall] 渠道 %s 模型 %s 实测真实工具调用，已记入正向白名单（agentic 流量优先）",
+				channel.Name, actualModel)
+		}
+		return
+	}
+	if !summary.ConfirmedUnsupported {
+		return
+	}
+	if cache.Record(routeIdentity, keyHash, actualModel,
 		config.TraitNoToolCallSupport, true, config.CompatSourceProbe, summary.Evidence) {
 		log.Printf("[CapabilityTest-ToolCall] 渠道 %s 模型 %s 未按强制 tool_choice 产生工具调用，已记忆并在后续路由中规避该组合（带工具请求）",
 			channel.Name, actualModel)

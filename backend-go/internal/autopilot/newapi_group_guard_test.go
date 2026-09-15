@@ -59,7 +59,7 @@ func TestResolveNewApiProvisionGroupsRejectsAmbiguousMode(t *testing.T) {
 }
 
 func TestDefaultNewApiProvisionKeyNameForGroup(t *testing.T) {
-	if got := defaultNewApiProvisionKeyNameForGroup("Premium Group"); got != "ccx-autopilot-premium-group" {
+	if got := defaultNewApiProvisionKeyNameForGroup("Premium Group"); got != "ccx-premium-group" {
 		t.Fatalf("分组 Key 名称 = %q", got)
 	}
 }

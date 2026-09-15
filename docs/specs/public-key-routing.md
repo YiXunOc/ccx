@@ -76,7 +76,7 @@ type APIKeyConfig struct {
 | `1` | 标准成本 |
 | `> 1` | 溢价成本 |
 
-倍率必须是有限非负数。`MaxGroupMultiplier` 仍是安全上限，而不是排序偏好；`GroupMultiplier > MaxGroupMultiplier` 的 Key 不参与调度。
+倍率必须是有限非负数。安全上限统一为**渠道级** `UpstreamConfig.MaxGroupMultiplier`（nil=不启用闸门）：本渠道 Key 的 `GroupMultiplier` 超过渠道上限时自动退出调度（倍率回落后自动恢复，不改写 `Enabled`）。Key 级 `MaxGroupMultiplier` 字段已废弃——存量值在加载期 `ensureChannelGroupMultiplierLimits` 聚合提升到渠道级（取最大值，保证原本可用的 Key 不回退）后清空，运行时不再参与判定。
 
 ### 3.3 为什么不直接使用 `PoolTag`
 
@@ -257,12 +257,11 @@ Content-Type: application/json
 
 {
   "groupMultiplier": 0,
-  "maxGroupMultiplier": 0,
   "consumptionPolicy": "opportunistic"
 }
 ```
 
-请求字段继续使用三态语义：缺失表示不修改，`null` 表示清除，具体值表示设置。`consumptionPolicy` 接受 `normal/opportunistic`；显式 `null` 规范化为 `normal`。
+请求字段继续使用三态语义：缺失表示不修改，`null` 表示清除，具体值表示设置。`consumptionPolicy` 接受 `normal/opportunistic`；显式 `null` 规范化为 `normal`。`maxGroupMultiplier` 不再是 Key 级请求字段——上限统一走渠道编辑（`PATCH channel` 的 `maxGroupMultiplier`，`0` 表清除）。
 
 响应补充：
 
@@ -270,7 +269,7 @@ Content-Type: application/json
 {
   "keyUid": "kuid_xxx",
   "groupMultiplier": 0,
-  "maxMultiplier": 0,
+  "maxMultiplier": 1,
   "consumptionPolicy": "opportunistic",
   "effectiveCostClass": "zero",
   "eligible": true,
@@ -286,6 +285,7 @@ new-api Key 的 `GroupMultiplier` 仍由远端同步、禁止手改，但 `Consu
 
 - “消耗策略”选择：`常规` / `优先消耗（公开或即将过期）`；
 - 成本倍率输入，允许 `0`；
+- 渠道级上限的只读回显（`渠道倍率上限: x / 未启用`），上限在渠道编辑的计费区设置；
 - 快捷动作“标记为公开 Key”，一次设置 `GroupMultiplier=0` 与 `ConsumptionPolicy=opportunistic`；
 - 风险提示：公开 Key 可能被其他人耗尽，失败后系统会自动回退；
 - Key 行展示 `公开/临时`、`零成本`、FastDecay 分数和当前资格状态。
@@ -296,7 +296,7 @@ new-api Key 的 `GroupMultiplier` 仍由远端同步、禁止手改，但 `Consu
 
 - PATCH 沿用配置写入和 ChannelV3 权威保存链；
 - 支持现有 expected-version/冲突机制时应一并使用，避免两个编辑窗口互相覆盖；
-- `GroupMultiplier=0, MaxGroupMultiplier=nil` 不满足现有成对安全闸门。快捷动作必须同时设置为 `0/0`；高级编辑若只设置一项，应明确报错而不是保存后静默不参与调度；
+- 倍率上限已统一为渠道级：Key 级编辑只设置 `GroupMultiplier`，无需（也不再允许）配对提供上限；快捷动作只设 `0 + ConsumptionPolicy=opportunistic`。`GroupMultiplier` 超过渠道级上限的 Key 由 evaluator 实时判 `over_group_limit` 自动退出调度，编辑响应即时回显 `eligible/reason`；
 - 所有六类渠道共用同一验证与更新函数，禁止复制六份字段赋值逻辑。
 
 

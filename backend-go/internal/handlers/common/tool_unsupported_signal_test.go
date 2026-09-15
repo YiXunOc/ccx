@@ -2,7 +2,13 @@ package common
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/BenedictKing/ccx/internal/autopilot"
+	"github.com/BenedictKing/ccx/internal/config"
 )
 
 func TestToolUnsupportedFromError(t *testing.T) {
@@ -139,5 +145,129 @@ func TestBodyHasTools(t *testing.T) {
 				t.Fatalf("BodyHasTools() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBodyHasToolsCodexForm(t *testing.T) {
+	// codex 形态：无明文 tools 数组，仅顶层 tool_choice（2026-09-12 实测 0.153.4）
+	if !BodyHasTools([]byte(`{"model":"gpt-6-astra","tool_choice":"auto","input":"hi"}`)) {
+		t.Fatal("codex 形态（tool_choice 存在）应判定为带工具语义")
+	}
+	if !BodyHasTools([]byte(`{"tools":[{"type":"function"}]}`)) {
+		t.Fatal("标准 tools 数组形态应判定为带工具")
+	}
+	if BodyHasTools([]byte(`{"model":"x","input":"hi"}`)) {
+		t.Fatal("无任何工具字段的普通请求不应误判")
+	}
+	if BodyHasTools([]byte(`{"tools":[]}`)) {
+		t.Fatal("空 tools 数组不算带工具")
+	}
+}
+
+// ── 伪工具调用标记流式扫描器 ──
+
+func TestPseudoToolCallMarkerScanner(t *testing.T) {
+	tests := []struct {
+		name  string
+		feeds []string
+		want  bool
+	}{
+		{"单段命中", []string{`好的<tool_call>{"name":"get_time"}`}, true},
+		{"跨 delta 切断", []string{"正文<tool", "_call>{}"}, true},
+		{"闭标记命中", []string{"arg</parameter></function></tool_call>"}, true},
+		{"DSML 总前缀", []string{"<｜DS", "ML｜<invoke"}, true},
+		{"Qwen function 变体", []string{`<function=get_time>`}, true},
+		{"纯文本不误报", []string{"这是一段正常的工具使用说明，包含 tool 字样"}, false},
+		{"空增量", []string{"", ""}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scanner := &PseudoToolCallMarkerScanner{}
+			got := false
+			for _, feed := range tt.feeds {
+				if scanner.Feed(feed) {
+					got = true
+				}
+			}
+			if got != tt.want || scanner.Found() != tt.want {
+				t.Fatalf("Feed 累计=%v Found=%v, want %v", got, scanner.Found(), tt.want)
+			}
+		})
+	}
+
+	// 幂等：命中后继续 Feed 仍报告命中
+	scanner := &PseudoToolCallMarkerScanner{}
+	if !scanner.Feed("<tool_call>") || !scanner.Feed("后续文本") {
+		t.Fatal("命中后 Feed 应持续返回 true")
+	}
+}
+
+// ── MaybeCountPseudoToolCallMiss 守卫与学习口径 ──
+
+func TestMaybeCountPseudoToolCallMiss(t *testing.T) {
+	restore := config.SwapSharedChannelCompatCacheForTest(config.NewChannelCompatCache())
+	defer restore()
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	upstream := &config.UpstreamConfig{ChannelUID: "ch_test", Name: "test-channel"}
+	cache := config.SharedChannelCompatCache()
+
+	const apiKey = "sk-test"
+	keyHash := autopilot.KeyHashFromAPIKey(apiKey)
+	toolBody := []byte(`{"model":"m1","tools":[{"type":"function","function":{"name":"get_time"}}],"tool_choice":"auto"}`)
+	forcedBody := []byte(`{"model":"m1","tools":[{"type":"function"}],"tool_choice":"required"}`)
+	plainBody := []byte(`{"model":"m1","messages":[]}`)
+
+	seed := func() {
+		cache.Record("ch_test#messages", keyHash, "m1", config.TraitVerifiedToolCalls, true, config.CompatSourceRuntimeSignal, "e")
+	}
+	streak := func() int {
+		state, ok := cache.Trait("ch_test#messages", keyHash, "m1", config.TraitVerifiedToolCalls)
+		if !ok {
+			return -1
+		}
+		return state.AutoMissStreak
+	}
+	enabled := func() bool {
+		state, ok := cache.Trait("ch_test#messages", keyHash, "m1", config.TraitVerifiedToolCalls)
+		return ok && state.Enabled
+	}
+
+	// 守卫矩阵：以下任一成立都不得计数
+	seed()
+	MaybeCountPseudoToolCallMiss(c, upstream, apiKey, "m1", toolBody, false, true, errNonNil(), "messages")
+	MaybeCountPseudoToolCallMiss(c, upstream, apiKey, "m1", toolBody, true, true, nil, "messages")   // 有真实工具调用
+	MaybeCountPseudoToolCallMiss(c, upstream, apiKey, "m1", toolBody, false, false, nil, "messages") // 无伪标记（纯文本合法回答）
+	MaybeCountPseudoToolCallMiss(c, upstream, apiKey, "m1", plainBody, false, true, nil, "messages") // 请求无工具
+	MaybeCountPseudoToolCallMiss(c, upstream, apiKey, "m1", forcedBody, false, true, nil, "messages")
+	if got := streak(); got != 0 {
+		t.Fatalf("守卫场景全部不应计数，got streak=%d", got)
+	}
+
+	// 无 verified 条目的模型：不计数
+	MaybeCountPseudoToolCallMiss(c, upstream, apiKey, "m2", toolBody, false, true, nil, "messages")
+	if _, ok := cache.Trait("ch_test#messages", keyHash, "m2", config.TraitVerifiedToolCalls); ok {
+		t.Fatal("无 verified 条目时不应产生任何状态")
+	}
+
+	// 连续 3 次 miss：撤销
+	for i := 0; i < 3; i++ {
+		MaybeCountPseudoToolCallMiss(c, upstream, apiKey, "m1", toolBody, false, true, nil, "messages")
+	}
+	if enabled() {
+		t.Fatal("连续 3 次伪标记 miss 应撤销 verified")
+	}
+
+	// 真实工具调用成功：重建条目且重置连续计数
+	seed()
+	MaybeCountPseudoToolCallMiss(c, upstream, apiKey, "m1", toolBody, false, true, nil, "messages")
+	MaybeCountPseudoToolCallMiss(c, upstream, apiKey, "m1", toolBody, false, true, nil, "messages")
+	MaybeLearnVerifiedToolCalls(c, upstream, apiKey, "m1", toolBody, true, "messages")
+	if got := streak(); got != 0 {
+		t.Fatalf("真实工具调用应重置连续计数，got streak=%d", got)
+	}
+	if !enabled() {
+		t.Fatal("真实工具调用后条目应保持启用")
 	}
 }

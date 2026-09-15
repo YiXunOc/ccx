@@ -863,18 +863,20 @@ func processToolUsePart(id, name string, input interface{}, index int) []string 
 
 // 辅助函数
 
-// claudeCodeSystemPatterns 匹配 Claude Code 注入的 system header 文本
+// claudeCodeSystemPatterns 匹配 Claude Code 注入的 system header 文本。
+// 上下文余量提醒（<total_tokens>...tokens left...）已拆分到
+// ccBudgetReminderPatterns，由统一预算提醒机制管理；此处经
+// isClaudeCodeSystemHeader 合并判定，转换路径行为不变。
 var claudeCodeSystemPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`^x-anthropic-billing-header:`),
-	// Claude Code 每轮注入的上下文余量提醒，数字按 Claude 会话上下文核算，
-	// 同一请求内重复数十次，尾部常附带 output style 提醒，随块一并剔除
-	regexp.MustCompile(`^<total_tokens>\s*[\d.,]*\s*tokens left</total_tokens>`),
 	regexp.MustCompile(`^You are Claude Code, Anthropic's official CLI for Claude\.`),
 	regexp.MustCompile(`^You are a Claude agent, built on Anthropic's Claude Agent SDK\.`),
 	regexp.MustCompile(`^You are an? .+ (?:specialist|agent) for Claude Code`),
 }
 
-// isClaudeCodeSystemHeader 判断 system text block 是否为 Claude Code 注入的 header
+// isClaudeCodeSystemHeader 判断 system text block 是否为 Claude Code 注入的 header。
+// 跨协议转换路径的剔除是无条件的：身份块对非 Claude 模型是误导，预算提醒块
+// （ccBudgetReminderPatterns）跨协议必然失真，两者都在此一并剔除。
 func isClaudeCodeSystemHeader(text string) bool {
 	text = strings.TrimSpace(text)
 	for _, pattern := range claudeCodeSystemPatterns {
@@ -882,7 +884,7 @@ func isClaudeCodeSystemHeader(text string) bool {
 			return true
 		}
 	}
-	return false
+	return isCCBudgetReminderText(text)
 }
 
 func extractSystemText(system interface{}) string {

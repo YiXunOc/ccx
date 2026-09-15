@@ -14,6 +14,8 @@ export type ChannelPlacement = 'front' | 'back'
 // 分时段统计
 export interface TimeWindowStats {
   requestCount: number
+  // 真实用户请求数（COUNT DISTINCT correlation_id）；omitempty，缺省时等同 requestCount 口径
+  userRequestCount?: number
   successCount: number
   failureCount: number
   successRate: number
@@ -102,7 +104,6 @@ export interface DisabledGroupModelInfo {
   quotaGroup: string
   key?: string
   model: string
-  note?: string
   disabledAt: string
 }
 
@@ -262,6 +263,7 @@ export interface Channel {
   proxyUrl?: string                        // HTTP/HTTPS/SOCKS5 代理 URL
   proxyPreferDirect?: boolean              // 直连优先：配代理时先直连，失败（网络错误/451/403）自动回退代理
   costMultiplier?: number                  // 渠道级充值倍率（EffectiveCost = ListCost × 倍率，0/空=不参与）
+  maxGroupMultiplier?: number              // 渠道级最高分组倍率上限（Key 分组倍率超过则自动退出调度，0/空=不启用闸门）
   channelPaymentCurrency?: string          // 充值币种（如 LDC/CNY/USD）
   channelPaymentAmount?: number            // 充值金额（0/空=不参与）
   channelCreditCurrency?: string           // 渠道显示/计价币种（如 USD）
@@ -294,6 +296,7 @@ export interface Channel {
   promotionUntil?: string    // 促销期截止时间（ISO 格式）
   latencyTestTime?: number   // 延迟测试时间戳（用于 5 分钟后自动清除显示）
   lowQuality?: boolean       // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
+  racing?: { enabled?: boolean }  // 渠道级竞速参与开关（不参与=不做主触发也不做影子目标）
   injectDummyThoughtSignature?: boolean  // Gemini 特定：为 functionCall 注入 dummy thought_signature（兼容第三方 API）
   stripThoughtSignature?: boolean        // Gemini 特定：移除 thought_signature 字段（兼容旧版 Gemini API）
   passbackReasoningContent?: boolean     // Claude 协议特定：将 thinking 块转为 reasoning_content 回传（兼容 mimo 等上游）
@@ -792,9 +795,11 @@ export interface ChannelLogEntry {
   requestSource?: string
   selectionReason?: string
   selectionTraceSummary?: string
+  racingRole?: string
+  racingStatus?: string
 
   // 请求生命周期状态
-  status: string  // pending/connecting/first_byte/streaming/completed/failed/cancelled
+  status: string  // pending/connecting/first_byte/streaming/completed/failed/cancelled/racing_lost
   startTime: string
   connectedAt?: string
   firstByteAt?: string
@@ -1212,7 +1217,6 @@ export interface ExchangeRatesReplaceRequest {
 
 export interface KeyMultiplierPatch {
   groupMultiplier?: number | null
-  maxGroupMultiplier?: number | null
   consumptionPolicy?: 'normal' | 'opportunistic' | null
 }
 
@@ -1679,6 +1683,7 @@ export interface SmartRoutingConfig {
   scenario?: RoutingScenario
   scenarioPresets?: ScenarioPresetView[]
   l2ProbeEnabled?: boolean
+  racingEnabled?: boolean
 }
 
 /** PUT /smart-routing/config 请求体，只包含允许持久化的配置字段。 */
@@ -1686,6 +1691,7 @@ export interface SmartRoutingConfigUpdate {
   killSwitch?: boolean
   costPreference?: string
   scenario?: RoutingScenario
+  racingEnabled?: boolean
 }
 
 export interface CandidateScore {

@@ -165,6 +165,9 @@ func (cm *ConfigManager) loadConfig() error {
 	if cm.ensureCredentialUIDs() {
 		needSaveDefaults = true
 	}
+	if cm.ensureChannelGroupMultiplierLimits() {
+		needSaveDefaults = true
+	}
 	// AccountUID / CredentialUID 归一化及 provider 账号合并完成后再补水，
 	// 避免用旧 UID 查找凭证导致托管子路由持续无 Key。
 	if cm.config.hydrateManagedAccountCredentials() {
@@ -1234,8 +1237,58 @@ func ensureCredentialUIDsConfig(cfg *Config) bool {
 	return updated
 }
 
-// ensureOriginBackfill 为缺失 OriginType/OriginTier 的渠道补默认值 "unknown"。
-// 设计 §12.2 P1.5：旧配置 backfill 不改变原调度——只补标签，不做任何基于
+// ensureChannelGroupMultiplierLimits 把存量 Key 级 MaxGroupMultiplier 迁移到渠道级。
+// 分组倍率上限已统一为渠道级唯一真源：渠道级为 nil 且存在非 nil 的 Key 级上限时，
+// 取 Key 级上限的最大值写入渠道级（保证原本可用的 Key 不因迁移回退），随后清空
+// 全部 Key 级上限。幂等：新配置不再产生 Key 级上限，二次加载无变化。
+func (cm *ConfigManager) ensureChannelGroupMultiplierLimits() bool {
+	if cm == nil {
+		return false
+	}
+	updated := false
+	apply := func(channels []UpstreamConfig, channelKind string) {
+		for i := range channels {
+			channel := &channels[i]
+			var channelMax *float64
+			if channel.MaxGroupMultiplier != nil {
+				copied := *channel.MaxGroupMultiplier
+				channelMax = &copied
+			}
+			channelChanged := false
+			for j := range channel.APIKeyConfigs {
+				keyMax := channel.APIKeyConfigs[j].MaxGroupMultiplier
+				if keyMax == nil {
+					continue
+				}
+				if channelMax == nil {
+					copied := *keyMax
+					channelMax = &copied
+				} else if *keyMax > *channelMax {
+					*channelMax = *keyMax
+				}
+				channel.APIKeyConfigs[j].MaxGroupMultiplier = nil
+				channelChanged = true
+			}
+			if !channelChanged {
+				continue
+			}
+			channel.MaxGroupMultiplier = channelMax
+			updated = true
+			if channelMax != nil {
+				log.Printf("[Config-GroupMultiplier] %s 渠道 %s 已迁移 Key 级倍率上限到渠道级 %.4g", channelKind, channel.Name, *channelMax)
+			}
+		}
+	}
+	apply(cm.config.Upstream, "Messages")
+	apply(cm.config.ResponsesUpstream, "Responses")
+	apply(cm.config.GeminiUpstream, "Gemini")
+	apply(cm.config.ChatUpstream, "Chat")
+	apply(cm.config.ImagesUpstream, "Images")
+	apply(cm.config.VectorsUpstream, "Vectors")
+	return updated
+}
+
+// ensureOriginBackfill 为缺失 OriginType/OriginTier 的渠道补默认值 "unknown"。// 设计 §12.2 P1.5：旧配置 backfill 不改变原调度——只补标签，不做任何基于
 // URL/名称的猜测推断，避免把未知来源误判为某个具体信任等级。
 // 已有非空值的渠道不会被覆盖。覆盖全部六类渠道。返回 true 表示有字段被补齐，需要持久化。
 func (cm *ConfigManager) ensureOriginBackfill() bool {

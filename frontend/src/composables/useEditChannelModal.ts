@@ -130,7 +130,9 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     customHeaders: {} as Record<string, string>,
     proxyUrl: '',
     proxyPreferDirect: false,
+    racing: undefined as { enabled?: boolean } | undefined,
     costMultiplier: null as string | number | null,
+    maxGroupMultiplier: null as string | number | null,
     channelPaymentCurrency: '',
     channelPaymentAmount: null as string | number | null,
     channelCreditCurrency: '',
@@ -355,8 +357,10 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
       customHeaders: { ...form.customHeaders },
       proxyUrl: form.proxyUrl.trim(),
       proxyPreferDirect: form.proxyPreferDirect,
+      racing: form.racing,
       remark: form.remark.trim(),
       costMultiplier: form.costMultiplier,
+      maxGroupMultiplier: form.maxGroupMultiplier,
       channelPaymentCurrency: form.channelPaymentCurrency,
       channelPaymentAmount: form.channelPaymentAmount,
       channelCreditCurrency: form.channelCreditCurrency,
@@ -470,7 +474,9 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     form.customHeaders = {}
     form.proxyUrl = ''
     form.proxyPreferDirect = false
+    form.racing = undefined
     form.costMultiplier = null
+    form.maxGroupMultiplier = null
     form.channelPaymentCurrency = ''
     form.channelPaymentAmount = null
     form.channelCreditCurrency = ''
@@ -565,7 +571,9 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     form.customHeaders = { ...(channel.customHeaders || {}) }
     form.proxyUrl = channel.proxyUrl || ''
     form.proxyPreferDirect = !!channel.proxyPreferDirect
+    form.racing = channel.racing ? { ...channel.racing } : undefined
     form.costMultiplier = channel.costMultiplier ?? null
+    form.maxGroupMultiplier = channel.maxGroupMultiplier ?? null
     form.channelPaymentCurrency = channel.channelPaymentCurrency ?? ''
     form.channelPaymentAmount = channel.channelPaymentAmount ?? null
     form.channelCreditCurrency = channel.channelCreditCurrency ?? ''
@@ -630,6 +638,10 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     visibleDisabledGroupModels,
     disableGroupModel,
     restoreDisabledGroupModel,
+    pendingGroupModelDisables,
+    stageGroupModelDisable,
+    unstageGroupModelDisable,
+    flushStagedGroupModelDisables,
     suspendingKey,
     suspendKey,
     resumeKey,
@@ -654,6 +666,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
 
   // 提交状态
   const submitting = ref(false)
+  const suppressFlushOnClose = ref(false)
 
   const {
     targetModelOptions,
@@ -720,9 +733,25 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
 
   const handleCancel = () => {
     if (submitting.value) return
+    // 取消：丢弃暂存的分组模型排除并抑制关闭时的 flush
+    suppressFlushOnClose.value = true
+    pendingGroupModelDisables.value = []
     emit('update:show', false)
     resetForm()
   }
+
+  // 保存成功（对话框经保存链路关闭）后提交暂存的分组模型排除；
+  // 取消（已显式清空+抑制标记）与保存失败（弹窗保持打开）均不会误触发。
+  watch(
+    () => props.show,
+    visible => {
+      if (visible) return
+      if (!suppressFlushOnClose.value && pendingGroupModelDisables.value.length) {
+        void flushStagedGroupModelDisables()
+      }
+      suppressFlushOnClose.value = false
+    },
+  )
 
   // 监听props变化
   watch(
@@ -858,6 +887,10 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     visibleDisabledGroupModels,
     disableGroupModel,
     restoreDisabledGroupModel,
+    pendingGroupModelDisables,
+    stageGroupModelDisable,
+    unstageGroupModelDisable,
+    flushStagedGroupModelDisables,
     suspendingKey,
     suspendKey,
     resumeKey,

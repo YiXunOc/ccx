@@ -126,6 +126,7 @@ function requestStatusClass(status: string) {
     case 'failed': return 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300'
     case 'cancelled':
     case 'canceled': return 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+    case 'racing_lost': return 'border-slate-500/30 bg-slate-500/10 text-slate-600 dark:text-slate-300'
     case 'streaming': return 'border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300'
     case 'first_byte': return 'border-primary/30 bg-primary/10 text-primary'
     case 'connecting': return 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
@@ -144,6 +145,7 @@ function requestStatusText(status: string) {
     case 'failed': return t('channelLogs.status.failed')
     case 'cancelled':
     case 'canceled': return t('channelLogs.status.cancelled')
+    case 'racing_lost': return t('channelLogs.status.racingLost')
     default: return status || '—'
   }
 }
