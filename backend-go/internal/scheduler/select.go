@@ -752,7 +752,7 @@ func (s *ChannelScheduler) SelectChannelWithOptions(ctx context.Context, opts Se
 	}
 
 	// 3. 所有健康渠道都失败，选择失败率最低的作为降级
-	result, err := s.selectFallbackChannelWithRouteRecord(activeChannels, failedChannels, failedRoutes, kind, !opts.DryRun)
+	result, err = s.selectFallbackChannelWithRouteRecord(activeChannels, failedChannels, failedRoutes, kind, !opts.DryRun)
 	if result != nil {
 		channelName := ""
 		if result.Upstream != nil {

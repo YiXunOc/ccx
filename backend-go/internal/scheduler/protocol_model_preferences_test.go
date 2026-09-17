@@ -12,12 +12,34 @@ import (
 )
 
 func boundAliasConfig() config.Config {
-	u := config.UpstreamConfig{ChannelUID: "native", LogicalChannelUID: "logical", Name: "native", BaseURL: "https://binding.example", APIKeys: []string{"test"}, Status: "active", ModelMapping: map[string]string{"alias": "actual"}}
+	const (
+		accountUID = "bound-account"
+		baseURL    = "https://binding.example"
+	)
+	u := config.UpstreamConfig{
+		ChannelUID:        "native",
+		LogicalChannelUID: "logical",
+		AccountUID:        accountUID,
+		Name:              "native",
+		BaseURL:           baseURL,
+		APIKeys:           []string{"test"},
+		Status:            "active",
+		ModelMapping:      map[string]string{"alias": "actual"},
+	}
 	v := *u.Clone()
 	v.ChannelUID = "target"
 	v.ServiceType = "openai"
 	v.Name = "target"
-	return config.Config{Upstream: []config.UpstreamConfig{u}, ChatUpstream: []config.UpstreamConfig{v}, LogicalChannels: []config.LogicalChannel{{LogicalChannelUID: "logical", ProtocolModelPreferences: config.ProtocolModelPreferences{"chat": {"actual"}}}}}
+	return config.Config{
+		Upstream:     []config.UpstreamConfig{u},
+		ChatUpstream: []config.UpstreamConfig{v},
+		LogicalChannels: []config.LogicalChannel{{
+			LogicalChannelUID:        "logical",
+			AccountUID:               accountUID,
+			BaseURLs:                 []string{baseURL},
+			ProtocolModelPreferences: config.ProtocolModelPreferences{"chat": {"actual"}},
+		}},
+	}
 }
 
 func TestProtocolPreferencesSelectAlias(t *testing.T) {

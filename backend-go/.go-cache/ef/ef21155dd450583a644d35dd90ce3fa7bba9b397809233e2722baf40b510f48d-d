@@ -1,0 +1,4 @@
+./auth.go
+./cors.go
+./gzip.go
+./logger.go

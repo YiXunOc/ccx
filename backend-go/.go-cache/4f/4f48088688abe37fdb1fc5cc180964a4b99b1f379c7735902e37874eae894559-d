@@ -1,0 +1,8 @@
+./cache.go
+./default.go
+./embedded.go
+./handler.go
+./preset.go
+./store.go
+./updater.go
+./validate.go

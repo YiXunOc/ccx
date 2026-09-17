@@ -1,0 +1,5 @@
+./gemini.go
+./responses.go
+./responses_input.go
+./responses_unmarshal.go
+./types.go

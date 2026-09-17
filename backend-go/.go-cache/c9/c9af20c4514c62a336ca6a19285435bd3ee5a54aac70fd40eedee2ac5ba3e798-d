@@ -1,0 +1,2 @@
+./multi_channel_failover_test.go
+./racing_test.go
