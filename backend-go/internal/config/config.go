@@ -1621,6 +1621,7 @@ func (cm *ConfigManager) GetConfig() Config {
 		cloned.LogicalChannels = make([]LogicalChannel, len(cm.config.LogicalChannels))
 		copy(cloned.LogicalChannels, cm.config.LogicalChannels)
 		for i := range cloned.LogicalChannels {
+			cloned.LogicalChannels[i].ProtocolModelPreferences = cm.config.LogicalChannels[i].ProtocolModelPreferences.Clone()
 			if len(cm.config.LogicalChannels[i].BaseURLs) > 0 {
 				cloned.LogicalChannels[i].BaseURLs = append([]string(nil), cm.config.LogicalChannels[i].BaseURLs...)
 			}

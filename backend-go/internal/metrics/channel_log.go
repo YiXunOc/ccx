@@ -4,10 +4,34 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/BenedictKing/ccx/internal/types"
 )
+
+// ChannelLogUsage 输入包含缓存命中/写入，缓存命中是输入的子集，不重复计入总量。
+type ChannelLogUsage struct {
+	TotalTokens     int64 `json:"totalTokens"`
+	InputTokens     int64 `json:"inputTokens"`
+	OutputTokens    int64 `json:"outputTokens"`
+	CacheReadTokens int64 `json:"cacheReadTokens"`
+}
+
+// UpdateUsage 记录本次尝试的用量；nil 表示上游未提供用量。
+func (s *ChannelLogStore) UpdateUsage(metricsKey, requestID string, usage *types.Usage) {
+	if s == nil || usage == nil || metricsKey == "" || requestID == "" {
+		return
+	}
+	input, output, creation, cached := extractUsageTokens(usage)
+	input += creation + cached
+	s.Update(metricsKey, requestID, func(log *ChannelLog) {
+		log.Usage = &ChannelLogUsage{TotalTokens: input + output, InputTokens: input, OutputTokens: output, CacheReadTokens: cached}
+	})
+}
 
 // ChannelLog 单次上游请求日志
 type ChannelLog struct {
+	Usage *ChannelLogUsage `json:"usage,omitempty"`
+
 	RequestID               string    `json:"requestId"` // 请求唯一标识
 	ChannelIndex            int       `json:"-"`         // 创建时的渠道索引（不序列化，仅用于内部排查）
 	ChannelName             string    `json:"-"`         // 创建时的渠道名称（不序列化，用于共享 metricsKey 日志归属）

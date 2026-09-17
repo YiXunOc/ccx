@@ -39,24 +39,26 @@ type LogicalChannelProtocol struct {
 // 用户的产品语义是“同一个站点的多协议能力只看作一张渠道卡片”；运行时仍以六类 Upstream*
 // 数组为权威存储，本结构体是稳定身份与跨协议视图。
 type LogicalChannel struct {
-	LogicalChannelUID string                   `json:"logicalChannelUid"`    // 稳定 ULID
-	AccountUID        string                   `json:"accountUid,omitempty"` // 可选：自动托管账号身份
-	ProviderID        string                   `json:"providerId,omitempty"` // 可选：来源 provider 模板 ID
-	Name              string                   `json:"name"`                 // 用户可见名称（按首个 BaseURL 自动派生，不允许手改）
-	Remark            string                   `json:"remark,omitempty"`     // 用户备注，最长 10 字符
-	Description       string                   `json:"description,omitempty"`
-	Website           string                   `json:"website,omitempty"`
-	Kind              LogicalChannelKind       `json:"kind"`         // llm / embeddings / images
-	BaseURLs          []string                 `json:"baseUrls"`     // 站点地址池（归一化后）
-	SiteIdentity      string                   `json:"siteIdentity"` // 主 URL 的归一化站点身份
-	Protocols         []LogicalChannelProtocol `json:"protocols"`    // 多协议物理路由
-	Tags              []string                 `json:"tags,omitempty"`
-	HealthTag         string                   `json:"healthTag,omitempty"`
-	QualityTag        string                   `json:"qualityTag,omitempty"`
-	CostTag           string                   `json:"costTag,omitempty"`
-	CapabilityTags    []string                 `json:"capabilityTags,omitempty"`
-	CreatedAt         time.Time                `json:"createdAt"`
-	UpdatedAt         time.Time                `json:"updatedAt"`
+	// ProtocolModelPreferences is the sole authority for this logical channel's model endpoint bindings.
+	ProtocolModelPreferences ProtocolModelPreferences `json:"protocolModelPreferences,omitempty"`
+	LogicalChannelUID        string                   `json:"logicalChannelUid"`    // 稳定 ULID
+	AccountUID               string                   `json:"accountUid,omitempty"` // 可选：自动托管账号身份
+	ProviderID               string                   `json:"providerId,omitempty"` // 可选：来源 provider 模板 ID
+	Name                     string                   `json:"name"`                 // 用户可见名称（按首个 BaseURL 自动派生，不允许手改）
+	Remark                   string                   `json:"remark,omitempty"`     // 用户备注，最长 10 字符
+	Description              string                   `json:"description,omitempty"`
+	Website                  string                   `json:"website,omitempty"`
+	Kind                     LogicalChannelKind       `json:"kind"`         // llm / embeddings / images
+	BaseURLs                 []string                 `json:"baseUrls"`     // 站点地址池（归一化后）
+	SiteIdentity             string                   `json:"siteIdentity"` // 主 URL 的归一化站点身份
+	Protocols                []LogicalChannelProtocol `json:"protocols"`    // 多协议物理路由
+	Tags                     []string                 `json:"tags,omitempty"`
+	HealthTag                string                   `json:"healthTag,omitempty"`
+	QualityTag               string                   `json:"qualityTag,omitempty"`
+	CostTag                  string                   `json:"costTag,omitempty"`
+	CapabilityTags           []string                 `json:"capabilityTags,omitempty"`
+	CreatedAt                time.Time                `json:"createdAt"`
+	UpdatedAt                time.Time                `json:"updatedAt"`
 }
 
 // SiblingChannelUIDs 返回该逻辑渠道下所有物理渠道 UID（含各协议）。
@@ -174,14 +176,18 @@ type physicalChannelEntry struct {
 //  3. 手工渠道（无 provider / 无 account）+ 同 siteIdentity 合并。
 //  4. 不同 account / 不同 provider / 不同 siteIdentity 不合并。
 //  5. 已有 LogicalChannelUID 优先（用户已通过 API 创建的），不会被打散。
-func RebuildLogicalChannels(cfg *Config) {
+func RebuildLogicalChannels(cfg *Config) error {
 	if cfg == nil {
-		return
+		return nil
+	}
+	// Rebuild must never destroy conflicting user bindings. Load/save report the error.
+	if err := validateProtocolModelPreferences(cfg); err != nil {
+		return err
 	}
 	// 1) 收集全部物理渠道（带 slice 名）
 	all := collectAllPhysicalChannelsWithSlice(cfg)
 	if len(all) == 0 && len(cfg.LogicalChannels) == 0 {
-		return
+		return nil
 	}
 	// 2) 已有 logical 按 UID 索引（先复制为副本，existingByUID 与 logicals 指向同一批副本，
 	// 保证第 4 步的 append 与第 7 步的物化作用于同一对象）。
@@ -193,6 +199,7 @@ func RebuildLogicalChannels(cfg *Config) {
 			continue
 		}
 		copy := cfg.LogicalChannels[i]
+		copy.ProtocolModelPreferences = copy.ProtocolModelPreferences.Clone()
 		// 重置 protocols：第 4 步与 4.5 步按当前物理渠道重建，避免陈旧引用残留。
 		copy.Protocols = nil
 		logicals = append(logicals, &copy)
@@ -218,7 +225,9 @@ func RebuildLogicalChannels(cfg *Config) {
 	// 后续 Rebuild 在第 4 步按旧 UID 各归各，第 5 步的账号合并永远轮不到它们。
 	// 这里以 accountUid 为身份真相：把同账号的物理渠道重新归并到一张 canonical 卡，
 	// 并强制重指物理渠道的 LogicalChannelUID，孤儿卡在物化时随之消失。
-	convergeLogicalByAccount(cfg, all, logicals)
+	if err := convergeLogicalByAccount(cfg, all, logicals); err != nil {
+		return err
+	}
 	// 5) 剩余按归组键合并。
 	// 空 UID（新增）或被移出原 logical 的物理渠道，先尝试并入归组键匹配的存量卡：
 	// "向已有站点/账号追加协议路由"必须落入既有逻辑卡，否则每次增量添加都会
@@ -349,6 +358,7 @@ func RebuildLogicalChannels(cfg *Config) {
 	}
 	cfg.LogicalChannels = out
 	cfg.LogicalChannelSchemaVersion = LogicalChannelSchemaVersion
+	return nil
 }
 
 // collectAllPhysicalChannelsWithSlice 汇总六类数组。
@@ -582,7 +592,7 @@ func attachLogicalToEntries(l *LogicalChannel, members []physicalChannelEntry) {
 // 遍历顺序即六类数组的固定顺序（messages → chat → …），因此同账号首个遇到的
 // logical 即 canonical，幂等稳定；该账号其余 logical 被清空 protocols（物化时剔除）。
 // 物理渠道的 LogicalChannelUID / LogicalName 被强制重指到 canonical，解除历史写死的分歧。
-func convergeLogicalByAccount(cfg *Config, all []physicalChannelEntry, logicals []*LogicalChannel) {
+func convergeLogicalByAccount(cfg *Config, all []physicalChannelEntry, logicals []*LogicalChannel) error {
 	byUID := make(map[string]*LogicalChannel, len(logicals))
 	for _, l := range logicals {
 		byUID[l.LogicalChannelUID] = l
@@ -606,6 +616,11 @@ func convergeLogicalByAccount(cfg *Config, all []physicalChannelEntry, logicals 
 		if l == canonical {
 			continue
 		}
+		merged, err := mergeProtocolModelPreferences(canonical.ProtocolModelPreferences, l.ProtocolModelPreferences)
+		if err != nil {
+			return err
+		}
+		canonical.ProtocolModelPreferences = merged
 		// 把 e 从 l 移到 canonical，并强制重指物理渠道身份
 		appendProtocolToLogical(canonical, e.slice, e.channel)
 		removeProtocolFromLogical(l, e.slice)
@@ -614,6 +629,7 @@ func convergeLogicalByAccount(cfg *Config, all []physicalChannelEntry, logicals 
 			up.LogicalName = canonical.Name
 		}
 	}
+	return nil
 }
 
 // removeProtocolFromLogical 移除 logical 中指定 kind 的协议引用。

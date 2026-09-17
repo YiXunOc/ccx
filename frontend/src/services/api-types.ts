@@ -224,6 +224,8 @@ export interface ModelPricingTier {
   outputPrice?: number
 }
 
+export type ProtocolModelPreferences = Partial<Record<ChannelKind, string[]>>
+
 export interface Channel {
   name: string
   accountUid?: string                // 自动托管账号稳定身份，同一 provider 的多协议渠道共享
@@ -777,6 +779,12 @@ export interface ModelStatsHistoryResponse {
 // ============== 渠道日志类型 ==============
 
 export interface ChannelLogEntry {
+  usage?: {
+    totalTokens: number
+    inputTokens: number // 含缓存命中/写入
+    outputTokens: number
+    cacheReadTokens: number // 输入的子集
+  }
   requestId: string
   timestamp: string
   model: string
@@ -2547,6 +2555,7 @@ export interface LogicalChannelProtocol {
 export type LogicalChannelKind = 'llm' | 'embeddings' | 'images'
 
 export interface LogicalChannel {
+  protocolModelPreferences?: ProtocolModelPreferences
   logicalChannelUid: string
   accountUid?: string
   providerId?: string
@@ -2590,7 +2599,13 @@ export interface CreateLogicalChannelProtocol {
   proxyPreferDirect?: boolean
 }
 
+export interface UpdateLogicalChannelRequest {
+  common?: { protocolModelPreferences?: ProtocolModelPreferences; [key: string]: unknown }
+  [key: string]: unknown
+}
+
 export interface CreateLogicalChannelRequest {
+  protocolModelPreferences?: ProtocolModelPreferences
   name: string
   remark?: string
   description?: string

@@ -96,7 +96,9 @@ func (cm *ConfigManager) loadConfig() error {
 	markExplicitAutoManagedFalse(data, &loaded)
 	// Phase B.2：保存加载前快照用于事件 diff。
 	snapshot := cm.config
-	cm.config = loaded
+	owner := cm
+	// All load migrations run on a detached manager, with no disk or event access.
+	cm = &ConfigManager{config: loaded} // freshly decoded; preserves non-JSON migration flags
 
 	// Phase 3c 波 3：纯 V3 落盘格式（六数组不再持久化）——加载后立即把 ChannelsV3 投影到
 	// 运行时六数组，后续迁移/自检/中途落盘都作用在真实渠道数据上。若等迁移跑完再翻转，
@@ -159,7 +161,17 @@ func (cm *ConfigManager) loadConfig() error {
 	if cm.ensureAccountUIDs() {
 		needSaveDefaults = true
 	}
-	if cm.mergeManagedProviderAccounts() {
+	if normalizeNewApiAccountUIDsConfig(&cm.config) {
+		needSaveDefaults = true
+	}
+	if err := validateProtocolModelPreferences(&cm.config); err != nil {
+		owner.mu.Unlock()
+		return err
+	}
+	if changed, err := cm.mergeManagedProviderAccountsChecked(); err != nil {
+		owner.mu.Unlock()
+		return err
+	} else if changed {
 		needSaveDefaults = true
 	}
 	if cm.ensureCredentialUIDs() {
@@ -194,45 +206,24 @@ func (cm *ConfigManager) loadConfig() error {
 	// 兼容旧格式：检测是否需要迁移
 	needMigration := cm.migrateOldFormat()
 
-	// savedDuringLoad 记录本次加载是否发生过迁移/自检/回填落盘。
-	// 发生时内存 ChannelsV3 是这些改写之前的旧快照（save 只写文件），
-	// 随后的加载翻转若用旧 V3 覆盖六数组，会把刚落盘的改写撤销——
-	// 此时落盘文件已同代（save 时 V3 从改写后六数组重建），本次信任磁盘形态，
-	// 翻转待下次启动生效。
-	savedDuringLoad := false
-
-	// 如果有默认值迁移或格式迁移，保存配置
-	if needSaveDefaults || needMigration {
-		if err := cm.saveConfigLocked(cm.config); err != nil {
-			log.Printf("[Config-Migration] 警告: 保存迁移后的配置失败: %v", err)
-			cm.mu.Unlock()
-			return err
-		}
-		savedDuringLoad = true
-		if needMigration {
-			log.Printf("[Config-Migration] 配置迁移完成")
-		}
-	}
-
-	// 自检：没有配置 key 的渠道自动暂停
+	// Defer every migration write until the complete candidate has validated.
+	savedDuringLoad := needSaveDefaults || needMigration
 	if cm.validateChannelKeys() {
-		if err := cm.saveConfigLocked(cm.config); err != nil {
-			log.Printf("[Config-Validate] 警告: 保存自检后的配置失败: %v", err)
-			cm.mu.Unlock()
-			return err
-		}
 		savedDuringLoad = true
 	}
-
-	// 逻辑渠道回填：旧配置或 schema 升级时按归组规则重建 LogicalChannels。
-	// 必须在所有迁移完成、validateChannelKeys 之后，避免优先级/UID 变化导致归组视图错位。
+	if normalizeNewApiAccountUIDsConfig(&cm.config) {
+		needSaveDefaults = true
+	}
+	if err := validateProtocolModelPreferences(&cm.config); err != nil {
+		owner.mu.Unlock()
+		return err
+	}
 	if ensureLogicalBackfill(&cm.config) {
-		if err := cm.saveConfigLocked(cm.config); err != nil {
-			log.Printf("[Config-LogicalChannel] 警告: 保存逻辑渠道回填结果失败: %v", err)
-			cm.mu.Unlock()
-			return err
-		}
 		savedDuringLoad = true
+	}
+	if err := RebuildLogicalChannels(&cm.config); err != nil {
+		owner.mu.Unlock()
+		return err
 	}
 
 	// Phase 3c 运行时权威反转：若配置携带 ChannelsV3 权威形态，从它重建运行时六数组。
@@ -249,10 +240,10 @@ func (cm *ConfigManager) loadConfig() error {
 	if pureV3Load {
 		// 加载入口已投影，无需再次翻转。
 	} else if savedDuringLoad && diskArraysNonEmpty {
-		log.Printf("[Config-Load] 本次加载有迁移/自检落盘，跳过 ChannelsV3 翻转（落盘已同代，下次启动生效）")
+		log.Printf("[Config-Load] 本次加载有待提交迁移，跳过旧 ChannelsV3 翻转，校验完成后统一落盘")
 		reconcileAuthoritativeChannels(&cm.config)
 	} else if applied, err := applyAuthoritativeChannelsAsLoadSource(&cm.config); err != nil {
-		cm.mu.Unlock()
+		owner.mu.Unlock()
 		return err
 	} else if !applied {
 		reconcileAuthoritativeChannels(&cm.config)
@@ -269,10 +260,24 @@ func (cm *ConfigManager) loadConfig() error {
 		log.Printf("[Config-ChannelName] 启动期已修正 channels/channelsV3 镜像名称")
 	}
 
-	// 成功加载后通知回调（在锁内构造快照，释放锁后通知）
-	cm.fireConfigChangeCallbacks()
-	// Phase B.2：发布 config_reloaded 事件。
-	cm.publishConfigReloaded(&snapshot)
+	// No active state or disk changes until every migration and binding check succeeds.
+	if normalizeNewApiAccountUIDsConfig(&cm.config) {
+		needSaveDefaults = true
+	}
+	if err := RebuildLogicalChannels(&cm.config); err != nil {
+		owner.mu.Unlock()
+		return err
+	}
+	if savedDuringLoad || needSaveDefaults {
+		if err := owner.saveConfigLocked(cm.config); err != nil {
+			owner.mu.Unlock()
+			return err
+		}
+	} else {
+		owner.config = cm.config
+	}
+	owner.fireConfigChangeCallbacks()
+	owner.publishConfigReloaded(&snapshot)
 	return nil
 }
 
@@ -1555,6 +1560,12 @@ func (cm *ConfigManager) validateChannelKeys() bool {
 
 // saveConfigLocked 保存配置（已加锁）
 func (cm *ConfigManager) saveConfigLocked(config Config) error {
+	// All normalization and convergence operate on an isolated candidate.
+	config = config.deepCopy()
+	normalizeNewApiAccountUIDsConfig(&config)
+	if err := validateProtocolModelPreferences(&config); err != nil {
+		return err
+	}
 	// 备份当前配置
 	cm.backupConfig()
 
@@ -1577,8 +1588,10 @@ func (cm *ConfigManager) saveConfigLocked(config Config) error {
 	normalizeNewApiAccountUIDsConfig(&config)
 	// 任何物理渠道变更（Add/Update/Remove、状态/促销/批量导入等）持久化前，
 	// 统一重建 LogicalChannels 视图并回写 LogicalChannelUID / LogicalName。
-	// 在 deepCopy 之前执行，确保修改作用于调用方共享的 slice 并最终提交到 cm.config。
-	RebuildLogicalChannels(&config)
+	// 仅变更隔离副本，成功落盘之后才提交到 cm.config。
+	if err := RebuildLogicalChannels(&config); err != nil {
+		return err
+	}
 	// Channel Data Model v2：在逻辑渠道重建之后，合成非权威的 Channels 镜像
 	// （渠道→key→endpoint→模型 + 跨账号共享能力）。六个数组仍是运行时权威。
 	RebuildChannels(&config)

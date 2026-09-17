@@ -1697,6 +1697,7 @@ func TryUpstreamWithAllKeys(
 			// 竞争；claim 败者的头随 Discard 丢弃，不会并入真实客户端 writer。
 			writeEchoMappingHeaders(c, cfgManager, appliedMappedModel, actualAttemptModel, model)
 			usage, err = handleSuccess(c, resp, upstreamCopy, apiKey, attemptBody)
+			channelLogStore.UpdateUsage(metricsKey, logRequestID, usage)
 			// 上下文窗口自学习（放宽侧）：2xx 完成即实证该渠道×协议×模型可承载本次输入，
 			// 棘轮只升不降。失败/取消/空响应不学习（err 非 nil 时内部直接返回）。
 			MaybeRecordContextWindowProven(c, apiType, upstreamCopy, executionKind, attemptModel, usage, err)

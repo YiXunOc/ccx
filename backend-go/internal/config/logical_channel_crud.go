@@ -22,17 +22,18 @@ func remarkRuneCount(s string) int {
 // CreateLogicalChannelInput 新建逻辑渠道的入参。
 // 调用方负责收集并校验以下字段；CreateLogicalChannel 不会再做大幅度语义推断。
 type CreateLogicalChannelInput struct {
-	Name        string // 用户可见名（必填）
-	Remark      string
-	Description string
-	Website     string
-	ProviderID  string
-	AccountUID  string
-	Kind        LogicalChannelKind
-	BaseURLs    []string // 必填，至少一个
-	Tags        []string
-	Protocols   []CreateLogicalChannelProtocol // 必填，至少一个；每个内部创建一条 UpstreamConfig
-	Placement   string                         // "front" / "back"，仅在首个 protocol 时使用
+	ProtocolModelPreferences ProtocolModelPreferences
+	Name                     string // 用户可见名（必填）
+	Remark                   string
+	Description              string
+	Website                  string
+	ProviderID               string
+	AccountUID               string
+	Kind                     LogicalChannelKind
+	BaseURLs                 []string // 必填，至少一个
+	Tags                     []string
+	Protocols                []CreateLogicalChannelProtocol // 必填，至少一个；每个内部创建一条 UpstreamConfig
+	Placement                string                         // "front" / "back"，仅在首个 protocol 时使用
 }
 
 // CreateLogicalChannelProtocol 单个新建协议的入参。
@@ -58,6 +59,9 @@ type CreateLogicalChannelProtocol struct {
 // CreateLogicalChannel 在事务内创建一个逻辑渠道及一组物理渠道。
 // 内部使用 sync.Mutex (cm.mu) 保证原子性，失败时回滚已创建的物理渠道。
 func (cm *ConfigManager) CreateLogicalChannel(in CreateLogicalChannelInput) (*LogicalChannel, error) {
+	if err := in.ProtocolModelPreferences.Validate(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(in.Name) == "" {
 		return nil, fmt.Errorf("name 不能为空")
 	}
@@ -103,19 +107,20 @@ func (cm *ConfigManager) CreateLogicalChannel(in CreateLogicalChannelInput) (*Lo
 
 	uid := pickFreshUID(logicalUIDSet(cm.config))
 	logical := &LogicalChannel{
-		LogicalChannelUID: uid,
-		AccountUID:        strings.TrimSpace(in.AccountUID),
-		ProviderID:        strings.TrimSpace(in.ProviderID),
-		Name:              strings.TrimSpace(in.Name),
-		Remark:            in.Remark,
-		Description:       in.Description,
-		Website:           in.Website,
-		Kind:              in.Kind,
-		BaseURLs:          append([]string(nil), in.BaseURLs...),
-		SiteIdentity:      siteIdent,
-		Tags:              append([]string(nil), in.Tags...),
-		CreatedAt:         time.Now().UTC(),
-		UpdatedAt:         time.Now().UTC(),
+		ProtocolModelPreferences: in.ProtocolModelPreferences.Clone(),
+		LogicalChannelUID:        uid,
+		AccountUID:               strings.TrimSpace(in.AccountUID),
+		ProviderID:               strings.TrimSpace(in.ProviderID),
+		Name:                     strings.TrimSpace(in.Name),
+		Remark:                   in.Remark,
+		Description:              in.Description,
+		Website:                  in.Website,
+		Kind:                     in.Kind,
+		BaseURLs:                 append([]string(nil), in.BaseURLs...),
+		SiteIdentity:             siteIdent,
+		Tags:                     append([]string(nil), in.Tags...),
+		CreatedAt:                time.Now().UTC(),
+		UpdatedAt:                time.Now().UTC(),
 	}
 	// 创建物理渠道
 	created := make([]physicalChannelEntry, 0, len(in.Protocols))
@@ -289,12 +294,13 @@ type UpdateLogicalChannelInput struct {
 
 // UpdateLogicalChannelCommon 跨协议共享字段。
 type UpdateLogicalChannelCommon struct {
-	Name        *string
-	Remark      *string
-	Description *string
-	Website     *string
-	Tags        *[]string
-	BaseURLs    *[]string
+	ProtocolModelPreferences *ProtocolModelPreferences
+	Name                     *string
+	Remark                   *string
+	Description              *string
+	Website                  *string
+	Tags                     *[]string
+	BaseURLs                 *[]string
 }
 
 // UpdateLogicalChannelProtocol 更新或新增单协议。
@@ -320,9 +326,23 @@ type UpdateLogicalChannelProtocol struct {
 // UpdateLogicalChannel 事务内更新逻辑渠道（含 protocols 的增删改）。
 // 失败时回滚所有改动。
 func (cm *ConfigManager) UpdateLogicalChannel(in UpdateLogicalChannelInput) (*LogicalChannel, error) {
+	if in.Common != nil && in.Common.ProtocolModelPreferences != nil {
+		if err := (*in.Common.ProtocolModelPreferences).Validate(); err != nil {
+			return nil, err
+		}
+	}
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
+	// Keep the full active snapshot intact until every edit and persistence succeeds.
+	original := cm.config
+	cm.config = cm.config.deepCopy()
+	committed := false
+	defer func() {
+		if !committed {
+			cm.config = original
+		}
+	}()
 	idx := findLogicalChannelIndexLocked(&cm.config, in.LogicalChannelUID)
 	if idx < 0 {
 		return nil, fmt.Errorf("逻辑渠道 %s 不存在", in.LogicalChannelUID)
@@ -330,6 +350,8 @@ func (cm *ConfigManager) UpdateLogicalChannel(in UpdateLogicalChannelInput) (*Lo
 	logical := &cm.config.LogicalChannels[idx]
 	// 记录原始快照以便回滚
 	backupLogical := *logical
+	backupLogical.Protocols = append([]LogicalChannelProtocol(nil), logical.Protocols...)
+	backupLogical.ProtocolModelPreferences = logical.ProtocolModelPreferences.Clone()
 	backupSlices := backupAllUpstreamSlices(cm.config)
 	backupManaged := append([]ManagedAccountConfig(nil), cm.config.ManagedAccounts...)
 
@@ -487,6 +509,9 @@ func (cm *ConfigManager) UpdateLogicalChannel(in UpdateLogicalChannelInput) (*Lo
 		}
 	}
 
+	if in.Common != nil && in.Common.ProtocolModelPreferences != nil {
+		logical.ProtocolModelPreferences = (*in.Common.ProtocolModelPreferences).Clone()
+	}
 	logical.UpdatedAt = time.Now().UTC()
 	if err := cm.saveConfigLocked(cm.config); err != nil {
 		cm.restoreAllUpstreamSlicesLocked(backupSlices)
@@ -494,6 +519,7 @@ func (cm *ConfigManager) UpdateLogicalChannel(in UpdateLogicalChannelInput) (*Lo
 		cm.config.LogicalChannels[idx] = backupLogical
 		return nil, err
 	}
+	committed = true
 	log.Printf("[Config-LogicalChannel] 已更新逻辑渠道: uid=%s name=%s protocols=%d", logical.LogicalChannelUID, logical.Name, len(logical.Protocols))
 	return logical, nil
 }
@@ -532,7 +558,10 @@ func (cm *ConfigManager) ListLogicalChannels() []LogicalChannel {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	out := make([]LogicalChannel, 0, len(cm.config.LogicalChannels))
-	out = append(out, cm.config.LogicalChannels...)
+	for _, l := range cm.config.LogicalChannels {
+		l.ProtocolModelPreferences = l.ProtocolModelPreferences.Clone()
+		out = append(out, l)
+	}
 	return out
 }
 
@@ -543,6 +572,7 @@ func (cm *ConfigManager) ListLogicalChannelsWithKind(kind LogicalChannelKind) []
 	out := make([]LogicalChannel, 0, len(cm.config.LogicalChannels))
 	for _, l := range cm.config.LogicalChannels {
 		if l.Kind == kind {
+			l.ProtocolModelPreferences = l.ProtocolModelPreferences.Clone()
 			out = append(out, l)
 		}
 	}
@@ -556,6 +586,7 @@ func (cm *ConfigManager) GetLogicalChannel(uid string) *LogicalChannel {
 	for i := range cm.config.LogicalChannels {
 		if cm.config.LogicalChannels[i].LogicalChannelUID == uid {
 			out := cm.config.LogicalChannels[i]
+			out.ProtocolModelPreferences = out.ProtocolModelPreferences.Clone()
 			return &out
 		}
 	}

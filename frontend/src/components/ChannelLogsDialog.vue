@@ -131,8 +131,8 @@
                 <v-chip v-if="!row.isAttempt && row.group.entries.length > 1" size="small" color="primary" variant="flat">
                   {{ t('channelLogs.attempts', { count: row.group.entries.length }) }}
                 </v-chip>
-                <v-chip v-if="row.log.interfaceType" size="small" :color="interfaceTypeColor(row.log.interfaceType)" variant="tonal" class="text-uppercase">
-                  {{ row.log.interfaceType }}
+                <v-chip size="small" :color="interfaceTypeColor(row.log.interfaceType || '')" variant="tonal">
+                  {{ t('channelLogs.protocol') }} {{ row.log.interfaceType || '—' }}
                 </v-chip>
                 <v-chip v-if="row.log.agentRole === 'subagent'" size="small" color="warning" variant="tonal" class="text-uppercase">
                   SUBAGENT
@@ -232,6 +232,12 @@
                   {{ expandedGroupKey === row.group.key ? 'mdi-chevron-up' : 'mdi-chevron-down' }}
                 </v-icon>
               </v-list-item-title>
+              <div class="d-flex flex-wrap ga-3 text-caption text-medium-emphasis mt-1">
+                <span>{{ t('channelLogs.tokens.total') }} {{ row.log.usage?.totalTokens ?? '—' }}</span>
+                <span :title="t('channelLogs.tokens.inputHint')">{{ t('channelLogs.tokens.input') }} {{ row.log.usage?.inputTokens ?? '—' }}</span>
+                <span>{{ t('channelLogs.tokens.output') }} {{ row.log.usage?.outputTokens ?? '—' }}</span>
+                <span>{{ t('channelLogs.tokens.cacheRead') }} {{ row.log.usage?.cacheReadTokens ?? '—' }}</span>
+              </div>
             </v-list-item>
             <!-- 展开的诊断详情 -->
             <v-expand-transition>

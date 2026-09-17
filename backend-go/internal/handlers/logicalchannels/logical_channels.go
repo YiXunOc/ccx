@@ -38,18 +38,19 @@ type ListResponse struct {
 
 // CreateRequestBody POST 入参。
 type CreateRequestBody struct {
-	Name        string                      `json:"name"`
-	Remark      string                      `json:"remark"`
-	Description string                      `json:"description"`
-	Website     string                      `json:"website"`
-	ProviderID  string                      `json:"providerId"`
-	AccountUID  string                      `json:"accountUid"`
-	Kind        string                      `json:"kind"`
-	BaseURLs    []string                    `json:"baseUrls"`
-	APIKeys     []string                    `json:"apiKeys"` // 共享到所有 protocols（如未在 protocol 内覆盖）
-	Tags        []string                    `json:"tags"`
-	Protocols   []CreateRequestBodyProtocol `json:"protocols"`
-	Placement   string                      `json:"placement"`
+	ProtocolModelPreferences config.ProtocolModelPreferences `json:"protocolModelPreferences"`
+	Name                     string                          `json:"name"`
+	Remark                   string                          `json:"remark"`
+	Description              string                          `json:"description"`
+	Website                  string                          `json:"website"`
+	ProviderID               string                          `json:"providerId"`
+	AccountUID               string                          `json:"accountUid"`
+	Kind                     string                          `json:"kind"`
+	BaseURLs                 []string                        `json:"baseUrls"`
+	APIKeys                  []string                        `json:"apiKeys"` // 共享到所有 protocols（如未在 protocol 内覆盖）
+	Tags                     []string                        `json:"tags"`
+	Protocols                []CreateRequestBodyProtocol     `json:"protocols"`
+	Placement                string                          `json:"placement"`
 }
 
 // CreateRequestBodyProtocol POST 单协议入参。
@@ -82,12 +83,13 @@ type UpdateRequestBody struct {
 
 // UpdateRequestBodyCommon 跨协议共享字段更新。
 type UpdateRequestBodyCommon struct {
-	Name        *string   `json:"name"`
-	Remark      *string   `json:"remark"`
-	Description *string   `json:"description"`
-	Website     *string   `json:"website"`
-	Tags        *[]string `json:"tags"`
-	BaseURLs    *[]string `json:"baseUrls"`
+	ProtocolModelPreferences *config.ProtocolModelPreferences `json:"protocolModelPreferences"`
+	Name                     *string                          `json:"name"`
+	Remark                   *string                          `json:"remark"`
+	Description              *string                          `json:"description"`
+	Website                  *string                          `json:"website"`
+	Tags                     *[]string                        `json:"tags"`
+	BaseURLs                 *[]string                        `json:"baseUrls"`
 }
 
 // UpdateRequestBodyProtocol 单协议更新/新增。
@@ -144,6 +146,7 @@ func (h *Handler) Dashboard(c *gin.Context) {
 		// 用逻辑渠道信息覆盖展示字段
 		view["name"] = lc.Name
 		view["logicalChannelUid"] = lc.LogicalChannelUID
+		view["protocolModelPreferences"] = lc.ProtocolModelPreferences
 		view["logicalName"] = lc.Name
 		view["baseUrl"] = primaryBaseURLFromLogical(lc)
 		view["baseUrls"] = lc.BaseURLs
@@ -383,17 +386,18 @@ func (h *Handler) Create(c *gin.Context) {
 		return
 	}
 	in := config.CreateLogicalChannelInput{
-		Name:        body.Name,
-		Remark:      body.Remark,
-		Description: body.Description,
-		Website:     body.Website,
-		ProviderID:  body.ProviderID,
-		AccountUID:  body.AccountUID,
-		Kind:        config.LogicalChannelKind(body.Kind),
-		BaseURLs:    body.BaseURLs,
-		Tags:        body.Tags,
-		Placement:   body.Placement,
-		Protocols:   make([]config.CreateLogicalChannelProtocol, 0, len(body.Protocols)),
+		ProtocolModelPreferences: body.ProtocolModelPreferences,
+		Name:                     body.Name,
+		Remark:                   body.Remark,
+		Description:              body.Description,
+		Website:                  body.Website,
+		ProviderID:               body.ProviderID,
+		AccountUID:               body.AccountUID,
+		Kind:                     config.LogicalChannelKind(body.Kind),
+		BaseURLs:                 body.BaseURLs,
+		Tags:                     body.Tags,
+		Placement:                body.Placement,
+		Protocols:                make([]config.CreateLogicalChannelProtocol, 0, len(body.Protocols)),
 	}
 	for _, p := range body.Protocols {
 		keys := p.APIKeys
@@ -447,12 +451,13 @@ func (h *Handler) Update(c *gin.Context) {
 	}
 	if body.Common != nil {
 		in.Common = &config.UpdateLogicalChannelCommon{
-			Name:        body.Common.Name,
-			Remark:      body.Common.Remark,
-			Description: body.Common.Description,
-			Website:     body.Common.Website,
-			Tags:        body.Common.Tags,
-			BaseURLs:    body.Common.BaseURLs,
+			ProtocolModelPreferences: body.Common.ProtocolModelPreferences,
+			Name:                     body.Common.Name,
+			Remark:                   body.Common.Remark,
+			Description:              body.Common.Description,
+			Website:                  body.Common.Website,
+			Tags:                     body.Common.Tags,
+			BaseURLs:                 body.Common.BaseURLs,
 		}
 	}
 	for _, p := range body.Protocols {

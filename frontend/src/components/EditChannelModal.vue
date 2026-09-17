@@ -69,7 +69,7 @@
                 @update:base-urls-text="baseUrlsText = $event"
                 @menu-update="onMenuUpdate"
               />
-              <ProtocolModelAvailability :routes="protocolModelRoutes" :loading="managedModelsLoading" @refreshed="handleProtocolModelsRefreshed" />
+              <LogicalProtocolModels v-if="props.show" :logical-channel-uid="props.channel?.logicalChannelUid" :routes="protocolModelRoutes" :loading="managedModelsLoading" @refreshed="handleProtocolModelsRefreshed" />
             </section>
 
             <!-- 身份认证 -->
@@ -330,7 +330,7 @@ import { computed, ref, watch } from 'vue'
 import AddChannelHeader from './edit-channel/AddChannelHeader.vue'
 import AddChannelSidebarNav from './edit-channel/AddChannelSidebarNav.vue'
 import BasicInfoSection from './edit-channel/BasicInfoSection.vue'
-import ProtocolModelAvailability from './edit-channel/ProtocolModelAvailability.vue'
+import LogicalProtocolModels from './edit-channel/LogicalProtocolModels.vue'
 import ApiKeyManagementSection from './edit-channel/ApiKeyManagementSection.vue'
 import CustomHeadersSection from './edit-channel/CustomHeadersSection.vue'
 import NewApiAccountPanel from './edit-channel/NewApiAccountPanel.vue'

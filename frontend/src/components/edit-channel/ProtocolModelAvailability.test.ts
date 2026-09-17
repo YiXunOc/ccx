@@ -48,6 +48,25 @@ describe('ProtocolModelAvailability', () => {
     autopilotMocks.autoDiscoverChannel.mockReset()
     autopilotMocks.getChannelAutoStatus.mockReset()
   })
+  it('协议编辑使用全量发现并集并保留其他协议配置', async () => {
+    const wrapper = mount(ProtocolModelAvailability, {
+      props: {
+        editable: true,
+        preferences: { chat: ['old'], messages: ['reserved'] },
+        routes: [
+          { kind: 'chat', index: 0, name: 'one', serviceType: 'openai', discoveredModels: ['a'] },
+          { kind: 'messages', index: 0, name: 'two', serviceType: 'claude', discoveredModels: ['b'] },
+        ],
+      },
+      global: { stubs: { ...baseStubs, ProtocolModelSelection: true } },
+    })
+    const editor = wrapper.findAllComponents({ name: 'ProtocolModelSelection' })[0]
+    expect(editor.props('discoveredModels')).toEqual(['a', 'b'])
+    expect(editor.props('models')).toEqual(['old'])
+    expect(editor.props('conflicts')).toEqual(['reserved'])
+    editor.vm.$emit('save', [])
+    expect(wrapper.emitted('savePreferences')).toEqual([[{ chat: [], messages: ['reserved'] }]])
+  })
   it('按协议分组展示各自的可用模型', () => {
     const wrapper = mount(ProtocolModelAvailability, {
       props: {

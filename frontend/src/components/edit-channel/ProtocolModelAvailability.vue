@@ -93,6 +93,14 @@
         :class="{ 'protocol-model-route--unconfigured': !route.configured }"
         :data-kind="route.upstreamKind"
       >
+        <ProtocolModelSelection
+          v-if="editable"
+          :models="preferences?.[route.upstreamKind] ?? []"
+          :discovered-models="allDiscoveredModels"
+          :conflicts="conflictingModels(route.upstreamKind)"
+          :saving="savingPreferences"
+          @save="models => emit('savePreferences', { ...preferences, [route.upstreamKind]: models })"
+        />
         <div v-if="!route.configured" class="protocol-model-route__unconfigured text-caption text-info">
           <v-icon size="15" color="info">mdi-information-outline</v-icon>
           {{ t('channelEditor.protocolModels.unconfiguredProtocol') }}
@@ -245,6 +253,8 @@ import { useI18n } from '../../i18n'
 import type { ChannelKind, ChannelProtocolRoute } from '../../services/api'
 import { autoDiscoverChannel, getChannelAutoStatus } from '../../services/autopilot-api'
 import ModelChipList from './ModelChipList.vue'
+import ProtocolModelSelection from './ProtocolModelSelection.vue'
+import type { ProtocolModelPreferences } from '../../services/api-types'
 
 interface ProtocolDefinition {
   labelKey: string
@@ -301,12 +311,16 @@ const protocolDefinitions: Record<ChannelKind, ProtocolDefinition> = {
 const props = withDefaults(defineProps<{
   routes?: ChannelProtocolRoute[]
   loading?: boolean
+  preferences?: ProtocolModelPreferences
+  savingPreferences?: boolean
+  editable?: boolean
 }>(), {
   loading: false,
 })
 
 const emit = defineEmits<{
   refreshed: []
+  savePreferences: [preferences: ProtocolModelPreferences]
 }>()
 
 const { t } = useI18n()
@@ -616,6 +630,11 @@ const baseNormalizedRoutes = computed(() => (props.routes ?? []).map((route) => 
     ) as 'refreshing' | 'failed' | '',
   }
 }))
+
+const allDiscoveredModels = computed(() => normalizeModels(baseNormalizedRoutes.value.flatMap(route => route.models)))
+const conflictingModels = (kind: ChannelKind) => normalizeModels(Object.entries(props.preferences ?? {})
+  .filter(([otherKind]) => otherKind !== kind)
+  .flatMap(([, models]) => models))
 
 const sharedProtocolRoutes = computed(() => (
   baseNormalizedRoutes.value.filter(route => route.hasInventory)

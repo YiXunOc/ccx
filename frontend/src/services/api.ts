@@ -5,6 +5,8 @@ import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { API_BASE, ApiError } from './api-helpers'
 import type {
+  LogicalChannel,
+  UpdateLogicalChannelRequest,
   CapabilitySnapshot,
   CapabilityTestJob,
   CapabilityTestJobStartResponse,
@@ -1840,8 +1842,13 @@ export class ApiService {
     })
   }
 
+  /** 读取逻辑渠道唯一配置实体（裸对象响应） */
+  async getLogicalChannel(uid: string): Promise<LogicalChannel> {
+    return this.request(`/logical-channels/${encodeURIComponent(uid)}`)
+  }
+
   /** 更新逻辑渠道 */
-  async updateLogicalChannel(uid: string, updates: Record<string, unknown>): Promise<void> {
+  async updateLogicalChannel(uid: string, updates: UpdateLogicalChannelRequest): Promise<void> {
     await this.request(`/logical-channels/${encodeURIComponent(uid)}`, {
       method: 'PUT',
       body: JSON.stringify(updates),

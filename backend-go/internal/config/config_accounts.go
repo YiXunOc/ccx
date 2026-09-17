@@ -530,7 +530,16 @@ func (cm *ConfigManager) SetManagedAccountVolcenginePlanUsage(accountUID, creden
 
 // mergeManagedProviderAccounts 将同一 BaseURL 站点的历史渠道归并到同一账号身份。
 // URL 身份跨协议统一默认版本后缀，同时保留租户路径、端口、查询参数和 # 语义。
+// Compatibility entry for legacy callers; production load propagates checked errors.
 func (cm *ConfigManager) mergeManagedProviderAccounts() bool {
+	changed, err := cm.mergeManagedProviderAccountsChecked()
+	if err != nil {
+		log.Printf("[Config-Migration] 拒绝账号归并: %v", err)
+	}
+	return changed
+}
+
+func (cm *ConfigManager) mergeManagedProviderAccountsChecked() (bool, error) {
 	parent := make(map[string]string)
 	var findRoot func(string) string
 	findRoot = func(uid string) string {
@@ -656,6 +665,27 @@ func (cm *ConfigManager) mergeManagedProviderAccounts() bool {
 	collectKinds(cm.config.ImagesUpstream, "images")
 	collectKinds(cm.config.VectorsUpstream, "vectors")
 
+	// Use the existing canonical groups; inspect ALL original members before deletion.
+	bindingsByUID := map[string]ProtocolModelPreferences{}
+	for _, l := range cm.config.LogicalChannels {
+		bindingsByUID[l.LogicalChannelUID] = l.ProtocolModelPreferences
+	}
+	groupBindings := map[string]ProtocolModelPreferences{}
+	for _, e := range collectAllPhysicalChannelsWithSlice(&cm.config) {
+		u := e.channel
+		if u.AccountUID == "" {
+			continue
+		}
+		root := findRoot(u.AccountUID)
+		if len(members[root]) < 2 {
+			continue
+		}
+		merged, err := mergeProtocolModelPreferences(groupBindings[root], bindingsByUID[u.LogicalChannelUID])
+		if err != nil {
+			return false, fmt.Errorf("protocolModelPreferences: account convergence conflict: %w", err)
+		}
+		groupBindings[root] = merged
+	}
 	updated := false
 	mergeKind := func(channels []UpstreamConfig, kind string) []UpstreamConfig {
 		out := make([]UpstreamConfig, 0, len(channels))
@@ -791,7 +821,24 @@ func (cm *ConfigManager) mergeManagedProviderAccounts() bool {
 	cm.config.ImagesUpstream = mergeKind(cm.config.ImagesUpstream, "images")
 	cm.config.VectorsUpstream = mergeKind(cm.config.VectorsUpstream, "vectors")
 	if !updated {
-		return false
+		return false, nil
+	}
+	// Transfer to actual surviving logical entities, never to physical channel fields.
+	for _, e := range collectAllPhysicalChannelsWithSlice(&cm.config) {
+		u := e.channel
+		if u.AccountUID == "" {
+			continue
+		}
+		p := groupBindings[findRoot(u.AccountUID)]
+		if len(p) == 0 {
+			continue
+		}
+		for i := range cm.config.LogicalChannels {
+			if cm.config.LogicalChannels[i].LogicalChannelUID == u.LogicalChannelUID {
+				cm.config.LogicalChannels[i].ProtocolModelPreferences = p.Clone()
+				break
+			}
+		}
 	}
 
 	accounts := cm.config.ManagedAccounts[:0]
@@ -833,7 +880,7 @@ func (cm *ConfigManager) mergeManagedProviderAccounts() bool {
 		cm.config.syncManagedAccountsFromChannels()
 	}
 	log.Printf("[Config-AccountMerge] 已按 BaseURL 站点合并历史渠道")
-	return true
+	return true, nil
 }
 
 // UpdateAccountChannels 原子更新账号下所有协议渠道的 Key -> BaseURL 绑定。
