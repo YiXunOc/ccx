@@ -274,6 +274,9 @@ const buildProtocolRoutes = (channels: Partial<Record<LlmChannelKind, RoutedChan
       disabledApiKeys: channel.disabledApiKeys == null
         ? undefined
         : channel.disabledApiKeys.map(item => ({ ...item })),
+      disabledGroupModels: channel.disabledGroupModels == null
+        ? undefined
+        : channel.disabledGroupModels.map(item => ({ ...item })),
       supportedModels: channel.supportedModels == null ? undefined : [...channel.supportedModels],
     }]
   })
@@ -297,10 +300,16 @@ const mergeAccountCredentials = (channels: Partial<Record<LlmChannelKind, Routed
       .flatMap(channel => channel.disabledApiKeys ?? [])
       .map(item => [item.key, item]),
   )
+  const disabledGroupModels = new Map(
+    Object.values(channels)
+      .flatMap(channel => channel.disabledGroupModels ?? [])
+      .map(item => [`${item.quotaGroup || `key:${item.key || ""}`}|${item.model.toLowerCase()}`, item]),
+  )
   return {
     apiKeys,
     apiKeyConfigs: configsByKey.size > 0 ? Array.from(configsByKey.values()) : undefined,
     disabledApiKeys: disabledByKey.size > 0 ? Array.from(disabledByKey.values()) : undefined,
+    disabledGroupModels: disabledGroupModels.size > 0 ? Array.from(disabledGroupModels.values()) : undefined,
   }
 }
 

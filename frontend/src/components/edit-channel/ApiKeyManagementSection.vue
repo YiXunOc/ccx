@@ -633,10 +633,19 @@
                   />
                   <!-- 无确认按钮：模型选定即暂存排除，随渠道主保存提交；误排可在此撤销或保存后经记录恢复。 -->
                   <div class="text-caption text-medium-emphasis mt-2">{{ t('channelCard.groupModelInlineHint') }}</div>
-                  <div v-if="pendingDisablesForEditingKey.length" class="d-flex flex-wrap ga-2 mt-2">
+                  <div v-if="savedDisablesForEditingKey.length || pendingDisablesForEditingKey.length" class="d-flex flex-wrap ga-2 mt-2">
+                    <v-chip
+                      v-for="saved in savedDisablesForEditingKey"
+                      :key="'saved|' + saved.quotaGroup + '|' + saved.model"
+                      size="small"
+                      color="secondary"
+                      variant="tonal"
+                    >
+                      {{ saved.model }}
+                    </v-chip>
                     <v-chip
                       v-for="pending in pendingDisablesForEditingKey"
-                      :key="pending.model"
+                      :key="'pending|' + pending.key + '|' + pending.model"
                       size="small"
                       color="warning"
                       variant="tonal"
@@ -1823,7 +1832,15 @@ const unstageGroupModelDisable = (key: string, model: string) => {
   emit('unstage-group-model-disable', key, model)
 }
 
-// 当前展开 key 的暂存排除条目（展示于面板下半区，随主保存提交）。
+// 当前展开 key 已落盘及暂存的排除条目。非空配额组共享策略；空组按具体 Key 匹配。
+const savedDisablesForEditingKey = computed(() => {
+  const row = groupModelEditing.value
+  if (!row) return []
+  const quotaGroup = row.quotaGroup?.trim() || ''
+  return visibleDisabledGroupModels.value.filter(record => quotaGroup
+    ? record.quotaGroup === quotaGroup
+    : !record.quotaGroup && record.key === row.key)
+})
 const pendingDisablesForEditingKey = computed(() =>
   (props.pendingGroupModelDisables || []).filter(item => item.key === groupModelEditing.value?.key)
 )

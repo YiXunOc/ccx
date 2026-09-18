@@ -114,9 +114,14 @@ describe('ProtocolModelAvailability', () => {
       discoveredModels: ['model-a', 'model-b'],
     }))
     const wrapper = mount(ProtocolModelAvailability, {
-      props: { routes },
+      props: { routes, editable: true },
       global: {
-        stubs: baseStubs,
+        stubs: {
+          ...baseStubs,
+          ProtocolModelSelection: defineComponent({
+            template: '<div data-test="manual-model-selection" />',
+          }),
+        },
       },
     })
 
@@ -130,6 +135,12 @@ describe('ProtocolModelAvailability', () => {
       expect(route.text()).not.toContain('model-a')
       expect(route.text()).not.toContain('model-b')
       expect(route.text()).toContain('channelEditor.protocolModels.specificEmpty')
+      const emptyHint = Array.from(route.element.querySelectorAll('div')).find(element =>
+        element.textContent?.trim() === 'channelEditor.protocolModels.specificEmpty',
+      )
+      const selection = route.get('[data-test="manual-model-selection"]').element
+      expect(emptyHint).toBeDefined()
+      expect(emptyHint!.compareDocumentPosition(selection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     }
   })
 

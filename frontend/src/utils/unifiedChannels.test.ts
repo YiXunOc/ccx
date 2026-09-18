@@ -267,6 +267,26 @@ describe('buildUnifiedChannelsData account grouping', () => {
     ])
   })
 
+  it('聚合账号保留各协议的人工分组模型策略', () => {
+    const data: Record<LlmChannelKind, ChannelsResponse> = {
+      messages: response([channel('kimi-claude', 'acct-policy', 0, ['sk-shared'], {
+        apiKeyConfigs: [{ key: 'sk-shared', quotaGroup: 'coding' }],
+        disabledGroupModels: [{ quotaGroup: 'coding', model: 'claude-opus', disabledAt: '2026-09-18T00:00:00Z' }],
+      })]),
+      chat: response([channel('kimi-chat', 'acct-policy', 1, ['sk-shared'], {
+        disabledGroupModels: [{ quotaGroup: 'coding', model: 'gpt-5', disabledAt: '2026-09-18T01:00:00Z' }],
+      })]),
+      responses: response([]),
+      gemini: response([]),
+    }
+
+    const [logicalChannel] = buildUnifiedChannelsData(data).channels
+    expect(logicalChannel.disabledGroupModels).toEqual([
+      { quotaGroup: 'coding', model: 'claude-opus', disabledAt: '2026-09-18T00:00:00Z' },
+      { quotaGroup: 'coding', model: 'gpt-5', disabledAt: '2026-09-18T01:00:00Z' },
+    ])
+  })
+
   it('相同 provider 和名称下不同 accountUid 不应合并', () => {
     const data: Record<LlmChannelKind, ChannelsResponse> = {
       messages: response([

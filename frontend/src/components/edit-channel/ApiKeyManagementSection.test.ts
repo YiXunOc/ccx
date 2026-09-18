@@ -435,6 +435,36 @@ describe('分组模型排除行内化', () => {
     expect(wrapper.text()).toContain('channelCard.groupModelInlineHint')
   })
 
+  it('同一 Key 可连续暂存多个模型并回显已保存策略', async () => {
+    const wrapper = mountSection({
+      apiKeyConfigs: [{ key: 'sk-1', keyUid: 'uid-1', quotaGroup: 'g1' }],
+      channelUid: 'ch-1',
+      channelKind: 'messages',
+      disabledGroupModels: [
+        { quotaGroup: 'g1', model: 'saved-a', disabledAt: '2026-09-18T00:00:00Z' },
+        { quotaGroup: 'g1', model: 'saved-b', disabledAt: '2026-09-18T01:00:00Z' },
+      ],
+    })
+    await wrapper.find('[aria-label="channelCard.keyDetail"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.text()).toContain('saved-a')
+    expect(wrapper.text()).toContain('saved-b')
+
+    const comboInput = wrapper.find('input.combobox-stub-input')
+    await comboInput.setValue('new-a')
+    await comboInput.trigger('change')
+    await comboInput.setValue('new-b')
+    await comboInput.trigger('change')
+    await nextTick()
+
+    expect(wrapper.emitted('stage-group-model-disable')).toEqual([
+      ['sk-1', 'new-a'],
+      ['sk-1', 'new-a'],
+      ['sk-1', 'new-b'],
+      ['sk-1', 'new-b'],
+    ])
+  })
   it('再次点击统一详情按钮收起面板（toggle）', async () => {
     const wrapper = mountSection({
       apiKeyConfigs: [

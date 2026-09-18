@@ -93,14 +93,6 @@
         :class="{ 'protocol-model-route--unconfigured': !route.configured }"
         :data-kind="route.upstreamKind"
       >
-        <ProtocolModelSelection
-          v-if="editable"
-          :models="preferences?.[route.upstreamKind] ?? []"
-          :discovered-models="allDiscoveredModels"
-          :conflicts="conflictingModels(route.upstreamKind)"
-          :saving="savingPreferences"
-          @save="models => emit('savePreferences', { ...preferences, [route.upstreamKind]: models })"
-        />
         <div v-if="!route.configured" class="protocol-model-route__unconfigured text-caption text-info">
           <v-icon size="15" color="info">mdi-information-outline</v-icon>
           {{ t('channelEditor.protocolModels.unconfiguredProtocol') }}
@@ -236,6 +228,15 @@
             {{ t('channelEditor.protocolModels.empty') }}
           </div>
         </template>
+
+        <ProtocolModelSelection
+          v-if="editable"
+          :models="preferences?.[route.upstreamKind] ?? []"
+          :discovered-models="allDiscoveredModels"
+          :conflicts="conflictingModels(route.upstreamKind)"
+          :saving="savingPreferences"
+          @save="models => emit('savePreferences', { ...preferences, [route.upstreamKind]: models })"
+        />
       </div>
     </div>
   </div>
