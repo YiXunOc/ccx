@@ -112,7 +112,6 @@ func handleMultiChannel(
 	userID string,
 	startTime time.Time,
 ) {
-	metricsManager := channelScheduler.GetChatMetricsManager()
 	cfg := cfgManager.GetConfig()
 	contextRequirement := common.BuildChatContextRequirement(bodyBytes, cfg.ContextRouting)
 	common.ApplyAgentModelProfile(contextRequirement, model, cfg)
@@ -134,14 +133,15 @@ func handleMultiChannel(
 		agentRole,
 		func(c *gin.Context, selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
-			channelIndex := selection.ChannelIndex
+			executionRoute := selection.Route
 
 			if upstream == nil {
 				return common.MultiChannelAttemptResult{}
 			}
 
+			metricsManager := channelScheduler.GetMetricsManagerForRoute(executionRoute)
 			baseURLs := upstream.GetAllBaseURLs()
-			sortedURLResults := channelScheduler.GetSortedURLsForChannel(scheduler.ChannelKindChat, channelIndex, baseURLs)
+			sortedURLResults := channelScheduler.GetSortedURLsForRoute(executionRoute, baseURLs)
 
 			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithAllKeys(
 				c,
@@ -157,7 +157,7 @@ func handleMultiChannel(
 				contextRequirement,
 				isStream,
 				func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
-					return cfgManager.GetNextChatAPIKey(upstream, failedKeys)
+					return cfgManager.GetNextAPIKey(upstream, failedKeys, common.ChannelAPIType(scheduler.ChannelKind(executionRoute.Kind)))
 				},
 				func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
 					// 使用 context 中的最新请求体（已经过 failover 内的 metadata 规范化、
@@ -165,13 +165,15 @@ func handleMultiChannel(
 					return buildProviderRequest(c, upstreamCopy, upstreamCopy.BaseURL, apiKey, common.GetEffectiveRequestBody(c, bodyBytes), model, isStream)
 				},
 				func(apiKey string) {
-					_ = cfgManager.DeprioritizeAPIKey(apiKey)
+					if err := cfgManager.DeprioritizeAPIKeyForRoute(executionRoute.Kind, executionRoute.Index, apiKey); err != nil {
+						common.RequestLogf(c, "[Chat-Key] 警告: 密钥降级失败: %v", err)
+					}
 				},
 				func(url string) {
-					channelScheduler.MarkURLFailure(scheduler.ChannelKindChat, channelIndex, url)
+					channelScheduler.MarkURLFailureForRoute(executionRoute, url)
 				},
 				func(url string) {
-					channelScheduler.MarkURLSuccess(scheduler.ChannelKindChat, channelIndex, url)
+					channelScheduler.MarkURLSuccessForRoute(executionRoute, url)
 				},
 				func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string, actualRequestBody []byte) (*types.Usage, error) {
 					timeouts := common.ResolveStreamPreflightTimeouts(upstreamCopy, metricsManager.GetCircuitBreakerConfig())
@@ -179,12 +181,15 @@ func handleMultiChannel(
 				},
 				model,
 				"",
-				selection.ChannelIndex,
-				channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+				executionRoute.Index,
+				channelScheduler.GetChannelLogStoreForRoute(executionRoute),
 				common.WithSelectionTrace(selection),
+				common.WithExecutionRoute(executionRoute),
+				common.WithExecutionModel(selection.ExecutionModel),
 			)
 
 			return common.MultiChannelAttemptResult{
+				Route:             executionRoute,
 				Handled:           handled,
 				Attempted:         true,
 				SuccessKey:        successKey,

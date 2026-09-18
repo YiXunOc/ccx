@@ -51,14 +51,19 @@ func filterProtocolPreferences(cfg *config.Config, channels []ChannelInfo, kind 
 }
 
 // Add only explicitly bound siblings, never unrelated account routes. Conversion
-// support remains the existing messages/responses -> chat/responses boundary.
+// support remains the existing chat/responses execution boundary; each supported
+// client protocol can use it when the corresponding handler conversion exists.
 func (s *ChannelScheduler) addBoundProtocolCandidates(ctx context.Context, cfg *config.Config, kind ChannelKind, model string, channels []ChannelInfo, trace *SelectionTrace) []ChannelInfo {
-	if kind != ChannelKindMessages && kind != ChannelKindResponses {
-		return channels
-	}
-	sources := cfg.Upstream
-	if kind == ChannelKindResponses {
+	var sources []config.UpstreamConfig
+	switch kind {
+	case ChannelKindMessages:
+		sources = cfg.Upstream
+	case ChannelKindChat:
+		sources = cfg.ChatUpstream
+	case ChannelKindResponses:
 		sources = cfg.ResponsesUpstream
+	default:
+		return channels
 	}
 	logicalSources := map[string]bool{}
 	for _, u := range sources {

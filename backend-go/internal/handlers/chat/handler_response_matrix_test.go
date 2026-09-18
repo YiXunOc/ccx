@@ -257,6 +257,90 @@ func TestChatHandler_NonStreamMatrix_ResponsesConversion(t *testing.T) {
 	}
 }
 
+func TestChatHandler_BoundResponsesExecutesPhysicalRoute(t *testing.T) {
+	var gotPath, gotModel string
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode physical request: %v", err)
+		}
+		gotModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_bound","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"bound responses"}]}],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}`))
+	}))
+	defer upstreamServer.Close()
+
+	const logicalUID = "logical-chat-responses"
+	chatNative := config.UpstreamConfig{
+		ChannelUID: "native-chat", LogicalChannelUID: logicalUID, AccountUID: "account",
+		Name: "native-chat", BaseURL: "http://127.0.0.1:1", APIKeys: []string{"native"},
+		Status: "active", ServiceType: "openai", ModelMapping: map[string]string{"alias": "mapped-model"},
+	}
+	responsesPhysical := chatNative
+	responsesPhysical.ChannelUID = "physical-responses"
+	responsesPhysical.Name = "physical-responses"
+	responsesPhysical.BaseURL = upstreamServer.URL
+	responsesPhysical.APIKeys = []string{"responses-key"}
+	responsesPhysical.ServiceType = "responses"
+
+	cfg := config.Config{
+		ChatUpstream:      []config.UpstreamConfig{chatNative, chatNative},
+		ResponsesUpstream: []config.UpstreamConfig{responsesPhysical},
+		LogicalChannels: []config.LogicalChannel{{
+			LogicalChannelUID: logicalUID, AccountUID: "account", BaseURLs: []string{upstreamServer.URL},
+			ProtocolModelPreferences: config.ProtocolModelPreferences{"responses": {"mapped-model"}},
+		}},
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cm, err := config.NewConfigManager(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cm.Close()
+
+	chatMetrics := metrics.NewMetricsManager()
+	responsesMetrics := metrics.NewMetricsManager()
+	defer chatMetrics.Stop()
+	defer responsesMetrics.Stop()
+	sch := scheduler.NewChannelScheduler(cm, metrics.NewMetricsManager(), responsesMetrics, metrics.NewMetricsManager(), chatMetrics, metrics.NewMetricsManager(), session.NewTraceAffinityManager(), nil)
+	r := gin.New()
+	r.POST("/v1/chat/completions", Handler(&config.EnvConfig{ProxyAccessKey: "secret-key", MaxRequestBodySize: 1024 * 1024}, cm, sch))
+
+	w := performChatHandlerRequest(t, r, `{"model":"alias","messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path=%q, want /v1/responses", gotPath)
+	}
+	if gotModel != "mapped-model" {
+		t.Fatalf("model=%q, want mapped-model", gotModel)
+	}
+	var response map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["object"] != "chat.completion" {
+		t.Fatalf("object=%v", response["object"])
+	}
+	choices := response["choices"].([]interface{})
+	message := choices[0].(map[string]interface{})["message"].(map[string]interface{})
+	if message["content"] != "bound responses" {
+		t.Fatalf("content=%v", message["content"])
+	}
+	if got := sch.GetMetricsManagerForRoute(scheduler.ChannelRouteRef{Kind: "responses", Index: 0}); got != responsesMetrics {
+		t.Fatal("physical responses route did not retain responses metrics ownership")
+	}
+}
+
 func TestChatHandler_PassthroughPreservesMultimodalRequest(t *testing.T) {
 	tests := []struct {
 		name        string

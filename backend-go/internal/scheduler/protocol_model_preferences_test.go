@@ -42,6 +42,51 @@ func boundAliasConfig() config.Config {
 	}
 }
 
+func TestBoundProtocolCandidatesKeepClientProtocolIndependent(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		clientKind ChannelKind
+		targetKind ChannelKind
+	}{
+		{name: "messages_to_chat", clientKind: ChannelKindMessages, targetKind: ChannelKindChat},
+		{name: "messages_to_responses", clientKind: ChannelKindMessages, targetKind: ChannelKindResponses},
+		{name: "chat_to_responses", clientKind: ChannelKindChat, targetKind: ChannelKindResponses},
+		{name: "responses_to_chat", clientKind: ChannelKindResponses, targetKind: ChannelKindChat},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := boundAliasConfig()
+			native := cfg.Upstream[0]
+			target := cfg.ChatUpstream[0]
+			target.ChannelUID = "target-" + string(tt.targetKind)
+			cfg.LogicalChannels[0].ProtocolModelPreferences = config.ProtocolModelPreferences{string(tt.targetKind): {"actual"}}
+			switch tt.clientKind {
+			case ChannelKindChat:
+				native.ChannelUID = "native-chat"
+				cfg.ChatUpstream = []config.UpstreamConfig{native}
+			case ChannelKindResponses:
+				native.ChannelUID = "native-responses"
+				cfg.ResponsesUpstream = []config.UpstreamConfig{native}
+			}
+			switch tt.targetKind {
+			case ChannelKindChat:
+				cfg.ChatUpstream = append(cfg.ChatUpstream[:0], target)
+			case ChannelKindResponses:
+				cfg.ResponsesUpstream = []config.UpstreamConfig{target}
+			}
+
+			s, cleanup := createTestScheduler(t, cfg)
+			defer cleanup()
+			result, err := s.SelectChannelWithOptions(context.Background(), SelectionOptions{Kind: tt.clientKind, Model: "alias"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Route.Kind != string(tt.targetKind) || result.ExecutionModel != "actual" {
+				t.Fatalf("selected %#v, want %s target using actual model", result, tt.targetKind)
+			}
+		})
+	}
+}
+
 func TestProtocolPreferencesSelectAlias(t *testing.T) {
 	for _, missing := range []bool{false, true} {
 		t.Run(fmt.Sprint(missing), func(t *testing.T) {
