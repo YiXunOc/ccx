@@ -292,6 +292,7 @@
                   <th class="text-caption">#</th>
                   <th class="text-caption">Channel</th>
                   <th class="text-caption">Endpoint</th>
+                  <th class="text-caption">Upstream Protocol</th>
                   <th class="text-caption">Actual Model</th>
                   <th class="text-caption">Effort</th>
                   <th class="text-caption">Result</th>
@@ -304,6 +305,7 @@
                   <td class="text-caption">{{ att.attemptSeq }}</td>
                   <td class="text-caption">{{ att.channelUid }}</td>
                   <td class="text-caption">{{ att.endpointLabel }}</td>
+                  <td class="text-caption">{{ formatProtocol(att.upstreamRequestKind) }}</td>
                   <td class="text-caption">{{ att.actualModel || '-' }}</td>
                   <td class="text-caption">{{ att.actualEffort || '-' }}</td>
                   <td>
@@ -454,6 +456,18 @@ async function fetchDetail() {
   } finally {
     loading.value = false
   }
+}
+
+function formatProtocol(protocol?: string): string {
+  const labels: Record<string, string> = {
+    messages: 'Messages',
+    chat: 'Chat Completions',
+    responses: 'Responses',
+    gemini: 'Gemini',
+    images: 'Images',
+    vectors: 'Vectors',
+  }
+  return protocol ? labels[protocol] || protocol : '-'
 }
 
 function formatTime(iso?: string): string {

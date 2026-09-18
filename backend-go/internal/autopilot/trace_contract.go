@@ -166,6 +166,7 @@ type EndpointAttemptSummary struct {
 	Status                   string  `json:"status"` // "started" | "completed"
 	ChannelUID               string  `json:"channelUid"`
 	EndpointLabel            string  `json:"endpointLabel"`
+	UpstreamRequestKind      string  `json:"upstreamRequestKind,omitempty"`
 	ActualModel              string  `json:"actualModel,omitempty"`
 	ActualEffort             string  `json:"actualEffort,omitempty"`
 	Result                   string  `json:"result"` // "success" | "upstream_error" | "cancelled" | "attempt_failed"

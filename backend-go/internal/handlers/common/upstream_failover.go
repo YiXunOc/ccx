@@ -1154,6 +1154,7 @@ func TryUpstreamWithAllKeys(
 			c.Set("ccx.autopilot_consumption_policy", consumptionPolicy)
 
 			// 向 Autopilot trace 追加一条 "started" endpoint 尝试摘要（fail-open）
+			c.Set("ccx.autopilot_upstream_request_kind", string(executionAPIType))
 			attemptTraceUID, _ := c.Get("ccx.autopilot_trace_uid")
 			if uid, ok := attemptTraceUID.(string); ok && uid != "" {
 				configuredCostMultiplier := -1.0
@@ -1168,6 +1169,7 @@ func TryUpstreamWithAllKeys(
 					Status:                   "started",
 					ChannelUID:               upstream.ChannelUID,
 					EndpointLabel:            autopilot.DeriveEndpointLabel(upstream.ChannelUID, 0),
+					UpstreamRequestKind:      string(executionAPIType),
 					Result:                   "attempt_failed",
 					ConsumptionPolicy:        consumptionPolicy,
 					ConfiguredCostMultiplier: configuredCostMultiplier,

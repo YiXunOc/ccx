@@ -1868,6 +1868,7 @@ export interface EndpointAttemptSummary {
   status: string
   channelUid: string
   endpointLabel: string
+  upstreamRequestKind?: string
   actualModel?: string
   actualEffort?: string
   result: string

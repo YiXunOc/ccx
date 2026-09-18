@@ -78,13 +78,16 @@ func recordAttemptCompleted(c *gin.Context, attemptUID, channelUID string, resul
 	actualModel, actualEffort := autopilotTraceActualDetails(c)
 	consumptionPolicy, _ := c.Get("ccx.autopilot_consumption_policy")
 	configuredCostMultiplier, _ := c.Get("ccx.autopilot_configured_cost_multiplier")
+	upstreamRequestKind, _ := c.Get("ccx.autopilot_upstream_request_kind")
 	policy, _ := consumptionPolicy.(string)
+	upstreamKind, _ := upstreamRequestKind.(string)
 	multiplier, _ := configuredCostMultiplier.(float64)
 	recordEndpointAttempt(uid, autopilot.EndpointAttemptSummary{
 		AttemptUID:               attemptUID,
 		Status:                   "completed",
 		ChannelUID:               channelUID,
 		EndpointLabel:            autopilot.DeriveEndpointLabel(channelUID, 0),
+		UpstreamRequestKind:      upstreamKind,
 		ActualModel:              actualModel,
 		ActualEffort:             actualEffort,
 		Result:                   result,

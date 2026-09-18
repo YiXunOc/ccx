@@ -7,6 +7,20 @@ import (
 	"time"
 )
 
+func TestEndpointAttemptSummarySerializesUpstreamRequestKind(t *testing.T) {
+	attempt := EndpointAttemptSummary{
+		AttemptUID:          "attempt-1",
+		UpstreamRequestKind: "responses",
+	}
+	payload, err := json.Marshal(attempt)
+	if err != nil {
+		t.Fatalf("marshal attempt: %v", err)
+	}
+	if !strings.Contains(string(payload), `"upstreamRequestKind":"responses"`) {
+		t.Fatalf("upstream request kind missing from payload: %s", payload)
+	}
+}
+
 // ── 比较状态测试 ──
 
 func TestComputeComparisonStatus(t *testing.T) {

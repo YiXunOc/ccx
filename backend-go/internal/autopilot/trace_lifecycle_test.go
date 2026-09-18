@@ -227,11 +227,11 @@ func TestAppendEndpointAttempt_Merge(t *testing.T) {
 
 	// 先 started
 	store.AppendEndpointAttempt("rt_merge", EndpointAttemptSummary{
-		AttemptUID: "a1", ChannelUID: "ch_a", Status: "started", AttemptSeq: 1,
+		AttemptUID: "a1", ChannelUID: "ch_a", Status: "started", AttemptSeq: 1, UpstreamRequestKind: "messages",
 	})
 	// 后 completed（相同 attemptUid，应合并）
 	store.AppendEndpointAttempt("rt_merge", EndpointAttemptSummary{
-		AttemptUID: "a1", ChannelUID: "ch_a", Status: "completed", Result: "success", AttemptSeq: 1,
+		AttemptUID: "a1", ChannelUID: "ch_a", Status: "completed", Result: "success", AttemptSeq: 1, UpstreamRequestKind: "responses",
 	})
 
 	if len(store.records[0].EndpointAttempts) != 1 {
@@ -239,6 +239,9 @@ func TestAppendEndpointAttempt_Merge(t *testing.T) {
 	}
 	if store.records[0].EndpointAttempts[0].Status != "completed" {
 		t.Errorf("合并后 Status = %q, want completed", store.records[0].EndpointAttempts[0].Status)
+	}
+	if store.records[0].EndpointAttempts[0].UpstreamRequestKind != "responses" {
+		t.Errorf("合并后 UpstreamRequestKind = %q, want responses", store.records[0].EndpointAttempts[0].UpstreamRequestKind)
 	}
 	clearAttemptCounter("rt_merge")
 }
