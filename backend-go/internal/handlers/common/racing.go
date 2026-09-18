@@ -660,6 +660,15 @@ func (r *racingRuns) nextShadowSelection(primaryCost float64) *scheduler.Selecti
 	for {
 		sel, err := r.in.Scheduler.SelectChannelWithOptions(r.in.Ctx, func() scheduler.SelectionOptions {
 			opts := r.in.SelectionOptions
+			// RacingAttemptInput is the authoritative request context. Some callers
+			// provide only that context, so preserve explicit options but fill their
+			// zero values before protocol-binding validation runs in the scheduler.
+			if opts.Kind == "" {
+				opts.Kind = r.in.Kind
+			}
+			if opts.Model == "" {
+				opts.Model = r.in.Model
+			}
 			opts.FailedRoutes = failedRoutes
 			return opts
 		}())

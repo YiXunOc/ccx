@@ -824,6 +824,9 @@ func (cm *ConfigManager) mergeManagedProviderAccountsChecked() (bool, error) {
 		return false, nil
 	}
 	// Transfer to actual surviving logical entities, never to physical channel fields.
+	// Keep their grouping identity aligned with the surviving physical route too;
+	// otherwise RebuildLogicalChannels treats the old logical as stale, creates a
+	// replacement, and drops the bindings we just transferred.
 	for _, e := range collectAllPhysicalChannelsWithSlice(&cm.config) {
 		u := e.channel
 		if u.AccountUID == "" {
@@ -836,6 +839,8 @@ func (cm *ConfigManager) mergeManagedProviderAccountsChecked() (bool, error) {
 		for i := range cm.config.LogicalChannels {
 			if cm.config.LogicalChannels[i].LogicalChannelUID == u.LogicalChannelUID {
 				cm.config.LogicalChannels[i].ProtocolModelPreferences = p.Clone()
+				cm.config.LogicalChannels[i].AccountUID = strings.TrimSpace(u.AccountUID)
+				cm.config.LogicalChannels[i].ProviderID = strings.TrimSpace(u.ProviderID)
 				break
 			}
 		}

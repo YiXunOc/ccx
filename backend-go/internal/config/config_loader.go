@@ -1856,6 +1856,11 @@ func (c Config) deepCopy() Config {
 	if err := json.Unmarshal(data, &copy); err != nil {
 		return c
 	}
+	// JSON round-tripping intentionally omits runtime-only presence metadata.
+	// Preserve it explicitly so an explicit [] is not mistaken for an absent
+	// exchangeRateQuotes field during save-time validation/defaulting.
+	copy.AutopilotRouting.CostOptimization.ExchangeRateQuotesConfigured =
+		c.AutopilotRouting.CostOptimization.ExchangeRateQuotesConfigured
 	return copy
 }
 
