@@ -2,6 +2,7 @@ package chat
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -32,14 +33,28 @@ func TestToolTracePrivacyAndToggle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Instrumentation must not silently fix the existing CRLF defect.
-		if strings.Contains(w.Body.String(), "tool_calls") {
-			t.Fatal("trace changed conversion")
+		if !strings.Contains(w.Body.String(), "tool_calls") {
+			t.Fatal("CRLF tool event was not converted")
 		}
 		writeChatSSEChunk(c, w, map[string]interface{}{"choices": []map[string]interface{}{{"delta": map[string]interface{}{"tool_calls": []map[string]interface{}{{"index": 0, "id": "private-call", "function": map[string]interface{}{"name": "private-tool", "arguments": "private-args"}}}}}}})
+		// Requests have independent chunk IDs/timestamps; compare all other output fields.
+		var normalized strings.Builder
+		for _, line := range strings.Split(w.Body.String(), "\n") {
+			var chunk map[string]interface{}
+			if strings.HasPrefix(line, "data: {") && json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &chunk) == nil {
+				delete(chunk, "id")
+				delete(chunk, "created")
+				b, err := json.Marshal(chunk)
+				if err != nil {
+					t.Fatal(err)
+				}
+				line = "data: " + string(b)
+			}
+			normalized.WriteString(line + "\n")
+		}
 		if enabled == "" {
-			baseline = w.Body.String()
-		} else if w.Body.String() != baseline {
+			baseline = normalized.String()
+		} else if normalized.String() != baseline {
 			t.Fatal("trace changed output bytes")
 		}
 		got := logs.String()

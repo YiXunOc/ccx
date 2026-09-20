@@ -248,12 +248,86 @@ func streamResponsesToChat(
 	pending := prefetched
 	inactivityTimeout := time.Duration(timeouts.InactivityTimeoutMs) * time.Millisecond
 	lastActivity := time.Now()
-	// 工具调用状态追踪
-	var currentToolIndex int
-	var currentToolCallID string
-	var currentToolSeq int
-	var currentToolName string
 	chunkID := fmt.Sprintf("chatcmpl-resp-%d", time.Now().UnixNano())
+	// output_index 包含非工具项，Chat index 则仅对工具连续编号。
+	type toolState struct {
+		index               int
+		id, name, arguments string
+		sent                int
+		started             bool
+	}
+	var tools []*toolState
+	byItem := map[string]*toolState{}
+	byOutput := map[int]*toolState{}
+	var currentEventType string
+	updateTool := func(event, item map[string]interface{}, delta bool) error {
+		itemID, _ := item["id"].(string)
+		if itemID == "" {
+			itemID, _ = event["item_id"].(string)
+		}
+		output, hasOutput := event["output_index"].(float64)
+		state := byItem[itemID]
+		if state == nil && hasOutput {
+			state = byOutput[int(output)]
+		}
+		if state == nil {
+			if itemID == "" && !hasOutput {
+				return fmt.Errorf("responses tool event missing identity")
+			}
+			state = &toolState{index: len(tools)}
+			tools = append(tools, state)
+		}
+		if itemID != "" {
+			byItem[itemID] = state
+		}
+		if hasOutput {
+			byOutput[int(output)] = state
+		}
+		if id, _ := item["call_id"].(string); id != "" {
+			state.id = id
+		}
+		if name, _ := item["name"].(string); name != "" {
+			state.name = name
+		}
+		if delta {
+			part, _ := event["delta"].(string)
+			state.arguments += part
+		} else if args, ok := item["arguments"].(string); ok && args != "" {
+			// 完成事件携带的是快照，不可重复追加已发送的参数。
+			if !strings.HasPrefix(args, state.arguments[:state.sent]) {
+				return fmt.Errorf("responses tool arguments conflict")
+			}
+			state.arguments = args
+		}
+		if strings.TrimSpace(state.name) == "" || state.id == "" {
+			return nil
+		}
+		if state.started && state.sent == len(state.arguments) {
+			return nil
+		}
+		function := map[string]interface{}{"arguments": state.arguments[state.sent:]}
+		call := map[string]interface{}{"index": state.index, "function": function}
+		if !state.started {
+			call["id"] = state.id
+			call["type"] = "function"
+			function["name"] = state.name
+		}
+		writeChatSSEChunk(c, flusher, map[string]interface{}{
+			"id": chunkID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
+			"choices": []map[string]interface{}{{"index": 0, "delta": map[string]interface{}{"tool_calls": []map[string]interface{}{call}}, "finish_reason": nil}},
+		})
+		state.started = true
+		state.sent = len(state.arguments)
+		return nil
+	}
+	validateTools := func() error {
+		for _, state := range tools {
+			if !state.started {
+				return fmt.Errorf("responses tool call missing name or call ID")
+			}
+		}
+		return nil
+	}
 
 	for {
 		var chunk []byte
@@ -291,11 +365,10 @@ func streamResponsesToChat(
 			remainder = lines[len(lines)-1]
 			lines = lines[:len(lines)-1]
 
-			var currentEventType string
 			for _, line := range lines {
 				// 记录 event: 行
 				if strings.HasPrefix(line, "event: ") {
-					currentEventType = strings.TrimPrefix(line, "event: ")
+					currentEventType = strings.TrimSpace(strings.TrimPrefix(line, "event: "))
 					continue
 				}
 				if !strings.HasPrefix(line, "data: ") {
@@ -354,67 +427,35 @@ func streamResponsesToChat(
 					}
 					writeChatSSEChunk(c, flusher, chatChunk)
 
-				case "response.output_item.added":
+				case "response.output_item.added", "response.output_item.done":
 					item, _ := event["item"].(map[string]interface{})
-					if item == nil {
+					if item["type"] != "function_call" {
 						continue
 					}
-					itemType, _ := item["type"].(string)
-					if itemType == "function_call" {
-						currentToolCallID, _ = item["call_id"].(string)
-						currentToolName, _ = item["name"].(string)
-						currentToolIndex = currentToolSeq
-						currentToolSeq++
-						toolChunk := map[string]interface{}{
-							"id":      chunkID,
-							"object":  "chat.completion.chunk",
-							"created": time.Now().Unix(),
-							"model":   model,
-							"choices": []map[string]interface{}{{
-								"index": 0,
-								"delta": map[string]interface{}{
-									"tool_calls": []map[string]interface{}{{
-										"index": currentToolIndex,
-										"id":    currentToolCallID,
-										"type":  "function",
-										"function": map[string]interface{}{
-											"name":      currentToolName,
-											"arguments": "",
-										},
-									}},
-								},
-								"finish_reason": nil,
-							}},
-						}
-						writeChatSSEChunk(c, flusher, toolChunk)
+					if err := updateTool(event, item, false); err != nil {
+						return totalUsage, err
 					}
 
-				case "response.function_call_arguments.delta":
-					argsDelta, _ := event["delta"].(string)
-					if argsDelta == "" {
-						continue
+				case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+					if err := updateTool(event, event, evtType == "response.function_call_arguments.delta"); err != nil {
+						return totalUsage, err
 					}
-					toolChunk := map[string]interface{}{
-						"id":      chunkID,
-						"object":  "chat.completion.chunk",
-						"created": time.Now().Unix(),
-						"model":   model,
-						"choices": []map[string]interface{}{{
-							"index": 0,
-							"delta": map[string]interface{}{
-								"tool_calls": []map[string]interface{}{{
-									"index": currentToolIndex,
-									"function": map[string]interface{}{
-										"arguments": argsDelta,
-									},
-								}},
-							},
-							"finish_reason": nil,
-						}},
-					}
-					writeChatSSEChunk(c, flusher, toolChunk)
 
 				case "response.completed":
+					if response, ok := event["response"].(map[string]interface{}); ok {
+						output, _ := response["output"].([]interface{})
+						for index, raw := range output {
+							item, _ := raw.(map[string]interface{})
+							if item["type"] == "function_call" {
+								if err := updateTool(map[string]interface{}{"output_index": float64(index)}, item, false); err != nil {
+									return totalUsage, err
+								}
+							}
+						}
+					}
+					if err := validateTools(); err != nil {
+						return totalUsage, err
+					}
 					// 提取 usage
 					if usage, ok := event["usage"].(map[string]interface{}); ok {
 						inputTokens, _ := usage["input_tokens"].(float64)
@@ -426,7 +467,7 @@ func streamResponsesToChat(
 					}
 					// 最终 chunk: 设置 finish_reason
 					finishReason := "stop"
-					if currentToolCallID != "" {
+					if len(tools) > 0 {
 						finishReason = "tool_calls"
 					}
 					// 检查 incomplete 状态
@@ -462,6 +503,9 @@ func streamResponsesToChat(
 		}
 	}
 
+	if err := validateTools(); err != nil {
+		return totalUsage, err
+	}
 	if !doneSent {
 		_, _ = fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
 		if flusher != nil {
