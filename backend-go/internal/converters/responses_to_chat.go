@@ -562,9 +562,14 @@ func ConvertChatRequestToResponsesRequest(chatBody []byte) []byte {
 		}
 	}
 
-	// tool_choice
+	// tool_choice: Chat 的命名函数选择嵌套在 function 中，Responses 要求 name 在顶层。
 	if toolChoice := root.Get("tool_choice"); toolChoice.Exists() {
-		out, _ = sjson.SetRaw(out, "tool_choice", toolChoice.Raw)
+		if toolChoice.IsObject() && toolChoice.Get("type").String() == "function" && toolChoice.Get("function.name").Exists() {
+			choice := fmt.Sprintf(`{"type":"function","name":%s}`, jsonString(toolChoice.Get("function.name").String()))
+			out, _ = sjson.SetRaw(out, "tool_choice", choice)
+		} else {
+			out, _ = sjson.SetRaw(out, "tool_choice", toolChoice.Raw)
+		}
 	}
 
 	// parallel_tool_calls

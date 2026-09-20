@@ -6,6 +6,26 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertChatRequestToResponsesRequest_NormalizesFunctionToolChoice(t *testing.T) {
+	input := []byte(`{
+		"model": "gpt-4o",
+		"messages": [{"role": "user", "content": "hello"}],
+		"tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}],
+		"tool_choice": {"type": "function", "function": {"name": "get_weather"}}
+	}`)
+
+	root := gjson.ParseBytes(ConvertChatRequestToResponsesRequest(input))
+	if root.Get("tool_choice.type").String() != "function" {
+		t.Fatalf("tool_choice.type = %q, want function", root.Get("tool_choice.type").String())
+	}
+	if root.Get("tool_choice.name").String() != "get_weather" {
+		t.Fatalf("tool_choice.name = %q, want get_weather", root.Get("tool_choice.name").String())
+	}
+	if root.Get("tool_choice.function").Exists() {
+		t.Fatalf("Responses tool_choice must not retain nested function: %s", root.Get("tool_choice").Raw)
+	}
+}
+
 func TestConvertResponsesToOpenAIChatRequest(t *testing.T) {
 	tests := []struct {
 		name     string

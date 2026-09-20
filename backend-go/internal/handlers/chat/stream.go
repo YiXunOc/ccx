@@ -23,6 +23,11 @@ func handleStreamSuccess(
 	model string,
 	timeouts common.StreamPreflightTimeouts,
 ) (*types.Usage, error) {
+	host := ""
+	if resp.Request != nil && resp.Request.URL != nil {
+		host = resp.Request.URL.Host
+	}
+	traceToolRoute(c, upstreamType, model, host)
 	var totalUsage *types.Usage
 	logBuffer := common.NewLimitedLogBuffer(common.MaxUpstreamResponseLogBytes)
 	streamLoggingEnabled := envCfg.EnableResponseLogs && envCfg.IsDevelopment()

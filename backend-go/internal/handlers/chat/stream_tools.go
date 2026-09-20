@@ -91,6 +91,7 @@ func streamPassthrough(
 				}
 				var parsed map[string]interface{}
 				if json.Unmarshal([]byte(jsonData), &parsed) == nil {
+					traceToolDownstream(c, []byte(jsonData))
 					if u, ok := parsed["usage"].(map[string]interface{}); ok {
 						promptTokens, _ := u["prompt_tokens"].(float64)
 						completionTokens, _ := u["completion_tokens"].(float64)
@@ -316,6 +317,7 @@ func streamResponsesToChat(
 					evtType, _ = event["type"].(string)
 				}
 				currentEventType = ""
+				traceToolUpstream(c, jsonData, evtType, strings.HasSuffix(line, "\r") || strings.HasSuffix(evtType, "\r"))
 
 				switch evtType {
 				case "response.output_text.delta":
@@ -474,6 +476,7 @@ func streamResponsesToChat(
 // writeChatSSEChunk 将 Chat chunk 写为 SSE 格式并 flush。
 func writeChatSSEChunk(c *gin.Context, flusher http.Flusher, chunk map[string]interface{}) {
 	chunkBytes, _ := json.Marshal(chunk)
+	traceToolDownstream(c, chunkBytes)
 	_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
 	if flusher != nil {
 		flusher.Flush()

@@ -272,6 +272,7 @@ __pycache__/
 .mcp.json
 store-msix/
 
+.gocache-debug/
 .pnpm-store/
 .agent-teams/
 .dsh-meow/
