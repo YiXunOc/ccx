@@ -52,7 +52,8 @@ type ChannelLog struct {
 	BaseURL                 string    `json:"baseUrl"`
 	ErrorInfo               string    `json:"errorInfo"`
 	IsRetry                 bool      `json:"isRetry"`
-	InterfaceType           string    `json:"interfaceType"`           // 接口类型（Messages/Responses/Gemini）
+	RequestKind             string    `json:"requestKind,omitempty"`   // 客户端进入 CCX 的请求协议
+	InterfaceType           string    `json:"interfaceType"`           // 实际发往上游的目标协议
 	RequestSource           string    `json:"requestSource,omitempty"` // 请求来源（proxy/capability_test）
 	SelectionReason         string    `json:"selectionReason,omitempty"`
 	SelectionTraceSummary   string    `json:"selectionTraceSummary,omitempty"`

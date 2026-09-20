@@ -1140,7 +1140,9 @@ func TryUpstreamWithAllKeys(
 			}
 
 			// 创建 pending 状态日志（附带代理上下文与会话标识，用于 subagent 观测）
-			// interfaceType 记录实际执行协议：联邦 sibling 必须归属到 chat/responses，
+			// requestKind 记录客户端入口协议，interfaceType 记录实际执行协议。
+			logOpts = append(logOpts, WithRequestKind(ChannelAPIType(kind)))
+			// 联邦 sibling 必须归属到 chat/responses，
 			// 否则日志会把 chat 上的尝试错误地展示成 messages 渠道的尝试。
 			logRequestID := CreatePendingLog(channelLogStore, metricsKey, executionIndex, upstream.Name, actualAttemptModel, actualOriginalModel, originalReasoningEffort, actualReasoningEffort, apiKey, currentBaseURL, executionAPIType, operation, metrics.RequestSourceProxy, AgentContextFromGin(c), SessionIDFromGin(c), logOpts...)
 

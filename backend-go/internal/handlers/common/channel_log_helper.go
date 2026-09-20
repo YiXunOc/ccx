@@ -23,6 +23,17 @@ func GenerateRequestID() string {
 // ChannelLogOption 为 pending 渠道日志补充可选观测字段。
 type ChannelLogOption func(*metrics.ChannelLog)
 
+// WithRequestKind 记录客户端进入 CCX 的请求协议。
+func WithRequestKind(kind string) ChannelLogOption {
+	kind = strings.TrimSpace(kind)
+	return func(log *metrics.ChannelLog) {
+		if log == nil || kind == "" {
+			return
+		}
+		log.RequestKind = kind
+	}
+}
+
 // WithProxyKeyMask 将代理 Key 掩码写入 pending 渠道日志。
 // 由 ProxyAuthMiddleware 写入 gin context，upstream_failover 提取后通过此选项传入。
 func WithProxyKeyMask(mask string) ChannelLogOption {

@@ -97,6 +97,24 @@ func TestRecordChannelLogWithSource_UsesExplicitSource(t *testing.T) {
 	}
 }
 
+func TestCreatePendingLog_WithRequestKind(t *testing.T) {
+	store := metrics.NewChannelLogStore()
+
+	CreatePendingLog(
+		store, "test-metrics-key-protocol", 1, "protocol-channel",
+		"model-a", "", "", "", "sk-test-secret", "https://example.com",
+		"Responses", "", metrics.RequestSourceProxy, nil, "", WithRequestKind("Chat"),
+	)
+
+	logs := store.Get("test-metrics-key-protocol")
+	if len(logs) != 1 {
+		t.Fatalf("logs count = %d, want 1", len(logs))
+	}
+	if logs[0].RequestKind != "Chat" {
+		t.Fatalf("requestKind = %q, want Chat", logs[0].RequestKind)
+	}
+}
+
 func TestCreatePendingLog_WithSelectionTrace(t *testing.T) {
 	store := metrics.NewChannelLogStore()
 

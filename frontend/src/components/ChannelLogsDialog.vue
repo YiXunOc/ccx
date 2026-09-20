@@ -132,7 +132,7 @@
                   {{ t('channelLogs.attempts', { count: row.group.entries.length }) }}
                 </v-chip>
                 <v-chip size="small" :color="interfaceTypeColor(row.log.interfaceType || '')" variant="tonal">
-                  {{ t('channelLogs.protocol') }} {{ row.log.interfaceType || '—' }}
+                  {{ formatProtocolRoute(row.log) }}
                 </v-chip>
                 <v-chip v-if="row.log.agentRole === 'subagent'" size="small" color="warning" variant="tonal" class="text-uppercase">
                   SUBAGENT
@@ -215,7 +215,7 @@
                   variant="outlined"
                   prepend-icon="mdi-chart-timeline-variant"
                   :title="t('channelLogs.viewAutopilotTrace')"
-                  @click.stop="openAutopilotTrace(row.log.autopilotTraceUid)"
+                  @click.stop="openAutopilotTrace(row.log.autopilotTraceUid, row.log.interfaceType)"
                 >
                   {{ t('channelLogs.autopilotTrace') }} {{ row.log.autopilotTraceUid.slice(0, 12) }}...
                 </v-chip>
@@ -258,6 +258,7 @@
   <AutopilotTraceDetailDialog
     v-model="autopilotDetailOpen"
     :trace-uid="autopilotDetailTraceUid"
+    :upstream-request-kind="autopilotDetailUpstreamRequestKind"
   />
 </template>
 
@@ -313,8 +314,10 @@ interface LogDisplayRow {
 // Autopilot Trace 详情对话框
 const autopilotDetailOpen = ref(false)
 const autopilotDetailTraceUid = ref('')
-function openAutopilotTrace(traceUid: string) {
+const autopilotDetailUpstreamRequestKind = ref('')
+function openAutopilotTrace(traceUid: string, upstreamRequestKind?: string) {
   autopilotDetailTraceUid.value = traceUid
+  autopilotDetailUpstreamRequestKind.value = upstreamRequestKind || ''
   autopilotDetailOpen.value = true
 }
 
@@ -508,6 +511,10 @@ const formatErrorInfo = (errorInfo: string): string => {
     return '流式断流：首个有效内容后未在配置窗口内继续返回上游活动'
   }
   return errorInfo
+}
+
+const formatProtocolRoute = (log: ChannelLogEntry): string => {
+  return `${log.requestKind || '—'} → ${log.interfaceType || '—'}`
 }
 
 const interfaceTypeColor = (type: string): string => {

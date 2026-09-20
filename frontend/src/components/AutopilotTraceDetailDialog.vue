@@ -137,6 +137,10 @@
                 <v-chip size="x-small" variant="outlined" color="primary">{{ detail.requestKind }}</v-chip>
               </v-col>
               <v-col cols="4">
+                <div class="text-caption text-medium-emphasis">Upstream Protocol</div>
+                <v-chip size="x-small" variant="outlined" color="secondary">{{ actualUpstreamProtocol() }}</v-chip>
+              </v-col>
+              <v-col cols="4">
                 <div class="text-caption text-medium-emphasis">{{ t('autopilot.traceTable.col.taskClass') }}</div>
                 <v-chip size="x-small" variant="tonal" color="secondary">{{ detail.taskClass || '-' }}</v-chip>
               </v-col>
@@ -388,6 +392,7 @@ import { writeClipboardText } from '@/utils/clipboard'
 const props = defineProps<{
   modelValue: boolean
   traceUid: string
+  upstreamRequestKind?: string
 }>()
 
 defineEmits<{
@@ -456,6 +461,11 @@ async function fetchDetail() {
   } finally {
     loading.value = false
   }
+}
+
+function actualUpstreamProtocol(): string {
+  const attempts = detail.value?.endpointAttempts
+  return formatProtocol(attempts?.[attempts.length - 1]?.upstreamRequestKind || props.upstreamRequestKind)
 }
 
 function formatProtocol(protocol?: string): string {

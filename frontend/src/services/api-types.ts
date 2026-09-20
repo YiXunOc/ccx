@@ -799,7 +799,8 @@ export interface ChannelLogEntry {
   baseUrl: string
   errorInfo: string
   isRetry: boolean
-  interfaceType?: string  // 接口类型（Messages/Responses/Gemini）
+  requestKind?: string    // 客户端进入 CCX 的请求协议
+  interfaceType?: string  // 实际发往上游的目标协议
   requestSource?: string
   selectionReason?: string
   selectionTraceSummary?: string
