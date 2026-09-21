@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -124,6 +125,85 @@ func createTestScheduler(t *testing.T, cfg config.Config) (*ChannelScheduler, fu
 		geminiMetrics.Stop()
 		imagesMetrics.Stop()
 		cleanup()
+	}
+}
+
+func TestFormatSelectionTraceDetailedIncludesPriorityOrder(t *testing.T) {
+	trace := &SelectionTrace{
+		Orders: []SelectionTraceOrder{
+			{Name: "active_model_filter", Candidates: []SelectionTraceOrderCandidate{
+				{ChannelIndex: 2, ChannelName: "slow", Priority: 5},
+				{ChannelIndex: 1, ChannelName: "preferred", Priority: 1},
+			}},
+		},
+		Selected: &SelectionTraceSelection{ChannelIndex: 1, ChannelName: "preferred", Reason: "priority_order"},
+	}
+	summary := FormatSelectionTraceDetailed(trace)
+	for _, want := range []string{
+		"order[active_model_filter]=2:slow(p=5),1:preferred(p=1)",
+		"selected=1:preferred/priority_order",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary = %q, want contains %q", summary, want)
+		}
+	}
+}
+
+func TestSelectionTraceSnapshotsSmartFilter(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		t.Run(fmt.Sprint(empty), func(t *testing.T) {
+			sched, cleanup := createTestScheduler(t, config.Config{Upstream: []config.UpstreamConfig{
+				{Name: "first", BaseURL: "https://first.example.com", APIKeys: []string{"secret-key"}, Status: "active", Priority: 1},
+				{Name: "second", BaseURL: "https://second.example.com", APIKeys: []string{"secret-key"}, Status: "active", Priority: 2},
+			}})
+			defer cleanup()
+			result, err := sched.SelectChannelWithOptions(context.Background(), SelectionOptions{Kind: ChannelKindMessages, DryRun: true,
+				SmartFilter: func(_ context.Context, channels []ChannelInfo) []ChannelInfo {
+					if empty {
+						return nil
+					}
+					channels[0], channels[1] = channels[1], channels[0]
+					return channels[:1]
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			orders := map[string][]SelectionTraceOrderCandidate{}
+			for _, order := range result.Trace.Orders {
+				orders[order.Name] = order.Candidates
+			}
+			if len(orders["active_model_filter"]) != 2 || orders["active_model_filter"][0].Priority != 1 {
+				t.Fatalf("missing or mutated snapshot: %+v", orders)
+			}
+			if empty {
+				if !traceHasStage(result.Trace, "smart_filter_empty_fallback", 2) {
+					t.Fatal("missing fallback trace")
+				}
+			} else if len(orders["smart_filter"]) != 1 || orders["smart_filter"][0].Priority != 2 {
+				t.Fatalf("wrong filtered snapshot: %+v", orders)
+			}
+		})
+	}
+}
+
+func TestSelectionTraceDetailedSafeAndBounded(t *testing.T) {
+	trace := &SelectionTrace{Candidates: []SelectionTraceCandidate{{ChannelName: "safe", Stage: "priority_order", Reason: "runtime_cooldown", Details: "secret-key"}}}
+	trace.setOrder("active_model_filter", []ChannelInfo{{Name: "unsafe\nname", Route: ChannelRouteRef{Kind: "chat", ChannelUID: "uid-chat"}, Priority: 2}})
+	text := FormatSelectionTraceDetailed(trace)
+	for _, want := range []string{"chat", "uid-chat", "runtime_cooldown"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %s: %s", want, text)
+		}
+	}
+	if strings.ContainsAny(text, "\r\n") || strings.Contains(text, "secret-key") {
+		t.Fatalf("unsafe trace: %q", text)
+	}
+	for i := 0; i < 1000; i++ {
+		trace.setOrder(strings.Repeat("x", 100), []ChannelInfo{{Name: strings.Repeat("y", 1000)}})
+	}
+	if len(FormatSelectionTraceDetailed(trace)) > 8192 {
+		t.Fatal("trace exceeds log budget")
 	}
 }
 

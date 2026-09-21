@@ -186,6 +186,11 @@ func HandleMultiChannelFailoverWithSelectionFilter(
 		if err != nil {
 			// 上下文溢出的跨协议重定向已前移到调度器内部（容量错误分支注入
 			// OverflowRedirect 候选），外壳不再二次改写模型。
+			if envCfg.ShouldLog("debug") {
+				if trace, ok := scheduler.SelectionTraceFromError(err); ok {
+					RequestLogf(c, "[%s-Select-Trace] outcome=failed attempt=%d %s", apiType, channelAttempt+1, scheduler.FormatSelectionTraceDetailed(trace))
+				}
+			}
 			lastError = err
 			break
 		}
@@ -216,8 +221,8 @@ func HandleMultiChannelFailoverWithSelectionFilter(
 				apiType, channelIndex, upstream.Name, selection.Reason, channelAttempt+1, maxChannelAttempts)
 		}
 		if envCfg.ShouldLog("debug") {
-			if summary := scheduler.FormatSelectionTraceSummary(selection.Trace, 4); summary != "" {
-				RequestLogf(c, "[%s-Select-Trace] %s", apiType, summary)
+			if summary := scheduler.FormatSelectionTraceDetailed(selection.Trace); summary != "" {
+				RequestLogf(c, "[%s-Select-Trace] outcome=selected attempt=%d %s", apiType, channelAttempt+1, summary)
 			}
 		}
 

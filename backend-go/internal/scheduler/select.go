@@ -225,8 +225,14 @@ func (s *ChannelScheduler) SelectChannelWithOptions(ctx context.Context, opts Se
 	// A final fail-closed guard covers explicit overrides and every future candidate injection.
 	defer func() {
 		if result != nil && !protocolPreferenceAllows(&bindingSnapshot, result.Route, opts.Model, result.ExecutionModel) {
+			trace := result.Trace
+			if trace != nil {
+				trace.skipChannel(ChannelInfo{Route: result.Route, Index: result.ChannelIndex}, "protocol_binding_guard", "binding_conflict", "")
+				trace.Selected = nil
+				trace.setStage("protocol_binding_guard", 0)
+			}
+			selectionErr = newSelectionTraceError(fmt.Errorf("protocolModelPreferences: selected endpoint conflicts with logical channel binding"), trace)
 			result = nil
-			selectionErr = fmt.Errorf("protocolModelPreferences: selected endpoint conflicts with logical channel binding")
 		}
 	}()
 	s.mu.RLock()
@@ -313,6 +319,7 @@ func (s *ChannelScheduler) SelectChannelWithOptions(ctx context.Context, opts Se
 	activeChannels = s.addBoundProtocolCandidates(ctx, &bindingSnapshot, kind, model, activeChannels, trace)
 	activeChannels = filterProtocolPreferences(&bindingSnapshot, activeChannels, kind, model)
 	trace.setStage("active_model_filter", len(activeChannels))
+	trace.setOrder("active_model_filter", activeChannels)
 	if len(activeChannels) == 0 {
 		// 区分"无活跃渠道"和"无渠道支持该模型"
 		kindName := "Messages"
@@ -356,6 +363,7 @@ func (s *ChannelScheduler) SelectChannelWithOptions(ctx context.Context, opts Se
 		}
 		activeChannels = filtered
 		trace.setStage("route_prefix_filter", len(activeChannels))
+		trace.setOrder("route_prefix_filter", activeChannels)
 	} else {
 		// 无前缀：排除设了路由前缀的渠道（它们只能通过前缀访问）
 		var filtered []ChannelInfo
@@ -390,6 +398,7 @@ func (s *ChannelScheduler) SelectChannelWithOptions(ctx context.Context, opts Se
 		}
 		activeChannels = filtered
 		trace.setStage("default_route_filter", len(activeChannels))
+		trace.setOrder("default_route_filter", activeChannels)
 	}
 
 	activeChannels, err := s.filterChannelsByContext(activeChannels, kind, model, opts.ContextRequirement, trace)
@@ -422,6 +431,7 @@ func (s *ChannelScheduler) SelectChannelWithOptions(ctx context.Context, opts Se
 		}
 	} else {
 		trace.setStage("context_filter", len(activeChannels))
+		trace.setOrder("context_filter", activeChannels)
 	}
 
 	// 在进入 SmartRouter、亲和与优先级排序前剔除没有可选 Key 的渠道。
@@ -429,6 +439,7 @@ func (s *ChannelScheduler) SelectChannelWithOptions(ctx context.Context, opts Se
 	// 已持久禁用、enabled=false 或空 Key 渠道即使被选中，后续也只会立即 failover。
 	activeChannels = s.filterChannelsByKeyAvailability(activeChannels, kind, trace)
 	trace.setStage("key_availability_filter", len(activeChannels))
+	trace.setOrder("key_availability_filter", activeChannels)
 	if len(activeChannels) == 0 {
 		return nil, traceErr(fmt.Errorf("没有具有可用 API Key 的 %s 渠道", kindDisplayName(kind)))
 	}
@@ -449,6 +460,7 @@ func (s *ChannelScheduler) SelectChannelWithOptions(ctx context.Context, opts Se
 			return nil, traceErr(fmt.Errorf("没有可用的 %s 渠道满足候选过滤条件", kindDisplayName(kind)))
 		}
 		trace.setStage("candidate_filter", len(activeChannels))
+		trace.setOrder("candidate_filter", activeChannels)
 	}
 
 	activeChannels = filterProtocolPreferences(&bindingSnapshot, activeChannels, kind, model)
@@ -485,6 +497,7 @@ func (s *ChannelScheduler) SelectChannelWithOptions(ctx context.Context, opts Se
 		if sequence, ok := s.overrideManager.GetOverrideForUserWithRole(string(kind), userID, opts.AgentRole); ok {
 			prefix := kindSchedulerLogPrefix(kind)
 			orderedChannels := applyManualOverrideOrder(activeChannels, sequence, kind)
+			trace.setOrder("manual_override", orderedChannels)
 			for _, ch := range orderedChannels {
 				if channelInfoFailed(ch, failedChannels, failedRoutes) {
 					trace.skipChannel(ch, "manual_override", "failed_in_request", "")
@@ -540,6 +553,7 @@ func (s *ChannelScheduler) SelectChannelWithOptions(ctx context.Context, opts Se
 	if (kind == ChannelKindMessages || kind == ChannelKindResponses) && routePrefix == "" && channelName == "" && opts.SmartFilter != nil {
 		activeChannels = s.federateDefaultCandidates(ctx, kind, activeChannels, model, opts.ContextRequirement, trace)
 		trace.setStage("protocol_federation", len(activeChannels))
+		trace.setOrder("protocol_federation", activeChannels)
 	}
 
 	// SmartFilter 注入点（设计 §4.6.3 / §4.6.5：显式控制之后、默认调度之前）。
@@ -550,9 +564,12 @@ func (s *ChannelScheduler) SelectChannelWithOptions(ctx context.Context, opts Se
 		filtered := opts.SmartFilter(ctx, activeChannels)
 		if len(filtered) > 0 {
 			activeChannels = filtered
+		} else {
+			trace.setStage("smart_filter_empty_fallback", len(activeChannels))
 		}
 		// len(filtered)==0 时保留原列表，避免 SmartFilter bug 阻断全部调度
 		trace.setStage("smart_filter", len(activeChannels))
+		trace.setOrder("smart_filter", activeChannels)
 	}
 	activeChannels = filterProtocolPreferences(&bindingSnapshot, activeChannels, kind, model)
 	if len(activeChannels) == 0 {
@@ -568,6 +585,7 @@ func (s *ChannelScheduler) SelectChannelWithOptions(ctx context.Context, opts Se
 	// 由自动调度接管时才规避。同样 fail-open：全部熔断时保留原列表。
 	activeChannels = s.filterChannelsByModelCircuit(activeChannels, kind, model, trace)
 	trace.setStage("model_circuit_filter", len(activeChannels))
+	trace.setOrder("model_circuit_filter", activeChannels)
 
 	// 1. 检查 Trace 亲和性（促销渠道失败时或无促销渠道时）
 	if userID != "" {

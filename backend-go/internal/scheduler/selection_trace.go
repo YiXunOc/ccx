@@ -18,6 +18,7 @@ type SelectionTrace struct {
 	AgentRole   string                    `json:"agentRole,omitempty"`
 	Stages      []SelectionTraceStage     `json:"stages,omitempty"`
 	Candidates  []SelectionTraceCandidate `json:"candidates,omitempty"`
+	Orders      []SelectionTraceOrder     `json:"orders,omitempty"`
 	Selected    *SelectionTraceSelection  `json:"selected,omitempty"`
 }
 
@@ -27,11 +28,26 @@ type SelectionTraceStage struct {
 	Count int    `json:"count"`
 }
 
+// SelectionTraceOrder records the candidate order observed after a scheduler stage.
+type SelectionTraceOrder struct {
+	Name       string                         `json:"name"`
+	Candidates []SelectionTraceOrderCandidate `json:"candidates"`
+}
+
+// SelectionTraceOrderCandidate identifies a candidate without exposing secrets.
+type SelectionTraceOrderCandidate struct {
+	Route        ChannelRouteRef `json:"route"`
+	ChannelIndex int             `json:"channelIndex"`
+	ChannelName  string          `json:"channelName"`
+	Priority     int             `json:"priority"`
+}
+
 // SelectionTraceCandidate 记录单个候选渠道在某阶段被跳过的原因。
 type SelectionTraceCandidate struct {
 	Route        ChannelRouteRef `json:"route"`
 	ChannelIndex int             `json:"channelIndex"`
 	ChannelName  string          `json:"channelName"`
+	Priority     int             `json:"priority"`
 	Stage        string          `json:"stage"`
 	Reason       string          `json:"reason"`
 	Details      string          `json:"details,omitempty"`
@@ -91,6 +107,17 @@ func newSelectionTrace(opts SelectionOptions) *SelectionTrace {
 	}
 }
 
+func (t *SelectionTrace) setOrder(name string, channels []ChannelInfo) {
+	if t == nil {
+		return
+	}
+	candidates := make([]SelectionTraceOrderCandidate, 0, len(channels))
+	for _, ch := range channels {
+		candidates = append(candidates, SelectionTraceOrderCandidate{Route: ch.Route, ChannelIndex: ch.Index, ChannelName: ch.Name, Priority: ch.Priority})
+	}
+	t.Orders = append(t.Orders, SelectionTraceOrder{Name: name, Candidates: candidates})
+}
+
 func (t *SelectionTrace) setStage(name string, count int) {
 	if t == nil {
 		return
@@ -106,6 +133,7 @@ func (t *SelectionTrace) skipChannel(ch ChannelInfo, stage, reason, details stri
 		Route:        ch.Route,
 		ChannelIndex: ch.Index,
 		ChannelName:  ch.Name,
+		Priority:     ch.Priority,
 		Stage:        stage,
 		Reason:       reason,
 		Details:      details,
@@ -166,4 +194,75 @@ func FormatSelectionTraceSummary(trace *SelectionTrace, maxSkips int) string {
 	}
 
 	return strings.Join(parts, " ")
+}
+
+// traceLogText bounds and escapes untrusted labels; raw Details are never logged.
+func traceLogText(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 || r == '\u2028' || r == '\u2029' {
+			return '_'
+		}
+		return r
+	}, value)
+	if len(value) > 96 {
+		value = strings.ToValidUTF8(value[:96], "") + "..."
+	}
+	return value
+}
+
+func traceLogIdentity(route ChannelRouteRef, index int, name string) string {
+	if name == "" {
+		name = "unknown"
+	}
+	identity := fmt.Sprintf("%d:%s", index, traceLogText(name))
+	if route.Kind != "" || route.ChannelUID != "" {
+		identity += fmt.Sprintf("{%s/%s}", traceLogText(route.Kind), traceLogText(route.ChannelUID))
+	}
+	return identity
+}
+
+// FormatSelectionTraceDetailed emits bounded metadata only, never keys, URLs or raw Details.
+func FormatSelectionTraceDetailed(trace *SelectionTrace) string {
+	if trace == nil {
+		return ""
+	}
+	parts := []string{}
+	if trace.Selected != nil {
+		s := trace.Selected
+		parts = append(parts, "selected="+traceLogIdentity(s.Route, s.ChannelIndex, s.ChannelName)+"/"+traceLogText(s.Reason))
+	}
+	for i, stage := range trace.Stages {
+		if i >= 32 {
+			parts = append(parts, "stages=truncated")
+			break
+		}
+		parts = append(parts, fmt.Sprintf("stage[%s]=%d", traceLogText(stage.Name), stage.Count))
+	}
+	for i, c := range trace.Candidates {
+		if i >= 16 {
+			parts = append(parts, fmt.Sprintf("skipped=+%d", len(trace.Candidates)-i))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("skipped=%s(p=%d)@%s/%s", traceLogIdentity(c.Route, c.ChannelIndex, c.ChannelName), c.Priority, traceLogText(c.Stage), traceLogText(c.Reason)))
+	}
+	for i, order := range trace.Orders {
+		if i >= 32 {
+			parts = append(parts, "orders=truncated")
+			break
+		}
+		items := []string{}
+		for j, c := range order.Candidates {
+			if j >= 16 {
+				items = append(items, fmt.Sprintf("+%d", len(order.Candidates)-j))
+				break
+			}
+			items = append(items, fmt.Sprintf("%s(p=%d)", traceLogIdentity(c.Route, c.ChannelIndex, c.ChannelName), c.Priority))
+		}
+		parts = append(parts, fmt.Sprintf("order[%s]=%s", traceLogText(order.Name), strings.Join(items, ",")))
+	}
+	text := strings.Join(parts, " ")
+	if len(text) > 8192 {
+		text = strings.ToValidUTF8(text[:8176], "") + "...truncated"
+	}
+	return text
 }
