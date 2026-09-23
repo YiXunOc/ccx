@@ -118,6 +118,14 @@ func NewSmartRouter(
 	}
 }
 
+// isChannelPreferenceEnabled 返回协议偏好评分是否启用。
+func (r *SmartRouter) isChannelPreferenceEnabled() bool {
+	if r == nil || r.configManager == nil {
+		return true
+	}
+	return r.configManager.GetAutopilotRouting().IsChannelPreferenceEnabled()
+}
+
 // isLogicalChannelIdentityEnabled 返回是否应在候选/trace/dry-run 中透传 LogicalChannel 身份。
 func (r *SmartRouter) isLogicalChannelIdentityEnabled() bool {
 	if r == nil || r.configManager == nil {
@@ -822,9 +830,14 @@ func (r *SmartRouter) executeFilter(
 		e.ScoringCandidate.SavingsScore = savingsMap[savingsKey]
 		scored := r.scoreChannelEntry(&e, scoringCtx)
 		if e.ProtocolFidelity == "converted" && e.ConversionPenalty > 0 {
-			scored.Score -= e.ConversionPenalty
-			scored.Penalty += e.ConversionPenalty
-			e.EffortAwareTotalScore -= e.ConversionPenalty
+			if r.isChannelPreferenceEnabled() {
+				scored.Score -= e.ConversionPenalty
+				scored.Penalty += e.ConversionPenalty
+				e.EffortAwareTotalScore -= e.ConversionPenalty
+			} else {
+				// Trace 表达实际生效的评分项；协议转换能力及 fidelity 诊断保持不变。
+				e.ConversionPenalty = 0
+			}
 		}
 		scoredEntries = append(scoredEntries, scoredChannelEntry{entry: e, scored: scored})
 	}

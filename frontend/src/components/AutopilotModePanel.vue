@@ -112,6 +112,17 @@
           <div class="text-caption text-medium-emphasis mt-1">
             {{ t('autopilot.modePanel.racingHint') }}
           </div>
+          <v-switch
+            v-model="localConfig.channelPreferenceEnabled"
+            :label="t('autopilot.modePanel.channelPreference')"
+            color="primary"
+            density="compact"
+            hide-details
+            class="mt-3"
+          />
+          <div class="text-caption text-medium-emphasis mt-1">
+            {{ t('autopilot.modePanel.channelPreferenceHint') }}
+          </div>
         </div>
 
         <!-- 保存按钮 -->
@@ -167,6 +178,7 @@ watch(() => props.config, (newCfg) => {
   localConfig.scenarioPresets = newCfg.scenarioPresets
   localConfig.l2ProbeEnabled = newCfg.l2ProbeEnabled
   localConfig.racingEnabled = newCfg.racingEnabled ?? false
+  localConfig.channelPreferenceEnabled = newCfg.channelPreferenceEnabled ?? true
 }, { deep: true })
 
 // 场景模式选项
@@ -228,6 +240,7 @@ const hasChanges = computed(() => {
   return localConfig.costPreference !== props.config.costPreference
     || (localConfig.scenario ?? 'auto') !== (props.config.scenario ?? 'auto')
     || (localConfig.racingEnabled ?? false) !== (props.config.racingEnabled ?? false)
+    || (localConfig.channelPreferenceEnabled ?? true) !== (props.config.channelPreferenceEnabled ?? true)
 })
 
 // 保存普通配置
@@ -243,6 +256,7 @@ function resetConfig() {
   localConfig.costPreference = props.config.costPreference
   localConfig.scenario = props.config.scenario ?? 'auto'
   localConfig.racingEnabled = props.config.racingEnabled ?? false
+  localConfig.channelPreferenceEnabled = props.config.channelPreferenceEnabled ?? true
 }
 
 // 深拷贝配置（只拷贝前端需要的字段）
@@ -256,6 +270,7 @@ function cloneConfig(src: SmartRoutingConfig): SmartRoutingConfig {
     scenarioPresets: src.scenarioPresets ? [...src.scenarioPresets] : undefined,
     l2ProbeEnabled: src.l2ProbeEnabled,
     racingEnabled: src.racingEnabled,
+    channelPreferenceEnabled: src.channelPreferenceEnabled ?? true,
   }
 }
 </script>

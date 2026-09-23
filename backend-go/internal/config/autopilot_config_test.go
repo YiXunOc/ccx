@@ -9,6 +9,27 @@ import (
 	"time"
 )
 
+func TestAutopilotRoutingConfigChannelPreferenceDefaultsEnabled(t *testing.T) {
+	var legacy AutopilotRoutingConfig
+	if err := json.Unmarshal([]byte(`{}`), &legacy); err != nil {
+		t.Fatalf("解析旧配置失败: %v", err)
+	}
+	if !legacy.IsChannelPreferenceEnabled() {
+		t.Fatal("旧配置缺失 channelPreferenceEnabled 时应默认开启")
+	}
+
+	cfg := DefaultAutopilotRoutingConfig()
+	if !cfg.IsChannelPreferenceEnabled() {
+		t.Fatal("默认配置应开启渠道偏好评分")
+	}
+
+	disabled := false
+	cfg.ChannelPreferenceEnabled = &disabled
+	if cfg.IsChannelPreferenceEnabled() {
+		t.Fatal("显式 false 应关闭渠道偏好评分")
+	}
+}
+
 func TestDefaultAutopilotRoutingConfig(t *testing.T) {
 	cfg := DefaultAutopilotRoutingConfig()
 

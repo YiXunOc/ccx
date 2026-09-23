@@ -153,6 +153,9 @@ async function handleConfigUpdate(updated: SmartRoutingConfig) {
     if ((updated.racingEnabled ?? false) !== (current.racingEnabled ?? false)) {
       payload.racingEnabled = updated.racingEnabled ?? false
     }
+    if ((updated.channelPreferenceEnabled ?? true) !== (current.channelPreferenceEnabled ?? true)) {
+      payload.channelPreferenceEnabled = updated.channelPreferenceEnabled ?? true
+    }
     if (
       current.killSwitchForced === false
       && typeof current.killSwitchConfigured === 'boolean'

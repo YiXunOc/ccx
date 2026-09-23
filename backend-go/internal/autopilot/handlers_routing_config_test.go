@@ -110,14 +110,25 @@ func TestIsTruthyEnv(t *testing.T) {
 	}
 }
 
+func TestRoutingConfigUpdateRequestBindsExplicitFalseChannelPreference(t *testing.T) {
+	var req RoutingConfigUpdateRequest
+	if err := json.Unmarshal([]byte(`{"channelPreferenceEnabled":false}`), &req); err != nil {
+		t.Fatalf("解码失败: %v", err)
+	}
+	if req.ChannelPreferenceEnabled == nil || *req.ChannelPreferenceEnabled {
+		t.Fatalf("JSON false 应绑定为非 nil 的 false 指针，实际=%v", req.ChannelPreferenceEnabled)
+	}
+}
+
 func TestRoutingConfigResponse_Serialization(t *testing.T) {
 	resp := RoutingConfigResponse{
-		KillSwitchActive:     true,
-		KillSwitchConfigured: false,
-		KillSwitchForced:     true,
-		CostPreference:       "balanced",
-		L2ProbeEnabled:       true,
-		RacingEnabled:        true,
+		KillSwitchActive:         true,
+		KillSwitchConfigured:     false,
+		KillSwitchForced:         true,
+		CostPreference:           "balanced",
+		L2ProbeEnabled:           true,
+		RacingEnabled:            true,
+		ChannelPreferenceEnabled: true,
 	}
 
 	data, err := json.Marshal(resp)
@@ -132,7 +143,7 @@ func TestRoutingConfigResponse_Serialization(t *testing.T) {
 	if _, exists := parsed["mode"]; exists {
 		t.Fatal("配置响应不应再暴露 mode")
 	}
-	if parsed["killSwitchActive"] != true || parsed["killSwitchConfigured"] != false || parsed["killSwitchForced"] != true || parsed["costPreference"] != "balanced" || parsed["l2ProbeEnabled"] != true || parsed["racingEnabled"] != true {
+	if parsed["killSwitchActive"] != true || parsed["killSwitchConfigured"] != false || parsed["killSwitchForced"] != true || parsed["costPreference"] != "balanced" || parsed["l2ProbeEnabled"] != true || parsed["racingEnabled"] != true || parsed["channelPreferenceEnabled"] != true {
 		t.Fatalf("序列化结果异常: %+v", parsed)
 	}
 }
@@ -149,6 +160,40 @@ func TestRoutingConfigUpdateRequest_Binding(t *testing.T) {
 	}
 	if req.KillSwitch == nil || *req.KillSwitch {
 		t.Fatalf("JSON false 应绑定为非 nil 的 false 指针，实际=%v", req.KillSwitch)
+	}
+}
+
+func TestPutRoutingConfigPersistsChannelPreferenceFalse(t *testing.T) {
+	manager, configFile := newRoutingConfigTestManager(t, false)
+	router := setupRoutingConfigRouter(&RoutingConfigDeps{CfgManager: manager})
+
+	recorder := performRoutingConfigRequest(router, http.MethodPut, `{"channelPreferenceEnabled":false}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT status=%d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	response := decodeRoutingConfigResponse(t, recorder)
+	if response.ChannelPreferenceEnabled {
+		t.Fatalf("PUT false 后响应仍为 true: %+v", response)
+	}
+	persisted := manager.GetPersistedAutopilotRouting()
+	if persisted.ChannelPreferenceEnabled == nil || *persisted.ChannelPreferenceEnabled {
+		t.Fatalf("内存未持久化显式 false: %+v", persisted.ChannelPreferenceEnabled)
+	}
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("读取配置文件失败: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("解析配置文件失败: %v", err)
+	}
+	var autopilot map[string]any
+	if err := json.Unmarshal(raw["autopilot"], &autopilot); err != nil {
+		t.Fatalf("解析 autopilot 配置失败: %v", err)
+	}
+	if value, ok := autopilot["channelPreferenceEnabled"]; !ok || value != false {
+		t.Fatalf("磁盘未保留显式 false: %+v", autopilot)
 	}
 }
 

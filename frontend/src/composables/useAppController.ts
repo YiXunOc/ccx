@@ -15,6 +15,7 @@ import { useDialogHotkeys } from './useDialogHotkeys'
 import { useToasts } from './useToasts'
 import { streamTimeoutPresets as sharedStreamPresets } from '../utils/streamTimeoutPresets'
 import { isAutoManagedAccountChannel } from '../utils/providerDisplay'
+import { runChannelSaveTransaction } from './channelSaveTransaction'
 
 export function useAppController() {
 // 路由
@@ -141,36 +142,41 @@ export function useAppController() {
     channel: Omit<Channel, 'index' | 'latency' | 'status'>,
     options?: { isQuickAdd?: boolean; placement?: ChannelPlacement; skipVerify?: boolean },
     onComplete?: () => void,
+    flushStagedGroupModelDisables?: () => Promise<void>,
   ) => {
     try {
       const editingChannel = dialogStore.editingChannel as Channel | null
-      const result = await channelStore.saveChannel(
-        channel,
-        editingChannel ? getChannelRouteIndex(editingChannel) : null,
-        {
-          ...options,
-          channelType: getChannelRouteKind(editingChannel),
-          autoManaged: isAutoManagedAccountChannel(editingChannel),
-          accountUid: editingChannel?.accountUid,
-          originalChannel: editingChannel ?? undefined,
+      const result = await runChannelSaveTransaction({
+        save: () => channelStore.saveChannel(
+          channel,
+          editingChannel ? getChannelRouteIndex(editingChannel) : null,
+          {
+            ...options,
+            channelType: getChannelRouteKind(editingChannel),
+            autoManaged: isAutoManagedAccountChannel(editingChannel),
+            accountUid: editingChannel?.accountUid,
+            originalChannel: editingChannel ?? undefined,
+          },
+        ),
+        onSaved: savedResult => {
+          showToast(savedResult.message, 'success')
+          if (savedResult.quickAddMessage) {
+            showToast(savedResult.quickAddMessage, 'info')
+          }
+          // 新增 Key 探测被降级放行时展示警告（非鉴权类失败，key 已保存但连通性未确认）
+          if (savedResult.warnings) {
+            for (const warning of savedResult.warnings) {
+              showToast(warning, 'warning')
+            }
+          }
         },
-      )
-      showToast(result.message, 'success')
-      if (result.quickAddMessage) {
-        showToast(result.quickAddMessage, 'info')
-      }
-      // 新增 Key 探测被降级放行时展示警告（非鉴权类失败，key 已保存但连通性未确认）
-      if (result.warnings) {
-        for (const warning of result.warnings) {
-          showToast(warning, 'warning')
-        }
-      }
-      dialogStore.closeAddChannelModal()
-      dialogStore.closeEditChannelModal()
-      // 写路径全程持锁（变更→RebuildLogicalChannels→落盘→提交内存→响应），
-      // 响应到达时数据已一致，立即刷新即可；逻辑卡分裂的根因在重建归组（见后端
-      // logical_channel.go 第 5 步吸收逻辑），延迟刷新无法修复。
-      await refreshChannels()
+        flush: flushStagedGroupModelDisables,
+        close: () => {
+          dialogStore.closeAddChannelModal()
+          dialogStore.closeEditChannelModal()
+        },
+        refresh: refreshChannels,
+      })
 
       return result
     } catch (error) {
@@ -187,7 +193,7 @@ export function useAppController() {
           color: 'warning',
         })
         if (saveAnyway) {
-          return await saveChannel(channel, { ...options, skipVerify: true })
+          return await saveChannel(channel, { ...options, skipVerify: true }, undefined, flushStagedGroupModelDisables)
         }
         return undefined
       }

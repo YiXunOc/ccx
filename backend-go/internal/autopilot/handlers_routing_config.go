@@ -24,24 +24,26 @@ type ScenarioPresetView struct {
 // RoutingConfigResponse GET /smart-routing/config 响应体。
 // 安全视图，只暴露只读字段，不暴露完整配置。
 type RoutingConfigResponse struct {
-	KillSwitchActive     bool                 `json:"killSwitchActive"`
-	KillSwitchConfigured bool                 `json:"killSwitchConfigured"`
-	KillSwitchForced     bool                 `json:"killSwitchForced"`
-	CostPreference       string               `json:"costPreference,omitempty"`
-	Scenario             string               `json:"scenario,omitempty"`
-	ScenarioPresets      []ScenarioPresetView `json:"scenarioPresets,omitempty"`
-	L2ProbeEnabled       bool                 `json:"l2ProbeEnabled,omitempty"`
-	RacingEnabled        bool                 `json:"racingEnabled,omitempty"`
+	KillSwitchActive         bool                 `json:"killSwitchActive"`
+	KillSwitchConfigured     bool                 `json:"killSwitchConfigured"`
+	KillSwitchForced         bool                 `json:"killSwitchForced"`
+	CostPreference           string               `json:"costPreference,omitempty"`
+	Scenario                 string               `json:"scenario,omitempty"`
+	ScenarioPresets          []ScenarioPresetView `json:"scenarioPresets,omitempty"`
+	L2ProbeEnabled           bool                 `json:"l2ProbeEnabled,omitempty"`
+	RacingEnabled            bool                 `json:"racingEnabled,omitempty"`
+	ChannelPreferenceEnabled bool                 `json:"channelPreferenceEnabled"`
 }
 
 // RoutingConfigUpdateRequest PUT /smart-routing/config 请求体。
 // 只允许修改 killSwitch、rolloutPercent、costPreference、scenario 和 racingEnabled。
 type RoutingConfigUpdateRequest struct {
-	KillSwitch     *bool  `json:"killSwitch,omitempty"`
-	RolloutPercent *int   `json:"rolloutPercent,omitempty"`
-	CostPreference string `json:"costPreference,omitempty"`
-	Scenario       string `json:"scenario,omitempty"`
-	RacingEnabled  *bool  `json:"racingEnabled,omitempty"`
+	KillSwitch               *bool  `json:"killSwitch,omitempty"`
+	RolloutPercent           *int   `json:"rolloutPercent,omitempty"`
+	CostPreference           string `json:"costPreference,omitempty"`
+	Scenario                 string `json:"scenario,omitempty"`
+	RacingEnabled            *bool  `json:"racingEnabled,omitempty"`
+	ChannelPreferenceEnabled *bool  `json:"channelPreferenceEnabled,omitempty"`
 }
 
 // ─── 路由注册 ─────────────────────────────────────────────────────────────────────────
@@ -111,6 +113,13 @@ func handleUpdateRoutingConfig(deps *RoutingConfigDeps) gin.HandlerFunc {
 		}
 
 		// 竞速模式全局开关（racing.enabled）
+		if req.ChannelPreferenceEnabled != nil {
+			if err := deps.CfgManager.SetChannelPreferenceEnabled(*req.ChannelPreferenceEnabled); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "保存渠道偏好配置失败"})
+				return
+			}
+		}
+
 		if req.RacingEnabled != nil {
 			if err := deps.CfgManager.SetRacingEnabled(*req.RacingEnabled); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "保存竞速配置失败"})
@@ -118,7 +127,7 @@ func handleUpdateRoutingConfig(deps *RoutingConfigDeps) gin.HandlerFunc {
 			}
 		}
 
-		if req.KillSwitch == nil && req.CostPreference == "" && req.Scenario == "" && req.RacingEnabled == nil {
+		if req.KillSwitch == nil && req.CostPreference == "" && req.Scenario == "" && req.RacingEnabled == nil && req.ChannelPreferenceEnabled == nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "至少需要提供 killSwitch、costPreference、scenario 或 racingEnabled"})
 			return
 		}
@@ -178,14 +187,15 @@ func routingConfigResponse(cfg config.AutopilotRoutingConfig, killSwitchConfigur
 		scenario = ScenarioModeAuto
 	}
 	return RoutingConfigResponse{
-		KillSwitchActive:     cfg.KillSwitch,
-		KillSwitchConfigured: killSwitchConfigured,
-		KillSwitchForced:     killSwitchForced,
-		CostPreference:       cfg.CostPreference.Mode,
-		Scenario:             scenario,
-		ScenarioPresets:      views,
-		L2ProbeEnabled:       cfg.HealthCheck.L2ProbeEnabled,
-		RacingEnabled:        racingEnabled,
+		KillSwitchActive:         cfg.KillSwitch,
+		KillSwitchConfigured:     killSwitchConfigured,
+		KillSwitchForced:         killSwitchForced,
+		CostPreference:           cfg.CostPreference.Mode,
+		Scenario:                 scenario,
+		ScenarioPresets:          views,
+		L2ProbeEnabled:           cfg.HealthCheck.L2ProbeEnabled,
+		RacingEnabled:            racingEnabled,
+		ChannelPreferenceEnabled: cfg.IsChannelPreferenceEnabled(),
 	}
 }
 

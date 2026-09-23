@@ -43,6 +43,7 @@ export type EditChannelModalEmits = {
     channel: Omit<Channel, 'index' | 'latency' | 'status'>,
     options?: { isQuickAdd?: boolean },
     onComplete?: () => void,
+    flushStagedGroupModelDisables?: () => Promise<void>,
   ]
   error: [message: string]
   success: [message: string]
@@ -666,7 +667,6 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
 
   // 提交状态
   const submitting = ref(false)
-  const suppressFlushOnClose = ref(false)
 
   const {
     targetModelOptions,
@@ -722,7 +722,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
 
       emit('save', channelData, undefined, () => {
         submitting.value = false
-      })
+      }, flushStagedGroupModelDisables)
       saveStarted = true
     } finally {
       if (!saveStarted) {
@@ -733,25 +733,11 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
 
   const handleCancel = () => {
     if (submitting.value) return
-    // 取消：丢弃暂存的分组模型排除并抑制关闭时的 flush
-    suppressFlushOnClose.value = true
+    // 取消：丢弃暂存的分组模型排除
     pendingGroupModelDisables.value = []
     emit('update:show', false)
     resetForm()
   }
-
-  // 保存成功（对话框经保存链路关闭）后提交暂存的分组模型排除；
-  // 取消（已显式清空+抑制标记）与保存失败（弹窗保持打开）均不会误触发。
-  watch(
-    () => props.show,
-    visible => {
-      if (visible) return
-      if (!suppressFlushOnClose.value && pendingGroupModelDisables.value.length) {
-        void flushStagedGroupModelDisables()
-      }
-      suppressFlushOnClose.value = false
-    },
-  )
 
   // 监听props变化
   watch(

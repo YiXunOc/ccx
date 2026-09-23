@@ -142,6 +142,10 @@ type AutopilotRoutingConfig struct {
 	// fallback 到同一 LogicalChannel 下兄弟物理渠道的聚合画像作为评分输入（Phase A.2）。
 	// 默认 false（opt-in）：物理画像存在时永不被覆盖；旧配置行为保持不变。
 	LogicalChannelScoringEnabled *bool `json:"logicalChannelScoringEnabled,omitempty"`
+
+	// ChannelPreferenceEnabled 控制请求协议与目标渠道协议一致性评分。
+	// nil 表示默认开启，以兼容缺失该字段的旧配置；显式 false 仅取消协议扣分。
+	ChannelPreferenceEnabled *bool `json:"channelPreferenceEnabled,omitempty"`
 }
 
 // IsLogicalChannelIdentityEnabled 返回 LogicalChannel 身份透传是否启用。
@@ -155,6 +159,14 @@ func (c AutopilotRoutingConfig) IsLogicalChannelIdentityEnabled() bool {
 
 // IsLogicalChannelScoringEnabled 返回 LogicalChannel 兄弟渠道画像 fallback 是否启用。
 // 未配置时默认关闭（opt-in）。
+// IsChannelPreferenceEnabled 返回渠道偏好评分是否启用；旧配置缺失时默认开启。
+func (c AutopilotRoutingConfig) IsChannelPreferenceEnabled() bool {
+	if c.ChannelPreferenceEnabled == nil {
+		return true
+	}
+	return *c.ChannelPreferenceEnabled
+}
+
 func (c AutopilotRoutingConfig) IsLogicalChannelScoringEnabled() bool {
 	if c.LogicalChannelScoringEnabled == nil {
 		return false
@@ -1025,6 +1037,21 @@ func (cm *ConfigManager) SetAutopilotKillSwitch(enabled bool) error {
 	return nil
 }
 
+// SetChannelPreferenceEnabled 更新渠道偏好评分开关并持久化。
+func (cm *ConfigManager) SetChannelPreferenceEnabled(enabled bool) error {
+	cm.mu.Lock()
+	previous := cm.config.AutopilotRouting.deepCopy()
+	cm.config.AutopilotRouting.ChannelPreferenceEnabled = &enabled
+	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.AutopilotRouting = previous
+		cm.mu.Unlock()
+		return err
+	}
+	log.Printf("[Config-Autopilot] ChannelPreferenceEnabled 已更新: enabled=%v", enabled)
+	cm.fireConfigChangeCallbacks()
+	return nil
+}
+
 // SetCostPreferenceMode 更新全局价格偏向模式并持久化。
 // 只修改 Mode，保留已有的 PerTaskClass 覆盖。
 func (cm *ConfigManager) SetCostPreferenceMode(mode string) error {
@@ -1357,6 +1384,10 @@ func (c AutopilotRoutingConfig) deepCopy() AutopilotRoutingConfig {
 	if c.LogicalChannelScoringEnabled != nil {
 		value := *c.LogicalChannelScoringEnabled
 		cp.LogicalChannelScoringEnabled = &value
+	}
+	if c.ChannelPreferenceEnabled != nil {
+		value := *c.ChannelPreferenceEnabled
+		cp.ChannelPreferenceEnabled = &value
 	}
 
 	// TrustedRoutingAdvisor slice 字段

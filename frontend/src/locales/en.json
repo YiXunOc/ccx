@@ -1392,6 +1392,8 @@
   "autopilot.modePanel.killSwitchHint": "When enabled, forces smart routing off. Takes priority over routing mode selection.",
   "autopilot.modePanel.racing": "Racing (cross-channel shadow requests)",
   "autopilot.modePanel.racingHint": "When first-token wait exceeds an adaptive threshold, a shadow request races a candidate channel; first delivery wins. Shadow count follows the cost strategy: quality-first 3 / balanced 1 / cost-first 1 cheaper-only. Per-channel opt-out is in the channel editor. Click Save to apply.",
+  "autopilot.modePanel.channelPreference": "Prefer channels matching the request protocol",
+  "autopilot.modePanel.channelPreferenceHint": "When enabled, otherwise equal candidates matching the request protocol receive preference. Disabling removes only this preference score; eligibility, protocol conversion, priority, health checks, and failover remain unchanged.",
   "autopilot.modePanel.killSwitchActive": "Kill switch is active. Smart routing is forced off. Disable the kill switch first to use other modes.",
   "autopilot.modePanel.killSwitchForced": "The AUTOPILOT_KILL_SWITCH environment variable is forcing an emergency stop; it cannot be disabled in the Web console.",
   "autopilot.modePanel.costPreference": "Cost Preference",

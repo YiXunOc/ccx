@@ -23,7 +23,11 @@ const VSwitchStub = defineComponent({
   emits: ['update:modelValue'],
   setup(props, { emit }) {
     return () => h('button', {
-      class: props.label.includes('killSwitch') ? 'kill-switch-control' : 'racing-control',
+      class: props.label.includes('killSwitch')
+        ? 'kill-switch-control'
+        : props.label.includes('channelPreference')
+          ? 'channel-preference-control'
+          : 'racing-control',
       disabled: props.disabled,
       'data-model': String(props.modelValue),
       onClick: () => emit('update:modelValue', !props.modelValue),
@@ -74,6 +78,7 @@ function config(overrides: Partial<SmartRoutingConfig> = {}): SmartRoutingConfig
     costPreference: 'balanced',
     scenario: 'auto',
     racingEnabled: true,
+    channelPreferenceEnabled: true,
     ...overrides,
   }
 }
@@ -186,7 +191,37 @@ describe('AutopilotModePanel KillSwitch', () => {
     })
   })
 
-  it('三种语言说明环境变量强制来源', () => {
+  it('渠道偏好字段缺失时默认开启，并可随整卡保存为 false', async () => {
+    const wrapper = mountPanel(config({ channelPreferenceEnabled: undefined }))
+
+    expect(wrapper.get('.channel-preference-control').attributes('data-model')).toBe('true')
+    expect(wrapper.get('.save-button').attributes('disabled')).toBeDefined()
+
+    await wrapper.get('.channel-preference-control').trigger('click')
+    expect(wrapper.emitted('update:config')).toBeUndefined()
+    expect(wrapper.get('.save-button').attributes('disabled')).toBeUndefined()
+
+    await wrapper.get('.save-button').trigger('click')
+    expect(wrapper.emitted<SmartRoutingConfig[]>('update:config')?.[0]?.[0].channelPreferenceEnabled).toBe(false)
+  })
+
+  it('渠道偏好显式 false 正确回显，重置后仍为 false', async () => {
+    const wrapper = mountPanel(config({ channelPreferenceEnabled: false }))
+
+    expect(wrapper.get('.channel-preference-control').attributes('data-model')).toBe('false')
+    await wrapper.get('.channel-preference-control').trigger('click')
+    await wrapper.get('.reset-button').trigger('click')
+    expect(wrapper.get('.channel-preference-control').attributes('data-model')).toBe('false')
+  })
+
+  it('三种语言包含渠道偏好文案并说明环境变量强制来源', () => {
+    const preferenceKey = 'autopilot.modePanel.channelPreference'
+    const preferenceHintKey = 'autopilot.modePanel.channelPreferenceHint'
+    for (const messages of [zhCN, en, id]) {
+      expect(messages[preferenceKey]).toBeTruthy()
+      expect(messages[preferenceHintKey]).toBeTruthy()
+    }
+
     const key = 'autopilot.modePanel.killSwitchForced'
     expect(zhCN[key]).toContain('AUTOPILOT_KILL_SWITCH')
     expect(en[key]).toContain('AUTOPILOT_KILL_SWITCH')

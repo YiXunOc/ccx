@@ -105,7 +105,13 @@ func federationModelProfileStore(t *testing.T) *ModelProfileStore {
 
 func runFederationFilter(t *testing.T, profile *RequestProfile, penalty float64) ([]scheduler.ChannelInfo, *RoutingDecisionTrace) {
 	t.Helper()
+	return runFederationFilterWithChannelPreference(t, profile, penalty, true)
+}
+
+func runFederationFilterWithChannelPreference(t *testing.T, profile *RequestProfile, penalty float64, enabled bool) ([]scheduler.ChannelInfo, *RoutingDecisionTrace) {
+	t.Helper()
 	cfg := federationRouterConfig()
+	cfg.AutopilotRouting.ChannelPreferenceEnabled = &enabled
 	cfgManager, cleanup := createTestConfigManager(t, cfg)
 	t.Cleanup(cleanup)
 	traceStore := createTestTraceStore(t)
@@ -220,6 +226,30 @@ func TestFederationConversionPenaltyCanOutweighQualityGain(t *testing.T) {
 	}
 	if result[0].Route.Kind != "messages" {
 		t.Fatalf("large conversion penalty ignored: %#v", result[0].Route)
+	}
+}
+
+func TestFederationChannelPreferenceDisabledKeepsDiagnosticsWithoutPenalty(t *testing.T) {
+	result, trace := runFederationFilterWithChannelPreference(t, federationComplexProfile(), 5, false)
+	if len(result) < 2 {
+		t.Fatalf("关闭渠道偏好不应移除候选: %#v", result)
+	}
+	if result[0].Route.Kind != "chat" || result[0].Route.ChannelUID != "ch_k3_chat" {
+		t.Fatalf("关闭渠道偏好后仍应用了协议转换扣分: %#v", result[0].Route)
+	}
+
+	var sibling *RoutingCandidate
+	for i := range trace.Candidates {
+		if trace.Candidates[i].ChannelUID == "ch_k3_chat" {
+			sibling = &trace.Candidates[i]
+			break
+		}
+	}
+	if sibling == nil {
+		t.Fatalf("关闭渠道偏好不应移除转换候选: %#v", trace.Candidates)
+	}
+	if sibling.ProtocolFidelity != "converted" || sibling.ConversionPenalty != 0 {
+		t.Fatalf("关闭渠道偏好应保留转换诊断并将实际扣分置零: %#v", sibling)
 	}
 }
 

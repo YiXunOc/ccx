@@ -277,3 +277,4 @@ store-msix/
 .agent-teams/
 .dsh-meow/
 docs/
+.tmp-go-cache/

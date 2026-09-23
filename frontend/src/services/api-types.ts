@@ -1697,6 +1697,7 @@ export interface SmartRoutingConfig {
   scenarioPresets?: ScenarioPresetView[]
   l2ProbeEnabled?: boolean
   racingEnabled?: boolean
+  channelPreferenceEnabled?: boolean
 }
 
 /** PUT /smart-routing/config 请求体，只包含允许持久化的配置字段。 */
@@ -1705,6 +1706,7 @@ export interface SmartRoutingConfigUpdate {
   costPreference?: string
   scenario?: RoutingScenario
   racingEnabled?: boolean
+  channelPreferenceEnabled?: boolean
 }
 
 export interface CandidateScore {
