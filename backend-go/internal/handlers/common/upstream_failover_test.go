@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/BenedictKing/ccx/internal/scheduler"
 	"github.com/BenedictKing/ccx/internal/session"
 	"github.com/BenedictKing/ccx/internal/types"
+	"github.com/BenedictKing/ccx/internal/utils"
 	"github.com/BenedictKing/ccx/internal/warmup"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/sjson"
@@ -2285,5 +2287,112 @@ func TestSelectAttemptAPIKeyFilteredPinsScheduledKey(t *testing.T) {
 	}
 	if key != "sk-a" {
 		t.Fatalf("pin key 失败后应轮转 sk-a, got %q", key)
+	}
+}
+
+func TestKeySelectionLogsRespectLevelAndRedactSecrets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("ccx.request_correlation_id", "corr-log-1")
+	upstream := &config.UpstreamConfig{Name: "route-a", ChannelUID: "ch-a"}
+	selection := keypool.Selection{KeyUID: "key_uid_1", Config: config.APIKeyConfig{KeyUID: "key_uid_1", CredentialUID: "credential-secret", Name: "credential-name"}}
+	rawKey := "sk-super-secret-value"
+
+	oldWriter, oldFlags := log.Writer(), log.Flags()
+	defer func() { log.SetOutput(oldWriter); log.SetFlags(oldFlags) }()
+	log.SetFlags(0)
+
+	var info bytes.Buffer
+	log.SetOutput(&info)
+	logSelectedKeyDecision(c, &config.EnvConfig{LogLevel: "info"}, "Messages", 2, upstream, selection, rawKey, "key_pool", 1, 3)
+	logSkippedKeyDecision(c, &config.EnvConfig{LogLevel: "info"}, scheduler.ChannelKindMessages, 2, upstream, selection, rawKey, "endpoint_binding", "bound_endpoint_mismatch")
+	infoText := info.String()
+	for _, want := range []string{"[Messages-Key]", "channel_index=2", "channel_name=\"route-a\"", "channel_uid=ch-a", "reason=key_pool", "correlation=corr-log-1", utils.MaskAPIKey(rawKey)} {
+		if !strings.Contains(infoText, want) {
+			t.Fatalf("info log missing %q: %s", want, infoText)
+		}
+	}
+	if strings.Contains(infoText, "Key-Select-Debug") {
+		t.Fatalf("info level emitted debug log: %s", infoText)
+	}
+
+	var debug bytes.Buffer
+	log.SetOutput(&debug)
+	logSelectedKeyDecision(c, &config.EnvConfig{LogLevel: "debug"}, "Messages", 2, upstream, selection, rawKey, "execution_pin", 1, 3)
+	logSkippedKeyDecision(c, &config.EnvConfig{LogLevel: "debug"}, scheduler.ChannelKindMessages, 2, upstream, selection, rawKey, "circuit", "open")
+	hashOnlyKey := "sk-hash-only-secret"
+	logSkippedKeyDecision(c, &config.EnvConfig{LogLevel: "debug"}, scheduler.ChannelKindMessages, 2, upstream, keypool.Selection{}, hashOnlyKey, "half_open", "probe_timeout_or_open")
+	debugText := debug.String()
+	for _, want := range []string{"stage=selected", "stage=circuit", "stage=half_open", "outcome=skipped", "key_identity=uid:key_uid_1", "key_identity=kh_" + autopilot.KeyHashFromAPIKey(hashOnlyKey), "reason=open", "correlation=corr-log-1"} {
+		if !strings.Contains(debugText, want) {
+			t.Fatalf("debug log missing %q: %s", want, debugText)
+		}
+	}
+	for _, forbidden := range []string{rawKey, hashOnlyKey, "credential-secret", "credential-name", "https://tenant.example/private"} {
+		if strings.Contains(infoText, forbidden) || strings.Contains(debugText, forbidden) {
+			t.Fatalf("selection log leaked %q: info=%s debug=%s", forbidden, infoText, debugText)
+		}
+	}
+}
+
+func TestSkippedKeyDecisionUsesExecutionProtocolLabel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	upstream := &config.UpstreamConfig{Name: "responses-route", ChannelUID: "responses-uid"}
+	requestKind := scheduler.ChannelKindMessages
+	executionKind := scheduler.ChannelKindResponses
+	if requestKind == executionKind {
+		t.Fatal("test requires cross-protocol execution")
+	}
+
+	oldWriter, oldFlags := log.Writer(), log.Flags()
+	defer func() { log.SetOutput(oldWriter); log.SetFlags(oldFlags) }()
+	var output bytes.Buffer
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	logSkippedKeyDecision(c, &config.EnvConfig{LogLevel: "debug"}, executionKind, 4, upstream, keypool.Selection{}, "sk-cross-protocol", "circuit", "open")
+
+	text := output.String()
+	if !strings.Contains(text, "[Responses-Key-Select-Debug]") {
+		t.Fatalf("skip log must use execution protocol label: %s", text)
+	}
+	if strings.Contains(text, "[Messages-Key-Select-Debug]") {
+		t.Fatalf("skip log leaked request protocol label: %s", text)
+	}
+}
+
+func TestSelectedKeyLogIdentityPrefersUIDAndNeverRawKey(t *testing.T) {
+	key := "sk-test-secret-value"
+	identity := selectedKeyLogIdentity(config.APIKeyConfig{Key: key, KeyUID: "key_uid_1"}, key)
+	if identity != "uid:key_uid_1" {
+		t.Fatalf("expected stable key UID identity, got %q", identity)
+	}
+	if strings.Contains(identity, key) {
+		t.Fatalf("identity leaked raw API key: %q", identity)
+	}
+
+	identity = selectedKeyLogIdentity(config.APIKeyConfig{}, key)
+	if !strings.HasPrefix(identity, "kh_") {
+		t.Fatalf("expected irreversible key hash identity, got %q", identity)
+	}
+	if strings.Contains(identity, key) || strings.Contains(identity, "test-secret") {
+		t.Fatalf("hash identity leaked key material: %q", identity)
+	}
+
+	if got := selectedKeyDecisionReason(false, key, key); got != "execution_pin" {
+		t.Fatalf("expected pin reason, got %q", got)
+	}
+	if got := selectedKeyDecisionReason(true, key, key); got != "internal_retry" {
+		t.Fatalf("internal retry must take precedence, got %q", got)
+	}
+	if got := selectedKeyDecisionReason(false, "other-key", key); got != "key_pool" {
+		t.Fatalf("expected ordinary key-pool reason, got %q", got)
+	}
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("ccx.request_correlation_id", "corr-test-1")
+	if got := requestCorrelationIDForLog(c); got != "corr-test-1" {
+		t.Fatalf("expected correlation id, got %q", got)
 	}
 }

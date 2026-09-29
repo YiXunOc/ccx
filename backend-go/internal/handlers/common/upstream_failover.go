@@ -728,6 +728,10 @@ func TryUpstreamWithAllKeys(
 				// nil policy 时回退到 selectAttemptAPIKey（行为不变）。
 				selection, apiKey, err = selectAttemptAPIKeyFiltered(channelScheduler, executionKind, executionIndex, upstream, currentBaseURL, failedKeys, failedQuotaGroups, redirectedModel, nextAPIKey, endpointPolicy, apiType, c, modelCircuit, keyAutoWeight, pinnedAPIKey)
 				if err != nil {
+					if envCfg.ShouldLog("debug") {
+						RequestLogf(c, "[%s-Key-Select-Debug] stage=key_pool outcome=skipped reason=no_eligible_key channel_index=%d channel_name=%q channel_uid=%s correlation=%s",
+							executionAPIType, executionIndex, upstream.Name, upstream.ChannelUID, requestCorrelationIDForLog(c))
+					}
 					lastError = err
 					break // 当前 BaseURL 没有可用 Key，尝试下一个 BaseURL
 				}
@@ -739,7 +743,7 @@ func TryUpstreamWithAllKeys(
 			// 未绑定端点的 Key（历史手填渠道）保持原有笛卡尔积行为。
 			if bound := upstream.BoundBaseURLForKey(apiKey); bound != "" && bound != currentBaseURL {
 				failedKeys[apiKey] = true
-				RequestLogf(c, "[%s-Key] 跳过绑定其他端点的 Key: %s (绑定 %s ≠ 当前 %s)", apiType, utils.MaskAPIKey(apiKey), bound, currentBaseURL)
+				logSkippedKeyDecision(c, envCfg, executionKind, executionIndex, upstream, selection, apiKey, "endpoint_binding", "bound_endpoint_mismatch")
 				continue
 			}
 
@@ -761,7 +765,7 @@ func TryUpstreamWithAllKeys(
 			circuitState := metricsManager.GetKeyCircuitState(currentBaseURL, apiKey, metricsServiceType)
 			if circuitState == metrics.CircuitStateOpen {
 				failedKeys[apiKey] = true
-				RequestLogf(c, "[%s-Circuit] 跳过 open 状态中的 Key: %s", apiType, utils.MaskAPIKey(apiKey))
+				logSkippedKeyDecision(c, envCfg, executionKind, executionIndex, upstream, selection, apiKey, "circuit", "open")
 				continue
 			}
 			if circuitState == metrics.CircuitStateHalfOpen {
@@ -776,7 +780,7 @@ func TryUpstreamWithAllKeys(
 						RequestLogf(c, "[%s-Circuit] half-open 探针已由其他请求恢复，继续使用 Key: %s", apiType, utils.MaskAPIKey(apiKey))
 					} else {
 						failedKeys[apiKey] = true
-						RequestLogf(c, "[%s-Circuit] half-open 探针等待超时或已熔断，暂时跳过 Key: %s", apiType, utils.MaskAPIKey(apiKey))
+						logSkippedKeyDecision(c, envCfg, executionKind, executionIndex, upstream, selection, apiKey, "half_open", "probe_timeout_or_open")
 						continue
 					}
 				} else {
@@ -785,14 +789,12 @@ func TryUpstreamWithAllKeys(
 				}
 			}
 
-			if envCfg.ShouldLog("info") {
-				displayMax := maxRetries
-				if internalRetry || len(shortEmptyRetried) > 0 {
-					displayMax++
-				}
-				RequestLogf(c, "[%s-Key] 使用API密钥: %s (BaseURL %d/%d, 尝试 %d/%d)",
-					apiType, utils.MaskAPIKey(apiKey), urlIdx+1, len(urlResults), attemptOrdinal+1, displayMax)
+			decisionReason := selectedKeyDecisionReason(internalRetry, pinnedAPIKey, apiKey)
+			displayMax := maxRetries
+			if internalRetry || len(shortEmptyRetried) > 0 {
+				displayMax++
 			}
+			logSelectedKeyDecision(c, envCfg, executionAPIType, executionIndex, upstream, selection, apiKey, decisionReason, attemptOrdinal+1, displayMax)
 
 			// 使用深拷贝避免并发修改问题
 			upstreamCopy := upstream.Clone()
@@ -2028,6 +2030,68 @@ func callPolicySortURLs(policy *autopilot.EndpointAttemptPolicy, urls []string, 
 // 步骤 5 (FilterKeys) + 步骤 6 (SortKeys)：在 keypool.CandidatesForModel 之后应用 endpoint 级策略。
 // 与 selectAttemptAPIKey 逻辑一致，但使用 policy 过滤/排序后的候选列表。
 // policy 过滤/排序失败时回退到 selectAttemptAPIKey（fail-open）。
+// logSelectedKeyDecision emits the final selected-key summary at configured log levels.
+func logSelectedKeyDecision(c *gin.Context, envCfg *config.EnvConfig, apiType string, channelIndex int, upstream *config.UpstreamConfig, selection keypool.Selection, apiKey, reason string, attempt, displayMax int) {
+	if upstream == nil || envCfg == nil {
+		return
+	}
+	keyIdentity := selectedKeyLogIdentity(selection.Config, apiKey)
+	if selection.KeyUID != "" {
+		keyIdentity = "uid:" + selection.KeyUID
+	}
+	correlationID := requestCorrelationIDForLog(c)
+	if envCfg.ShouldLog("debug") {
+		RequestLogf(c, "[%s-Key-Select-Debug] stage=selected channel_index=%d channel_name=%q channel_uid=%s key=%s key_identity=%s reason=%s attempt=%d correlation=%s", apiType, channelIndex, upstream.Name, upstream.ChannelUID, utils.MaskAPIKey(apiKey), keyIdentity, reason, attempt, correlationID)
+	}
+	if envCfg.ShouldLog("info") {
+		RequestLogf(c, "[%s-Key] 使用API密钥: %s (channel_index=%d channel_name=%q channel_uid=%s reason=%s attempt=%d/%d correlation=%s)", apiType, utils.MaskAPIKey(apiKey), channelIndex, upstream.Name, upstream.ChannelUID, reason, attempt, displayMax, correlationID)
+	}
+}
+
+func logSkippedKeyDecision(c *gin.Context, envCfg *config.EnvConfig, executionKind scheduler.ChannelKind, channelIndex int, upstream *config.UpstreamConfig, selection keypool.Selection, apiKey, stage, reason string) {
+	if upstream == nil || envCfg == nil || !envCfg.ShouldLog("debug") {
+		return
+	}
+	keyIdentity := selectedKeyLogIdentity(selection.Config, apiKey)
+	if selection.KeyUID != "" {
+		keyIdentity = "uid:" + selection.KeyUID
+	}
+	RequestLogf(c, "[%s-Key-Select-Debug] stage=%s outcome=skipped channel_index=%d channel_name=%q channel_uid=%s key_identity=%s reason=%s correlation=%s", ChannelAPIType(executionKind), stage, channelIndex, upstream.Name, upstream.ChannelUID, keyIdentity, reason, requestCorrelationIDForLog(c))
+}
+
+// selectedKeyLogIdentity prefers rotation-stable KeyUID and otherwise uses an irreversible hash.
+func selectedKeyLogIdentity(cfg config.APIKeyConfig, apiKey string) string {
+	if cfg.KeyUID != "" {
+		return "uid:" + cfg.KeyUID
+	}
+	return "kh_" + autopilot.KeyHashFromAPIKey(apiKey)
+}
+
+func selectedKeyDecisionReason(internalRetry bool, pinnedAPIKey, apiKey string) string {
+	if internalRetry {
+		return "internal_retry"
+	}
+	if pinnedAPIKey != "" && pinnedAPIKey == apiKey {
+		return "execution_pin"
+	}
+	return "key_pool"
+}
+
+func requestCorrelationIDForLog(c *gin.Context) string {
+	if c == nil {
+		return "none"
+	}
+	value, ok := c.Get("ccx.request_correlation_id")
+	if !ok {
+		return "none"
+	}
+	id, _ := value.(string)
+	if id == "" {
+		return "none"
+	}
+	return id
+}
+
 func selectAttemptAPIKeyFiltered(
 	channelScheduler *scheduler.ChannelScheduler,
 	kind scheduler.ChannelKind,

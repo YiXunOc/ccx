@@ -2,6 +2,8 @@ package scheduler
 
 import (
 	"context"
+	"sort"
+
 	"github.com/BenedictKing/ccx/internal/config"
 )
 
@@ -75,13 +77,15 @@ func (s *ChannelScheduler) addBoundProtocolCandidates(ctx context.Context, cfg *
 	for _, ch := range channels {
 		seen[ch.Route.Key()] = true
 	}
-	for _, target := range []ChannelKind{ChannelKindChat, ChannelKindResponses} {
+	for _, target := range []ChannelKind{ChannelKindMessages, ChannelKindChat, ChannelKindResponses} {
 		if target == kind {
 			continue
 		}
 		for _, ch := range s.getActiveChannelsWithTrace(ctx, target, model, trace, cfg) {
 			var us []config.UpstreamConfig
-			if target == ChannelKindChat {
+			if target == ChannelKindMessages {
+				us = cfg.Upstream
+			} else if target == ChannelKindChat {
 				us = cfg.ChatUpstream
 			} else {
 				us = cfg.ResponsesUpstream
@@ -105,5 +109,9 @@ func (s *ChannelScheduler) addBoundProtocolCandidates(ctx context.Context, cfg *
 			seen[ch.Route.Key()] = true
 		}
 	}
+	// 联邦候选追加后重新按统一优先级排序，避免低优先级原生渠道压过高优先级转换渠道。
+	sort.SliceStable(channels, func(i, j int) bool {
+		return channels[i].Priority < channels[j].Priority
+	})
 	return channels
 }

@@ -42,6 +42,35 @@ func boundAliasConfig() config.Config {
 	}
 }
 
+func TestChatRequestSelectsBoundMessagesSibling(t *testing.T) {
+	cfg := config.Config{
+		Upstream: []config.UpstreamConfig{{
+			Name: "high-priority-messages", ChannelUID: "messages-high", LogicalChannelUID: "logical-chat-messages",
+			AccountUID: "account-chat-messages", BaseURL: "https://messages.example", APIKeys: []string{"key"}, Status: "active",
+			Priority: 1, ModelMapping: map[string]string{"alias": "actual"},
+		}},
+		ChatUpstream: []config.UpstreamConfig{{
+			Name: "low-priority-chat", ChannelUID: "chat-low", LogicalChannelUID: "logical-chat-messages",
+			AccountUID: "account-chat-messages", BaseURL: "https://chat.example", APIKeys: []string{"key"}, Status: "active",
+			Priority: 100,
+		}},
+		LogicalChannels: []config.LogicalChannel{{
+			LogicalChannelUID: "logical-chat-messages", AccountUID: "account-chat-messages",
+			BaseURLs:                 []string{"https://messages.example"},
+			ProtocolModelPreferences: config.ProtocolModelPreferences{"messages": {"actual"}},
+		}},
+	}
+	s, cleanup := createTestScheduler(t, cfg)
+	defer cleanup()
+	result, err := s.SelectChannelWithOptions(context.Background(), SelectionOptions{Kind: ChannelKindChat, Model: "alias"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Route.Kind != string(ChannelKindMessages) || result.Upstream.ChannelUID != "messages-high" {
+		t.Fatalf("selected route = %#v, want high-priority messages sibling", result)
+	}
+}
+
 func TestBoundProtocolCandidatesKeepClientProtocolIndependent(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
