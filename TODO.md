@@ -43,6 +43,8 @@
 
 ## [ ] gpt-5.6的适配
 
+当前状态（2026-09-16 核对）：模型注册/窗口/基准已落地（luna/sol/terra + Bedrock，context 1.05M）。仍待办如下。
+
 2.openai新增了"OpenAI-Beta": “{client_header:OpenAI-Beta}” 这个，来传输子代理相关信息，这个也需要调整
 3.工具调用传参之类的都需要优化
 4.提醒下同行，oai在最新版本codex里面加入了设备验证相关信息，可能会封pro号
@@ -50,6 +52,8 @@
 ---
 
 ## [ ] 在codex里面使用imagegen使用上游的文生图
+
+当前状态（2026-09-16 核对）：Images 渠道已有 `ConvertImageURLToB64JSON`（百炼 URL → OpenAI `b64_json`），管理界面可开，默认关闭。Codex 自带 imagegen 技能走 `/v1/images` 或 Responses `image_generation` 打到百炼的端到端通路仍待验证。
 
 百炼生图是生成url, 和 openai生成base64不一样，比如我在codex介入ccx, ccx配的是百炼，然后在codex里面用 codex自带技能 imagegen 能调用百炼生图模型 成功生图
 https://github.com/QuantumNous/new-api/issues/5513
@@ -222,6 +226,8 @@ CCX 五个 tool_use 生成点核查：三处本就安全——`claudeStreamNorma
 
 ## [ ] 英伟达渠道导入
 
+当前状态（2026-09-16 核对）：`builtinProviderTemplates` 仍无 nvidia/NIM 模板；`docs/design/channel-autopilot.md` 标为 P2。Claude Code v2.1.269 新增 `CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS`（默认 3s），客户端侧可缓解 `/v1/models` 超时，不替代 CCX 导入模板。
+
 可能模型太多响应太慢导致预检时间过长，或者需要代理？
 
 ## [x] Codex token budget 记忆系统适配 + 客户端预算提醒剔除统一机制（2026-09-11 完成）
@@ -248,3 +254,109 @@ CCX 五个 tool_use 生成点核查：三处本就安全——`claudeStreamNorma
 Codex namespace 工具的 function_call 可携带分段加密参数：`ResponsesItem` 加字段 + 解析/响应侧枚举 + passthrough 天然透传 + converter 密文丢弃但空 arguments 补 `"{}"` 占位（DeepSeek 拒收空串）+ token 保守计数 + 日志截断白名单。
 
 明确不做：不改写 `get_context_remaining` 的 function_call_output（客户端本地计算，改写风险大于收益）；不动 RemoteCompactionV2 兼容路径与 thinkingcache reasoning encrypted_content。
+
+---
+
+> **上游版本变更**
+
+## [x] Claude Code v2.1.273 上游协议/工具变更评估（2026-09-16 完成）
+
+发现协议/工具/用法变更（2.1.263→2.1.273）。评估结论：第 1 项 hint 头按透传兼容、无需改代码；第 2 项非流式 Content-Type 已由 CCX 自身保证 JSON；第 3 项均为客户端侧，不影响 CCX 透传。
+
+### 1. 网关 hint 头（v2.1.273）——无需改动
+
+上游新增 opt-in 请求头（`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`）：`x-claude-code-request-class` / `x-claude-code-agent-type` / `x-claude-code-prev-tool-durations` / `x-claude-code-compaction` / `x-claude-code-context-compacted`。
+
+CCX 现状：
+- `PrepareUpstreamHeaders`（`utils/headers.go`）Clone 客户端头后只删除代理/内部路由头（`x-proxy-key`、`X-Forwarded-*`、`X-Task-Domain` / `X-Routing-Scenario` / `X-Cost-Preference`、`Accept-Encoding`），**不剥离** `x-claude-code-*`。
+- Messages / Chat / Responses / Gemini 构造路径均走该函数，客户端 opt-in 后 hint 头会原样到达 Anthropic 兼容上游。
+- `ExtractAgentContext` 仍用 `X-Claude-Code-Agent-Id` + 启发式识别 subagent，不消费新 hint 头；路由不依赖这些头。
+
+结论：协议兼容无需改动。第三方 Anthropic 镜像若因未知头 400，走既有 `ChannelCompatCache` 三态自学习，不加静态剥离开关。可选观察项：日后可用 `x-claude-code-agent-type` 替代启发式 subagent 识别（当前不强制）。
+
+### 2. 非流式 text/plain（v2.1.271）——无需改动
+
+上游客户端修复：LLM gateway 非流式 `text/plain` 不再被判 malformed。这是**客户端容错**，不是要求网关改 Content-Type。
+
+CCX 写回：
+- Messages 非流式 `handleNormalResponse`：`json.Unmarshal` 成功后 `c.JSON(200, claudeResp)`，恒为 `application/json`；上游 body 非 JSON（含 text/plain/HTML）走 `ErrInvalidResponseBody` failover，不把畸形体转给客户端。
+- Chat 成功路径 `c.Data(..., "application/json", ...)`；Responses `c.JSON(200, responsesResp)`。
+- `ForwardContentType` 仅用于 Gemini/Images 等透传分支，Claude Code Messages 不走该路径。
+
+结论：CCX 作为 Claude Code 的 Messages/Chat/Responses 网关不会发出成功路径的 `text/plain`。无需改动。
+
+### 3. maxEffortLevel / task-tracking 白名单 / Artifact schema 400——无需改动
+
+- v2.1.267 `maxEffortLevel`：客户端在发往网关前封顶 effort。CCX `applyClaudeThinkingEffort` 按渠道 ReasoningMapping 覆盖或透传已封顶值；不实现组织级 cap。
+- v2.1.268 task-tracking tools 模型白名单：客户端按模型决定是否投放 TaskCreate/TodoWrite。CCX 不注入这些工具；映射到不支持模型后的 400 由既有工具白名单/兼容性学习处理。
+- v2.1.265 Artifact input schema 正则导致第三方 Anthropic 兼容端点整轮 400，2.1.268 已在客户端修复。CCX 不构造 Artifact schema。
+
+注：v2.1.269 `CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS`（默认 3s）是客户端 `/v1/models` 超时，与「英伟达渠道导入」预检过慢观察项相关，非协议变更。PreModelSwitch hooks、Remote Control、Artifact 发布、MCP 重连等均为客户端内部能力，不影响 CCX 代理层协议。
+
+## [x] Claude Code v2.1.280 上游协议/工具变更评估（2026-09-24 完成）
+
+发现协议/工具/用法变更（2.1.278→2.1.280）。评估结论：四项均无需改动代码；`claude-opus-5-5` 已全量注册且数值与公告一致，无需再走 model-update。
+
+### 1. 新增 `claude-opus-5-5`——无需改（已注册，数值与公告一致）
+
+逐项核对四个注册位置，与上游公告值全部吻合：
+
+- 能力+定价条目（`model-registry.json` `upstreamCapabilities`，pattern `claude-opus-5[.-]5(?:-date)?`）：context 1,000,000 / maxOutput 128,000 / `thinkingMode: adaptive_always_on` / efforts `low~max` / 定价 `inputCacheMissPrice: 4`、`outputPrice: 20`、`inputCacheHitPrice: 0.2`（per_1m_tokens_usd）——与公告 1M context、$4/$20 per Mtok、cache read $0.20 逐项一致。
+- Go 内置兜底表 `config/model_registry.go:319`（`claude-opus-5-5*`）：ctx 1M / 128K 输出 / efforts，注释明确「独立模型（非 Opus 5 别名）」。
+- Anthropic 官方 `/v1/models` 探测失败回退清单 `config/builtin_models_manifest.go:60`（含 `builtin-manifest.json` 同步副本）。
+- 基准档案 `model-registry.json` `benchmarkProfiles`（overallScore 88.45，verifiedAt 2026-09-23，含 AA 按 effort 分档）；`model_registry_test.go:960-963` 覆盖裸名/点分/带日期/带前缀四种解析。
+
+### 2. advisor `advisor_20260301` input tag 400 自动剥离重试——无需改（客户端容错 + CCX 全透传）
+
+CCX Messages 路径不会自己对未知 tag 产生 400：
+
+- 入口保留原始 `bodyBytes`，`types.ClaudeRequest` 反序列化错误被忽略（`handlers/messages/handler.go:60-64`），Go encoding/json 默认丢弃未知字段，无 `DisallowUnknownFields`。
+- 上游请求体构造基于原始字节 + 泛化 map 变换（去空 signature、清畸形 thinking、剔空 text、system 归一化、预算提醒剥离），content block 按 `blockMap["type"]` 字符串判断、未知类型原样保留（`providers/claude.go:541-557`、`claudeSystemToBlocks` 原样保留整块，`claude.go:594-621`）。
+- 仅有的 400 出口：Invalid JSON / 不支持的 service type（`handler.go:293,302,1103`），与 tag 无关。
+- 若第三方镜像上游对该 tag 400，客户端剥离重试自愈；CCX 侧由既有 failover + ChannelCompatCache 三态自学习兜住，按「无真实流量证据不加静态护栏」原则无需改。
+
+### 3. Pro/Team Standard 默认模型 Sonnet→Opus——无需改
+
+纯客户端/Anthropic 侧默认选择，CCX 路由只消费请求携带的 `model`（`handlers/messages/handler.go:99` 以 `claudeReq.Model` 挂 Autopilot profile，scheduler 按模型选渠道），不注入也不缓存客户端默认模型。目标模型 opus-5-5 已注册可路由（见第 1 项），无协议影响。
+
+### 4. `/effort` 旧保存值不再套用到新模型——无需改（客户端本地记忆行为）
+
+`/effort` per-model 记忆是 Claude Code 客户端本地能力。CCX 侧 effort 语义不变：渠道级 `ReasoningParamStyle` + `NormalizeReasoningEffortForUpstream`（`config/config_utils.go:285,331`）按渠道覆盖；Autopilot 跨模型改写仅在 `EffortDecided` 时注入且已有 `adaptive_only` guard（`handlers/common/upstream_failover.go:2727`）。opus-5-5 的 `adaptive_always_on` + 声明的 `low~max` efforts 意味着注入 effort 参数是合法的，无需新增分支。注：v2.1.251 评估中提到的 `applyClaudeThinkingEffort`/`ReasoningMapping` 已在此前重构中更名（现为 ReasoningParamStyle 体系），结论不受影响。
+
+**总体结论：整条 v2.1.280 无需落地代码改动。** opus-5-5 已全量注册且数值与公告一致（无需再走 model-update）；其余三项均为客户端侧行为，CCX 透传/路由/effort 语义已覆盖。
+
+## [x] Codex rust-v0.156.0 上游协议/工具变更评估（2026-09-24 完成）
+
+发现协议/工具/用法变更（0.155.1→0.156.0）。评估结论：六项中五项无需改动，仅第 3 项（file_id 图片引用）在**非透传 converter 路径**存在既有兼容边界（观察项，非必须改）。
+
+### 1. 移除废弃 `thread/rollback` app-server API（#44915）——无需改动
+
+CCX 不代理任何 Codex app-server API。`main.go` 只注册 `/v1/responses` 代理入口与 `/api/responses/channels/*` 管理入口（`main.go:1434-1453`），无 `thread/`、`/threads`、`spawn_agent`、`rollback` 类路由；全仓 `rollback` 命中项均为 DB 事务回滚 / SLO 回滚 / 配置回滚等无关语义。与 v0.145「Multi-agent V2」评估结论一致：app-server 是 Codex 客户端本地能力，不经过 CCX wire。
+
+### 2. model provider gateway OAuth 凭证管理并与主鉴权组合（#46318/#46482/#46490）——无需改动
+
+Codex 客户端本地凭证管理：为 provider gateway 管理 OAuth 凭证并与主鉴权组合，产物仍是发往网关的一个 `Authorization` 头。CCX 是鉴权边界：`PrepareUpstreamHeaders` clone 客户端头后（`utils/headers.go:208-236`），Responses provider 经 `SetAuthenticationHeader` / `SetAuthenticationHeaderWithOverride` **删除** `authorization`/`x-api-key`/`x-goog-api-key` 再写入 CCX 渠道 Key（`utils/headers.go:253-291`）。客户端携带的任何 OAuth 凭证在转发上游前都会被渠道 Key 覆盖，属既有设计，Codex 侧凭证管理变更不改变 CCX 发往上游的鉴权形态。
+
+### 3. Responses 输入与工具输出按 `file_id` 引用图片（#45794）——观察项（透传无需改；非透传 converter 路径静默丢弃，属既有兼容边界）
+
+本条唯一有影响的子项，分两条路径：
+
+- **透传路径（原生 Responses 上游）——无需改**：`normalizeResponsesInputForPassthrough`（`providers/responses.go:1663-1709`）只把 `input_text`/`output_text` 的 block type 改成目标文本类型，对其它 block 一律不动；`file_id` 图片引用块（如 `{"type":"input_image","file_id":"file-xxx"}`）原样透传给原生支持 file_id 的 Responses 上游。顶层未知字段也仅删 `internal_chat_message_metadata_passthrough`/`transformer_metadata` 两键，file_id 引用不受影响。
+- **非透传 converter 路径（responses→chat/claude/gemini）——静默丢弃（既有边界）**：`responsesContentBlockToOpenAIChatPart`（`converters/responses_items.go:152-172`）对 `input_image`/`image_url` 调 `normalizeResponsesImageURL`，后者只识别 `block["image_url"]`（string/带 url 的 map）与 `block["source"]`（base64/url）两种形态（`responses_items.go:176-232`）。纯 `file_id` 引用块二者皆无 → 返回 nil → 该 part 被跳过丢弃。全仓 `converters`/`types`/`responses.go` 无任何 `file_id`/`FileID` 处理代码。
+- **token 估算**：`mediaPayloadFromBlock` 的 `input_image` 分支只解析 `image_url` 的 data URL（`image_tokens_gjson.go:263-270`），file_id 引用无内联 base64 → 计 0、不剥离，与远程 URL 一致，不失真。
+
+结论：与 v0.145 音频转 Chat 丢弃同理——file_id 图片引用依赖同一 provider 的 Files API，转到 Chat/Claude/Gemini 时 file_id 无意义，除非 CCX 主动 fetch+inline（不实现，也不宜猜测）。列为观察项：若后续真实流量出现「Codex 走 file_id 引用图 + CCX 落到需协议转换的非原生 Responses 渠道」且用户报图片丢失，再评估是否新增 Files API 拉取内联能力；当前不改。
+
+### 4. Responses 请求新增 workspace routing（#45812）——无需改动
+
+全仓 Responses 相关代码无 `workspace` 引用，CCX 路由不依赖该字段。透传路径 `normalizeResponsesInputForPassthrough` 只删两个内部键、只改文本 block type，新增顶层字段（含 workspace routing）原样保留转发上游。非透传路径会随协议转换丢弃，但那是 Codex↔原生 Responses 的路由语义，与 Chat/Claude 上游无关。
+
+### 5. Guardian 请求经 `/responses` 携带识别头（#45736）——无需改动
+
+`PrepareUpstreamHeaders`（`utils/headers.go:208-236`）只删代理头（`x-proxy-key`/`X-Forwarded-*`/`X-Real-IP`/`Via`/`Forwarded`）与网关内部路由头（`X-Task-Domain`/`X-Routing-Scenario`/`X-Cost-Preference`）+ `Accept-Encoding`，其余头（含 Guardian 识别头）一律透传。与 v2.1.273「网关 hint 头」结论一致。第三方镜像若因未知头 400，走既有 `ChannelCompatCache` 三态自学习，不加静态剥离开关。
+
+### 6. provider 显式 model catalog URL（#46561）——无需改动
+
+Codex 客户端 provider 配置能力：provider 块可显式指定 model catalog URL。属客户端侧特性——Desktop 生成的 `[model_providers.ccx]` 不含该字段即不触发（沿用 v0.146「独立 Web Search」「默认不开启即无影响」判定）；CCX 已提供 `GET /v1/models`（`main.go` 已注册），Codex 未显式指定 catalog URL 时按默认发现流程走。可选 Desktop 观察项：未来可在生成的 provider 配置里显式把 catalog URL 指向 CCX `/v1/models`，非代理层协议改动。
+
+**总体结论：整条 v0.156.0 无需落地代码改动。** 1/2/4/5/6 明确无影响；第 3 项（file_id 图片引用）透传路径原生兼容，仅非透传协议转换路径静默丢弃 file_id 图片——属既有兼容边界（同音频转 Chat），列为观察项。

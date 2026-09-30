@@ -5,6 +5,7 @@ import (
 	"log"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/BenedictKing/ccx/internal/utils"
 )
@@ -174,7 +175,6 @@ func (cm *ConfigManager) addUpstreamCommonLocked(k ChannelKindConfig, upstream U
 	upstream.BaseURLs = deduplicateBaseURLs(upstream.BaseURLs, upstream.ServiceType)
 	applyDefaultBaseURL(&upstream)
 
-	upstream.ModelMapping, _ = sanitizeDeprecatedGrokModelMapping(upstream.ModelMapping)
 	stripAutoManagedExplicitOverrides(&upstream)
 	applyAutoDerivedChannelName(&upstream, "")
 	if shouldAutoDeriveChannelName(&upstream) {
@@ -249,10 +249,23 @@ func (cm *ConfigManager) updateUpstreamCommonLocked(k ChannelKindConfig, index i
 	if err != nil {
 		return false, err
 	}
+	if shared := sharedChannelUpdate(updates); shared != nil {
+		resetSiblings, err := cm.applySharedChannelUpdateToLogicalGroupLocked(upstream, *shared)
+		if err != nil {
+			return false, err
+		}
+		shouldResetMetrics = shouldResetMetrics || resetSiblings
+	}
 	if updates.Remark != nil {
 		// 统一列表(Dashboard)展示的是逻辑渠道层备注；单卡保存不同步整组的话，
 		// 用户删除/修改的备注会被逻辑层与兄弟卡的残留值顶回（“删不掉”根因）。
 		cm.syncRemarkAcrossLogicalGroupLocked(upstream, strings.TrimSpace(*updates.Remark))
+	}
+	if updates.APIKeyConfigs != nil {
+		// Key 级倍率/消耗策略在统一列表里按逻辑渠道展示（前端合并各协议路由的
+		// apiKeyConfigs），但存储是每张物理卡一份：只写当前卡时，用户在其他协议
+		// 路由上看到的仍是旧值（“设置后保存再打开还是没有”根因）。
+		cm.syncKeyMultiplierAcrossLogicalGroupLocked(upstream, updates.APIKeyConfigs)
 	}
 
 	stripAutoManagedExplicitOverrides(upstream)
@@ -269,6 +282,42 @@ func (cm *ConfigManager) updateUpstreamCommonLocked(k ChannelKindConfig, index i
 
 	log.Printf("[Config-Upstream] 已更新 %s 上游: [%d] %s", k.Kind.Label(), index, upstream.Name)
 	return shouldResetMetrics, nil
+}
+
+// applySharedChannelUpdateToLogicalGroupLocked 把共享字段投影到同一逻辑渠道的所有物理路由。
+// 调用方必须持有 cm.mu 写锁；target 已先应用本次更新，兄弟路由复用同一套字段校验/归一化逻辑。
+func (cm *ConfigManager) applySharedChannelUpdateToLogicalGroupLocked(target *UpstreamConfig, update UpstreamUpdate) (bool, error) {
+	uid := strings.TrimSpace(target.LogicalChannelUID)
+	if uid == "" {
+		return false, nil
+	}
+	shouldResetMetrics := false
+	var firstErr error
+	for _, kind := range orderedChannelKinds() {
+		slice := ChannelKindRegistry[kind].SliceRef(&cm.config)
+		for i := range *slice {
+			sibling := &(*slice)[i]
+			if sibling == target || strings.TrimSpace(sibling.LogicalChannelUID) != uid {
+				continue
+			}
+			reset, err := applyUpstreamUpdateFields(sibling, update)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			shouldResetMetrics = shouldResetMetrics || reset
+		}
+	}
+	return shouldResetMetrics, firstErr
+}
+
+func orderedChannelKinds() []ChannelKind {
+	return []ChannelKind{
+		ChannelKindMessages, ChannelKindChat, ChannelKindResponses,
+		ChannelKindGemini, ChannelKindImages, ChannelKindVectors,
+	}
 }
 
 // updateUpstreamCommon 是 Update*Upstream 的公开薄封装。
@@ -343,14 +392,7 @@ func applyUpstreamUpdateFields(upstream *UpstreamConfig, updates UpstreamUpdate)
 		upstream.APIKeys = deduplicateStrings(updates.APIKeys)
 	}
 	applyAPIKeyConfigUpdate(upstream, updates)
-	if updates.ModelMapping != nil {
-		upstream.ModelMapping = updates.ModelMapping
-	}
-	upstream.ModelMapping, _ = sanitizeDeprecatedGrokModelMapping(upstream.ModelMapping)
 	applyModelCapabilityUpdates(upstream, updates)
-	if updates.ReasoningMapping != nil {
-		upstream.ReasoningMapping = updates.ReasoningMapping
-	}
 	if updates.ReasoningParamStyle != nil {
 		upstream.ReasoningParamStyle = *updates.ReasoningParamStyle
 	}
@@ -460,12 +502,6 @@ func applyUpstreamUpdateFields(upstream *UpstreamConfig, updates UpstreamUpdate)
 	}
 	if updates.NoVision != nil {
 		upstream.NoVision = *updates.NoVision
-	}
-	if updates.NoVisionModels != nil {
-		upstream.NoVisionModels = updates.NoVisionModels
-	}
-	if updates.VisionFallbackModel != nil {
-		upstream.VisionFallbackModel = *updates.VisionFallbackModel
 	}
 	if updates.RateLimitRPM != nil {
 		if *updates.RateLimitRPM < 0 {
@@ -785,4 +821,81 @@ func (cm *ConfigManager) syncRemarkAcrossLogicalGroupLocked(upstream *UpstreamCo
 	sync(cm.config.GeminiUpstream)
 	sync(cm.config.ImagesUpstream)
 	sync(cm.config.VectorsUpstream)
+}
+
+// syncKeyMultiplierAcrossLogicalGroupLocked 把本次下发的 Key 级倍率/消耗策略同步到
+// 同组兄弟物理卡的同名 Key 配置。统一列表展示的是逻辑渠道（前端把各协议路由的
+// apiKeyConfigs 合并成一份），单卡保存不同步整组时，用户改完看到的仍是其他协议
+// 路由的旧值（“设置后保存再打开还是没有”根因）。
+// 只同步倍率语义字段：端点绑定/凭证/限速等仍是路由级配置，不能被跨协议覆盖。
+func (cm *ConfigManager) syncKeyMultiplierAcrossLogicalGroupLocked(upstream *UpstreamConfig, incoming []APIKeyConfig) {
+	uid := strings.TrimSpace(upstream.LogicalChannelUID)
+	if uid == "" || len(incoming) == 0 {
+		return
+	}
+	// 以合并后的当前卡配置作为身份与取值来源：它带有 KeyUID/CredentialUID/Key 的完整身份。
+	patches := make([]APIKeyConfig, 0, len(incoming))
+	for _, next := range incoming {
+		source := findExistingAPIKeyConfig(upstream.APIKeyConfigs, next)
+		if source == nil {
+			continue
+		}
+		// new_api 倍率由订阅同步服务逐路由写入（连同 SourceSubscriptionUID/TokenID 身份字段），
+		// 渠道编辑不做跨协议扩散，避免制造「source=new_api 但缺订阅身份」的失联态。
+		if strings.EqualFold(strings.TrimSpace(source.MultiplierSource), "new_api") {
+			continue
+		}
+		patches = append(patches, *source)
+	}
+	if len(patches) == 0 {
+		return
+	}
+	sync := func(channels []UpstreamConfig) {
+		for i := range channels {
+			sibling := &channels[i]
+			if sibling == upstream || strings.TrimSpace(sibling.LogicalChannelUID) != uid {
+				continue
+			}
+			for _, patch := range patches {
+				target := findExistingAPIKeyConfig(sibling.APIKeyConfigs, patch)
+				if target == nil {
+					continue
+				}
+				copyKeyMultiplierFields(target, patch)
+			}
+		}
+	}
+	sync(cm.config.Upstream)
+	sync(cm.config.ChatUpstream)
+	sync(cm.config.ResponsesUpstream)
+	sync(cm.config.GeminiUpstream)
+	sync(cm.config.ImagesUpstream)
+	sync(cm.config.VectorsUpstream)
+}
+
+// copyKeyMultiplierFields 复制 Key 级倍率语义字段（值拷贝，指针字段重新分配）。
+func copyKeyMultiplierFields(dst *APIKeyConfig, src APIKeyConfig) {
+	dst.GroupMultiplier = cloneFloat64Value(src.GroupMultiplier)
+	dst.ConsumptionPolicy = src.ConsumptionPolicy
+	dst.MultiplierSource = src.MultiplierSource
+	dst.MultiplierSyncStatus = src.MultiplierSyncStatus
+	dst.MultiplierSyncError = src.MultiplierSyncError
+	dst.MultiplierUpdatedAt = cloneTimeValue(src.MultiplierUpdatedAt)
+	dst.MultiplierExpiresAt = cloneTimeValue(src.MultiplierExpiresAt)
+}
+
+func cloneFloat64Value(v *float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	copied := *v
+	return &copied
+}
+
+func cloneTimeValue(v *time.Time) *time.Time {
+	if v == nil {
+		return nil
+	}
+	copied := *v
+	return &copied
 }

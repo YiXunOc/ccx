@@ -559,9 +559,9 @@
                   <div class="text-caption text-medium-emphasis mb-2">
                     <code>{{ maskApiKey(row.key) }}</code>
                     <v-chip size="x-small" color="secondary" variant="tonal" class="ml-2">
-                      {{ row.quotaGroup || t('channelCard.ungrouped') }}
+                      {{ editingQuotaGroup || t('channelCard.independentKey') }}
                     </v-chip>
-                    <span class="ml-2">{{ t('channelCard.affectedGroupKeys', { count: groupModelAffectedCount }) }}</span>
+                    <span class="ml-2">{{ editingQuotaGroup ? t('channelCard.affectedGroupKeys', { count: groupModelAffectedCount }) : t('channelCard.affectedCurrentKey') }}</span>
                   </div>
                   <v-row dense>
                     <v-col cols="12" sm="6">
@@ -589,7 +589,8 @@
                         variant="outlined"
                         density="compact"
                         hide-details
-                        @change="applyMultiplierToConfigs"
+                        @update:model-value="applyMultiplierToConfigs"
+                        @keydown.enter="flushMultiplierInput"
                       />
                     </v-col>
                   </v-row>
@@ -617,7 +618,7 @@
 
                   <v-divider class="my-3" />
 
-                  <div class="text-subtitle-2 font-weight-medium mb-1">{{ t('channelCard.groupModelPolicy') }}</div>
+                  <div class="text-subtitle-2 font-weight-medium mb-1">{{ t(editingQuotaGroup ? 'channelCard.groupModelPolicy' : 'channelCard.keyModelPolicy') }}</div>
                   <v-combobox
                     v-model="groupModelForm.model"
                     :items="modelOptions"
@@ -1352,12 +1353,13 @@
           <v-list density="compact" class="rounded-lg group-model-policy-list">
             <v-list-item
               v-for="record in visibleDisabledGroupModels"
-              :key="record.quotaGroup + '|' + record.model"
+              :key="groupModelPolicyKey(record)"
               class="px-3"
             >
               <template #prepend><v-icon size="small" color="secondary" class="mr-2">mdi-account-multiple-outline</v-icon></template>
               <v-list-item-title class="d-flex align-center ga-2 flex-wrap text-caption">
-                <v-chip size="x-small" color="secondary" variant="tonal">{{ record.quotaGroup || t('channelCard.ungrouped') }}</v-chip>
+                <v-chip size="x-small" color="secondary" variant="tonal">{{ record.quotaGroup?.trim() || t('channelCard.independentKey') }}</v-chip>
+                <code v-if="!record.quotaGroup?.trim() && record.key">{{ maskApiKey(record.key) }}</code>
                 <strong>{{ record.model }}</strong>
               </v-list-item-title>
               <v-list-item-subtitle class="text-caption">
@@ -1368,7 +1370,7 @@
                   size="x-small"
                   color="success"
                   variant="tonal"
-                  :loading="changingGroupModel === (record.quotaGroup + '|' + record.model)"
+                  :loading="changingGroupModel === groupModelPolicyKey(record)"
                   :disabled="!!changingGroupModel"
                   @click="$emit('restore-group-model', record)"
                 >
@@ -1401,7 +1403,7 @@
                 <v-chip size="x-small" color="primary" variant="tonal" class="ml-1">{{ dm.model }}</v-chip>
               </v-list-item-title>
               <v-list-item-subtitle class="d-flex align-center ga-1">
-                <v-chip size="x-small" color="warning" variant="tonal">{{ t('channelCard.modelNotFound') }}</v-chip>
+                <v-chip size="x-small" color="warning" variant="tonal">{{ t(getDisabledKeyLabel(dm.reason)) }}</v-chip>
                 <span class="text-caption">{{ t('channelCard.recoverAt') }}: {{ new Date(dm.recoverAt).toLocaleString() }}</span>
               </v-list-item-subtitle>
               <template #append>
@@ -1449,7 +1451,7 @@ import type {
 } from '../../services/api-types'
 import draggable from 'vuedraggable'
 import { maskApiKey } from '../../utils/apiKeyMask'
-import { buildChannelApiKeyRows, type ChannelApiKeyRow } from '../../utils/channelApiKeys'
+import { buildChannelApiKeyRows, groupModelPolicyKey, type ChannelApiKeyRow } from '../../utils/channelApiKeys'
 import { getVolcenginePlanConsoleURL } from '../../utils/channelWebsite'
 import { quotaRemainingColorClass } from '../../utils/quotaColor'
 import { buildKimiUsageSections } from '../../utils/kimiPlanUsage'
@@ -1520,7 +1522,6 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const apiService = new ApiService()
-const isMac = computed(() => typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform))
 
 const newApiKey = ref('')
 const apiKeyError = ref('')
@@ -1531,7 +1532,7 @@ const groupModelForm = ref({ model: '' })
 // Key 行统一详情展开（倍率 + 分组模型排除同一块）：一次只展开一行，切换即重置编辑态。
 const expandedDetailKey = ref<string | null>(null)
 const multiplierEditing = ref<ChannelApiKeyRow | null>(null)
-const multiplierForm = ref<{ groupMultiplier: number | null; consumptionPolicy: 'normal' | 'opportunistic' | null }>({ groupMultiplier: null, consumptionPolicy: null })
+const multiplierForm = ref<{ groupMultiplier: number | string | null; consumptionPolicy: 'normal' | 'opportunistic' | null }>({ groupMultiplier: null, consumptionPolicy: null })
 
 const consumptionPolicyOptions = computed(() => [
   { title: t('subscription.keyMultiplier.policyNormal'), value: 'normal' as const },
@@ -1734,9 +1735,12 @@ const hasConfigurableKeys = computed(() => props.serviceType === 'copilot' || ke
 const visibleDisabledKeyModels = computed(() => props.disabledKeyModels || [])
 const visibleDisabledGroupModels = computed(() => props.disabledGroupModels || [])
 const modelOptions = computed(() => props.modelOptions || [])
+const editingQuotaGroup = computed(() => keyRows.value.find(row => row.key === expandedDetailKey.value)?.quotaGroup?.trim() || '')
 const groupModelAffectedCount = computed(() => {
-  const group = groupModelEditing.value?.quotaGroup || ''
-  return keyRows.value.filter(row => (row.quotaGroup || '') === group && !row.disabled).length
+  if (!expandedDetailKey.value) return 0
+  const group = editingQuotaGroup.value
+  if (!group) return 1
+  return keyRows.value.filter(row => row.quotaGroup?.trim() === group && row.activeIndex >= 0).length
 })
 
 const multiplierStatusColor = (status?: string) => status === 'fresh' || status === 'manual' ? 'success' : status === 'over_limit' || status === 'sync_error' || status === 'relink_required' ? 'error' : 'warning'
@@ -1782,16 +1786,21 @@ const channelMaxGroupMultiplierHint = computed(() => {
 // 托管渠道由 channel.ts 单卡更新补发）。行副标题 chips 经 props 回流即时反映新值。
 const applyMultiplierToConfigs = () => {
   const row = multiplierEditing.value
-  if (!row || !props.apiKeyConfigs?.length) return
+  if (!row) return
   let groupMultiplier: number | null
   try {
     groupMultiplier = parseMultiplierInput(multiplierForm.value.groupMultiplier)
   } catch {
     return // 非法输入暂不暂存，保留上次合法值
   }
-  const configs = props.apiKeyConfigs.map(cfg => {
+  // 裸 key（从未有过任何 key 级附加配置）会被后端视图的 IsAPIKeyConfigEffective
+  // 过滤，表单 apiKeyConfigs 里没有它的条目：首次设置倍率时须补建条目暂存，
+  // 否则改动无处可写，随渠道保存后静默丢失。
+  let matched = false
+  const configs = (props.apiKeyConfigs ?? []).map(cfg => {
     const cfgId = cfg.keyUid ?? cfg.credentialUid
     if (cfgId !== row.keyUid && cfg.key !== row.key) return cfg
+    matched = true
     return {
       ...cfg,
       groupMultiplier,
@@ -1799,7 +1808,27 @@ const applyMultiplierToConfigs = () => {
       consumptionPolicy: multiplierForm.value.consumptionPolicy ?? undefined,
     }
   })
+  if (!matched) {
+    // row.keyUid 可能是 credentialUid 兜底值（buildChannelApiKeyRows 合并过），
+    // 与 credentialUid 相同时不写入 keyUid，避免身份字段错位。
+    const keyUidIsCredentialFallback = !!row.credentialUid && row.keyUid === row.credentialUid
+    configs.push({
+      key: row.key,
+      ...(row.keyUid && !keyUidIsCredentialFallback ? { keyUid: row.keyUid } : {}),
+      ...(row.credentialUid ? { credentialUid: row.credentialUid } : {}),
+      groupMultiplier,
+      consumptionPolicy: multiplierForm.value.consumptionPolicy ?? undefined,
+    })
+  }
   emit('update:apiKeyConfigs', configs)
+}
+
+// 快捷键保存发生在 window keydown 监听中，可能早于数字输入框的 blur/change。
+// 先从当前 input 读取原始值，确保 Ctrl/Command+Enter 保存时使用焦点内的最新倍率。
+const flushMultiplierInput = (event: KeyboardEvent) => {
+  const target = event.target as { type?: string; value?: string } | null
+  if (target?.type === 'number') multiplierForm.value.groupMultiplier = target.value ?? ''
+  applyMultiplierToConfigs()
 }
 
 const parseMultiplierInput = (value: number | string | null): number | null => {
@@ -2892,6 +2921,10 @@ const getDisabledKeyLabel = (reason: string) => {
     'invalid': 'channelCard.blacklistReason.invalid',
     'authentication_error': 'channelCard.blacklistReason.authentication_error',
     'permission_error': 'channelCard.blacklistReason.permission_error',
+    // 组合级限制 (Key,模型) 的 reason：能力类差异统一展示"模型不可用"
+    'model_not_found': 'channelCard.modelNotFound',
+    'model_not_in_key_group': 'channelCard.modelNotFound',
+    'image_generation_not_enabled': 'channelCard.modelNotFound',
   }
   return (map[reason] || 'channelCard.blacklistReason.unknown') as any
 }

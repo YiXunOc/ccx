@@ -91,6 +91,8 @@ export const LITELLM_MODEL_MAP = {
   // Claude（pattern 用连字符；旧版 value 曾误用点号导致匹配失败，已修正）
   'claude-opus-4-8': 'claude-opus-4-8',
   'claude-opus-5': 'claude-opus-5',
+  // Claude Opus 5.5（2026-09-22 发布）：litellm slug 与 canonical 同名
+  'claude-opus-5-5': 'claude-opus-5-5',
   'claude-sonnet-5': 'claude-sonnet-5',
   'claude-sonnet-4-6': 'claude-sonnet-4-6',
   'claude-haiku-4-5-20251001': 'claude-haiku-4-5',
@@ -104,6 +106,9 @@ export const LITELLM_MODEL_MAP = {
   'gpt-6-astra': 'gpt-6-astra',
   'gpt-6': 'gpt-6-astra',
   'astra': 'gpt-6-astra',
+  // GPT-6 Sol/Luna（2026-09-22 发布）：litellm slug 与 canonical 同名
+  'gpt-6-sol': 'gpt-6-sol',
+  'gpt-6-luna': 'gpt-6-luna',
   'gpt-5.6-sol': 'gpt-5.6-sol',
   'gpt-5.6-terra': 'gpt-5.6-terra',
   'gpt-5.6-luna': 'gpt-5.6-luna',
@@ -138,12 +143,18 @@ export const LITELLM_MODEL_MAP = {
   // 故意不映射，定价以 registry 手工维护为准。
   'xai/grok-4.5': 'grok-4.5',
   'xai/grok-4.6': 'grok-4.6',
+  // Grok 4.7（2026-09-21 发布，官方价与 4.6 同价 $2/$6）
+  'xai/grok-4.7': 'grok-4.7',
   'meta/muse-spark-1.1': 'muse-spark-1.1',
   'meta/muse-spark-1.2': 'muse-spark-1.2',
   'meta/muse-spark-1.3': 'muse-spark-1.3',
   'minimax/MiniMax-M3': 'minimax-m3',
   'openrouter/xiaomi/mimo-v2.5': 'mimo-v2.5',
   'openrouter/xiaomi/mimo-v2.5-pro': 'mimo-v2.5-pro',
+  // MiMo V2.6 系列（2026-09-22 发布）：litellm 经 OpenRouter 托管 key 提供
+  'openrouter/xiaomi/mimo-v2.6-pro-ultraspeed': 'mimo-v2.6-pro-ultraspeed',
+  'openrouter/xiaomi/mimo-v2.6-pro': 'mimo-v2.6-pro',
+  'openrouter/xiaomi/mimo-v2.6-flash': 'mimo-v2.6-flash',
   // Gemini（litellm 对未 GA 的型号只提供 -preview 后缀 key，
   // 裸 gemini-3.1-pro / gemini-3-flash 在上游数据中不存在，映射左侧必须用真实 key）
   'gemini-3.5-flash': 'gemini-3.5-flash',

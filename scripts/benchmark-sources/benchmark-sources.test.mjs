@@ -159,7 +159,7 @@ test('new-model detection expands provider prefixes and underscore variants', ()
     [
       'zai/glm-6',                    // provider/ 前缀剥离后命中 glm 家族 → 提示
       'openrouter/xiaomi/mimo-v3',    // 多级前缀逐段剥离后命中 → 提示
-      'google_grok-4-7',              // provider_ 前缀剥离后命中 → 提示
+      'google_grok-4-8',              // provider_ 前缀剥离后命中 → 提示（grok-4-7 已注册，取更高版本）
       'zai/glm-4',                    // 前缀剥离后版本更低 → 忽略
       'foo/grok-4-1',                 // 前缀剥离后版本更低 → 忽略
     ],
@@ -167,7 +167,7 @@ test('new-model detection expands provider prefixes and underscore variants', ()
   )
   assert.deepEqual(
     candidates.map(c => c.name),
-    ['zai/glm-6', 'openrouter/xiaomi/mimo-v3', 'google_grok-4-7'],
+    ['zai/glm-6', 'openrouter/xiaomi/mimo-v3', 'google_grok-4-8'],
   )
   assert.equal(candidates[0].family, 'glm')
   assert.equal(candidates[0].version, '6')
@@ -230,14 +230,14 @@ test('new-model detection rejects date snapshots, parameter sizes and legacy nam
       'Qwen3-235B-A22B',       // 参数量段落掉后等版本 → 忽略
       'Qwen3.5-397B-A22B',     // 参数量段落掉后 [3,5] > [3] → 提示
       'gpt-8',                 // 主版本跳两代 → 忽略（安全网只覆盖同代与下一代）
-      'grok-4-7',              // 同代更高版本 → 提示
+      'grok-4-8',              // 同代更高版本 → 提示（grok-4-7 已于 2026-09-22 注册，改用 4-8）
       'grok-4-20-beta',        // 十进制 4.20 = 4.2 < 4.6 → 忽略（营销版本非整数）
     ],
     LITELLM_MODEL_MAP,
   )
   assert.deepEqual(
     candidates.map(c => c.name),
-    ['Qwen3.5-397B-A22B', 'grok-4-7'],
+    ['Qwen3.5-397B-A22B', 'grok-4-8'],
   )
   assert.equal(candidates[0].version, '3.5')
 })
@@ -246,14 +246,14 @@ test('extractProfiles collects unmapped slugs for new-model detection', () => {
   const doc = {
     items: [
       { slug: 'grok-4-5', displayScore: 75, scores: { displayCategoryScores: { coding: 50 } } },
-      { slug: 'grok-4-7', displayScore: 90, scores: { displayCategoryScores: {} } },
+      { slug: 'grok-4-8', displayScore: 90, scores: { displayCategoryScores: {} } }, // grok-4-7 已注册，样例改用未映射的 4-8
     ],
   }
   const unmapped = []
   const profiles = extractBenchlmProfiles(doc, BENCHLM_MODEL_MAP, { coding: 'coding' }, unmapped)
   assert.ok(profiles['grok-4.5'])
   assert.equal(profiles['grok-4.5'].overallScore, 75)
-  assert.deepEqual(unmapped, ['grok-4-7'])
+  assert.deepEqual(unmapped, ['grok-4-8'])
   assert.equal(detectNewModelCandidates(unmapped, BENCHLM_MODEL_MAP).length, 1)
 })
 
@@ -409,6 +409,40 @@ test('dradar extractCostData aggregates mean and median cost per model x effort'
   assert.equal(cost['canonical-model'].low.nRuns, 1)
   // 未映射模型被忽略
   assert.equal(Object.keys(cost).length, 1)
+})
+
+test('dradar extractCostData prefers api_equivalent_cost_usd and falls back to actual_cost_usd', () => {
+  const data = {
+    cells: {
+      // 新口径 run：只有 api_equivalent_cost_usd（actual_cost_usd 已退役、缺失）
+      'task-a|dradar-model|low': {
+        ran_by: [
+          { api_equivalent_cost_usd: 0.9, duration_sec: 10 },
+          { api_equivalent_cost_usd: 1.1, duration_sec: 12 },
+        ],
+      },
+      // 旧口径老 run：仅剩 actual_cost_usd，应作为回退被采纳
+      'task-b|dradar-model|low': {
+        ran_by: [{ actual_cost_usd: 2.0, duration_sec: 20 }],
+      },
+      // 两者并存的极少数 run：以新口径为准，忽略 actual_cost_usd
+      'task-c|dradar-model|high': {
+        ran_by: [{ api_equivalent_cost_usd: 3.0, actual_cost_usd: 1.0, duration_sec: 30 }],
+      },
+      // fallback_estimate_usd 是估算而非实测，不应计入
+      'task-d|dradar-model|high': {
+        ran_by: [{ fallback_estimate_usd: 5.0, duration_sec: 40 }],
+      },
+    },
+  }
+  const cost = extractCostData(data, { 'dradar-model': 'canonical-model' })
+
+  // low 档：新口径 0.9/1.1 + 回退老 run 2.0 -> costs [0.9,1.1,2.0]，mean ≈ 1.3333
+  assert.equal(cost['canonical-model'].low.nRuns, 3)
+  assert.ok(Math.abs(cost['canonical-model'].low.meanCost - 4 / 3) < 1e-9)
+  // high 档：并存 run 取新口径 3.0；fallback_estimate_usd 的 run 被跳过
+  assert.equal(cost['canonical-model'].high.nRuns, 1)
+  assert.equal(cost['canonical-model'].high.meanCost, 3.0)
 })
 
 test('dradar toBenchmarkEvidence injects meanCost into costUsd when costData present', () => {
@@ -901,6 +935,7 @@ test('newly published dradar model variants stay mapped (2026-08-29 audit)', () 
   assert.equal(DRADAR_MODEL_MAP['glm-5-3-flash'], 'glm-5.3-flash')
   // vision-exp 2026-09-05 起独立注册为 deepseek-v4-flash-vision，不再归并 flash
   assert.equal(DRADAR_MODEL_MAP['dsh-deepseek-v4-flash-vision-exp'], 'deepseek-v4-flash-vision')
+  assert.equal(DRADAR_MODEL_MAP['dsh-deepseek-v4.1-flash'], 'deepseek-v4.1-flash')
 })
 
 test('deepswe glm-5.3-flash stays mapped (2026-08-26 release-day regression)', () => {
@@ -1082,8 +1117,8 @@ test('Artificial Analysis LLM extraction yields one evidence per composite index
   assert.equal(evidence[0].benchmarkVersion, 'v4.1')
   assert.equal(evidence[0].effort, 'default')
   assert.equal(evidence[0].selectionBasis, 'composite_index')
-  // composite index 无任务级 raw data，taskCount 用 evaluation 数作代理以满足 schema
-  assert.equal(evidence[0].taskCount, 9)
+  // composite index 无任务级 raw data，taskCount 用 evaluation 数作代理以满足 schema（v4.3.2 共 10 项）
+  assert.equal(evidence[0].taskCount, 10)
   // cohort 为数据集中所有有 intelligence_index 的模型（含未映射的，百分位相对全市场）
   assert.equal(evidence[0].cohortSize, 3)
   // opus-5 (92) 在 [92, 77, 50] 队列中百分位 = 1.0

@@ -82,6 +82,49 @@ func TestResolveAgentModelProfile_GPT6AstraBuiltins(t *testing.T) {
 	}
 }
 
+func TestResolveAgentModelProfile_GPT6SolLunaBuiltins(t *testing.T) {
+	// Sol/Luna 是独立 tier 模型（非 Astra 别名），effort 比 Astra 多一档 none（官方文档确认）。
+	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
+		t.Run(model, func(t *testing.T) {
+			profile := ResolveAgentModelProfile(model, nil)
+			if !profile.Known {
+				t.Fatalf("expected built-in %s profile", model)
+			}
+			wantDisplay := "GPT-6 Sol"
+			if model == "gpt-6-luna" {
+				wantDisplay = "GPT-6 Luna"
+			}
+			if profile.Profile.DisplayName != wantDisplay {
+				t.Fatalf("DisplayName = %q, want %q", profile.Profile.DisplayName, wantDisplay)
+			}
+			if profile.Profile.ContextWindowTokens != 272000 {
+				t.Fatalf("ContextWindowTokens = %d, want conservative routing minimum 272000", profile.Profile.ContextWindowTokens)
+			}
+			if profile.Profile.MaxContextWindowTokens != 1050000 {
+				t.Fatalf("MaxContextWindowTokens = %d, want 1050000", profile.Profile.MaxContextWindowTokens)
+			}
+			if profile.Profile.MaxOutputTokens != 128000 {
+				t.Fatalf("MaxOutputTokens = %d, want 128000", profile.Profile.MaxOutputTokens)
+			}
+			wantEfforts := []string{"none", "low", "medium", "high", "xhigh", "max"}
+			if len(profile.Profile.ReasoningEfforts) != len(wantEfforts) {
+				t.Fatalf("ReasoningEfforts = %v, want exactly %v", profile.Profile.ReasoningEfforts, wantEfforts)
+			}
+			for _, effort := range wantEfforts {
+				if !containsString(profile.Profile.ReasoningEfforts, effort) {
+					t.Fatalf("ReasoningEfforts = %v, want %s", profile.Profile.ReasoningEfforts, effort)
+				}
+			}
+			if containsString(profile.Profile.ReasoningEfforts, "minimal") {
+				t.Fatalf("ReasoningEfforts = %v, official docs only support none/low/medium/high/xhigh/max", profile.Profile.ReasoningEfforts)
+			}
+			if profile.Profile.SupportsPriorityTier {
+				t.Fatalf("SupportsPriorityTier = true, official docs 未列出 Sol/Luna priority tier 支持")
+			}
+		})
+	}
+}
+
 func TestResolveAgentModelProfile_GPT55UsesLiteLLMMaximumContext(t *testing.T) {
 	profile := ResolveAgentModelProfile("gpt-5.5", nil)
 	if !profile.Known {
@@ -199,14 +242,10 @@ func TestResolveAgentModelProfile_GlobalOverrideWins(t *testing.T) {
 	}
 }
 
-func TestResolveUpstreamCapability_UsesActualModelAfterMapping(t *testing.T) {
-	upstream := &UpstreamConfig{
-		ModelMapping: map[string]string{
-			"agent": "claude-sonnet-4-6",
-		},
-	}
+func TestResolveUpstreamCapability_ResolvesBuiltinModel(t *testing.T) {
+	upstream := &UpstreamConfig{}
 
-	resolved := ResolveUpstreamCapability("agent", upstream, nil)
+	resolved := ResolveUpstreamCapability("claude-sonnet-4-6", upstream, nil)
 	if !resolved.Known {
 		t.Fatal("expected built-in upstream capability")
 	}
@@ -223,13 +262,12 @@ func TestResolveUpstreamCapability_UsesActualModelAfterMapping(t *testing.T) {
 
 func TestResolveUpstreamCapability_ChannelOverrideWins(t *testing.T) {
 	upstream := &UpstreamConfig{
-		ModelMapping: map[string]string{"agent": "claude-sonnet-4-6"},
 		ModelCapabilities: map[string]UpstreamModelCapability{
 			"claude-sonnet-4-6": {ContextWindowTokens: 200000, MaxOutputTokens: 32000},
 		},
 	}
 
-	resolved := ResolveUpstreamCapability("agent", upstream, map[string]UpstreamModelCapability{
+	resolved := ResolveUpstreamCapability("claude-sonnet-4-6", upstream, map[string]UpstreamModelCapability{
 		"claude-sonnet-4-6": {ContextWindowTokens: 500000},
 	})
 	if resolved.Source != "channel" {
@@ -241,13 +279,9 @@ func TestResolveUpstreamCapability_ChannelOverrideWins(t *testing.T) {
 }
 
 func TestResolveUpstreamCapability_KimiK27Builtin(t *testing.T) {
-	upstream := &UpstreamConfig{
-		ModelMapping: map[string]string{
-			"agent": "Kimi-K2.7-Code-HighSpeed",
-		},
-	}
+	upstream := &UpstreamConfig{}
 
-	resolved := ResolveUpstreamCapability("agent", upstream, nil)
+	resolved := ResolveUpstreamCapability("Kimi-K2.7-Code-HighSpeed", upstream, nil)
 	if !resolved.Known || resolved.Source != "builtin" {
 		t.Fatalf("source = %q known=%v, want builtin known", resolved.Source, resolved.Known)
 	}
@@ -332,6 +366,9 @@ func TestResolveUpstreamCapability_NewAugust2026Models(t *testing.T) {
 		// xAI 官方不设独立输出上限；litellm 数据按 context 上限对齐为 500000
 		{model: "grok-4.6", provider: "xai", context: 500000, maxOutput: 500000, vision: true, toolCalls: true, inputPrice: 2, outputPrice: 6},
 		{model: "xai/grok-4.6", provider: "xai", context: 500000, maxOutput: 500000, vision: true, toolCalls: true, inputPrice: 2, outputPrice: 6},
+		// Grok 4.7（2026-09-21 发布）：与 4.6 同价 $2/$6、同 500K 上下文
+		{model: "grok-4.7", provider: "xai", context: 500000, maxOutput: 500000, vision: true, toolCalls: true, inputPrice: 2, outputPrice: 6},
+		{model: "xai/grok-4.7", provider: "xai", context: 500000, maxOutput: 500000, vision: true, toolCalls: true, inputPrice: 2, outputPrice: 6},
 		{model: "glm-5.3", provider: "zai", context: 1000000, maxOutput: 131072, toolCalls: true},
 		{model: "glm-5.3[1m]", provider: "zai", context: 1000000, maxOutput: 131072, toolCalls: true},
 		{model: "glm-5.3-flash", provider: "zai", context: 1000000, maxOutput: 131072, vision: true, toolCalls: true},
@@ -442,6 +479,44 @@ func TestResolveUpstreamCapability_Grok46PricingTiers(t *testing.T) {
 	}
 	capability := resolved.Capability
 	// xAI 官方不设独立输出上限；litellm 数据按 context 上限对齐为 500000
+	if capability.MaxOutputTokens != 500000 {
+		t.Fatalf("MaxOutputTokens = %d, want 500000 (context-aligned)", capability.MaxOutputTokens)
+	}
+	if capability.ThinkingMode != "adaptive" || !containsString(capability.ReasoningEfforts, "xhigh") {
+		t.Fatalf("thinkingMode=%q reasoningEfforts=%v, want adaptive with xhigh", capability.ThinkingMode, capability.ReasoningEfforts)
+	}
+	if !capability.Capabilities["structuredOutput"] || !capability.Capabilities["webSearch"] || !capability.Capabilities["codeExecution"] {
+		t.Fatalf("Capabilities = %v, want structured output, web search, and code execution", capability.Capabilities)
+	}
+	pricing := capability.Pricing
+	if pricing == nil || len(pricing.Tiers) != 2 {
+		t.Fatalf("Pricing = %+v, want two context tiers", pricing)
+	}
+	short := pricing.Tiers[0]
+	if short.InputTokensAbove != 0 || short.InputTokensUpTo != 199999 {
+		t.Fatalf("short tier bounds = (%d, %d), want (0, 199999)", short.InputTokensAbove, short.InputTokensUpTo)
+	}
+	assertFloatPointerValue(t, short.InputCacheHitPrice, 0.5, "Pricing.Tiers[0].InputCacheHitPrice")
+	assertFloatPointerValue(t, short.InputCacheMissPrice, 2, "Pricing.Tiers[0].InputCacheMissPrice")
+	assertFloatPointerValue(t, short.OutputPrice, 6, "Pricing.Tiers[0].OutputPrice")
+	long := pricing.Tiers[1]
+	if long.InputTokensAbove != 199999 || long.InputTokensUpTo != 500000 {
+		t.Fatalf("long tier bounds = (%d, %d), want (199999, 500000)", long.InputTokensAbove, long.InputTokensUpTo)
+	}
+	assertFloatPointerValue(t, long.InputCacheHitPrice, 1, "Pricing.Tiers[1].InputCacheHitPrice")
+	assertFloatPointerValue(t, long.InputCacheMissPrice, 4, "Pricing.Tiers[1].InputCacheMissPrice")
+	assertFloatPointerValue(t, long.OutputPrice, 12, "Pricing.Tiers[1].OutputPrice")
+}
+
+func TestResolveUpstreamCapability_Grok47PricingTiers(t *testing.T) {
+	// 事实源：docs.x.ai/developers/grok-4-7（2026-09-21 发布，2026-09-22 核对）。
+	// 与 Grok 4.6 同价：短上下文 0.5/2/6，超过 200K 后整请求翻倍至 1/4/12。
+	resolved := ResolveUpstreamCapability("grok-4.7", nil, nil)
+	if !resolved.Known || resolved.Source != "builtin" {
+		t.Fatalf("resolved = %+v, want builtin capability", resolved)
+	}
+	capability := resolved.Capability
+	// 官方声明无独立输出上限；与 4.6 同样按 context 上限对齐为 500000
 	if capability.MaxOutputTokens != 500000 {
 		t.Fatalf("MaxOutputTokens = %d, want 500000 (context-aligned)", capability.MaxOutputTokens)
 	}
@@ -697,13 +772,9 @@ func TestResolveUpstreamCapability_DeepSeekV4DatedSuffixes(t *testing.T) {
 }
 
 func TestResolveUpstreamCapability_Qwen37MaxBuiltin(t *testing.T) {
-	upstream := &UpstreamConfig{
-		ModelMapping: map[string]string{
-			"agent": "qwen3.7-max-2026-05-20",
-		},
-	}
+	upstream := &UpstreamConfig{}
 
-	resolved := ResolveUpstreamCapability("agent", upstream, nil)
+	resolved := ResolveUpstreamCapability("qwen3.7-max-2026-05-20", upstream, nil)
 	if !resolved.Known || resolved.Source != "builtin" {
 		t.Fatalf("source = %q known=%v, want builtin known", resolved.Source, resolved.Known)
 	}
@@ -726,13 +797,9 @@ func TestResolveUpstreamCapability_Qwen37MaxBuiltin(t *testing.T) {
 }
 
 func TestResolveUpstreamCapability_LongCat20Builtin(t *testing.T) {
-	upstream := &UpstreamConfig{
-		ModelMapping: map[string]string{
-			"agent": "LongCat-2.0",
-		},
-	}
+	upstream := &UpstreamConfig{}
 
-	resolved := ResolveUpstreamCapability("agent", upstream, nil)
+	resolved := ResolveUpstreamCapability("LongCat-2.0", upstream, nil)
 	if !resolved.Known || resolved.Source != "builtin" {
 		t.Fatalf("source = %q known=%v, want builtin known", resolved.Source, resolved.Known)
 	}
@@ -752,13 +819,9 @@ func TestResolveUpstreamCapability_LongCat20Builtin(t *testing.T) {
 }
 
 func TestResolveUpstreamCapability_Step37FlashBuiltin(t *testing.T) {
-	upstream := &UpstreamConfig{
-		ModelMapping: map[string]string{
-			"agent": "step-3.7-flash",
-		},
-	}
+	upstream := &UpstreamConfig{}
 
-	resolved := ResolveUpstreamCapability("agent", upstream, nil)
+	resolved := ResolveUpstreamCapability("step-3.7-flash", upstream, nil)
 	if !resolved.Known || resolved.Source != "builtin" {
 		t.Fatalf("source = %q known=%v, want builtin known", resolved.Source, resolved.Known)
 	}
@@ -787,19 +850,56 @@ func TestResolveUpstreamCapability_Step37FlashBuiltin(t *testing.T) {
 	if pricing == nil {
 		t.Fatal("Pricing = nil, want step-3.7-flash pricing")
 	}
-	assertFloatPointerValue(t, pricing.InputCacheHitPrice, 0.04, "Pricing.InputCacheHitPrice")
-	assertFloatPointerValue(t, pricing.InputCacheMissPrice, 0.2, "Pricing.InputCacheMissPrice")
-	assertFloatPointerValue(t, pricing.OutputPrice, 1.15, "Pricing.OutputPrice")
+	assertFloatPointerValue(t, pricing.InputCacheHitPrice, 0.27, "Pricing.InputCacheHitPrice")
+	assertFloatPointerValue(t, pricing.InputCacheMissPrice, 1.35, "Pricing.InputCacheMissPrice")
+	assertFloatPointerValue(t, pricing.OutputPrice, 8.1, "Pricing.OutputPrice")
+}
+
+func TestResolveUpstreamCapability_Step5PreviewBuiltin(t *testing.T) {
+	for _, alias := range []string{"step-5-preview", "stepfun/step-5-preview"} {
+		t.Run(alias, func(t *testing.T) {
+			upstream := &UpstreamConfig{}
+
+			resolved := ResolveUpstreamCapability(alias, upstream, nil)
+			if !resolved.Known || resolved.Source != "builtin" {
+				t.Fatalf("source = %q known=%v, want builtin known", resolved.Source, resolved.Known)
+			}
+			if resolved.Capability.Provider != "stepfun" {
+				t.Fatalf("Provider = %q, want stepfun", resolved.Capability.Provider)
+			}
+			if resolved.Capability.ContextWindowTokens != 1048576 {
+				t.Fatalf("ContextWindowTokens = %d, want 1048576", resolved.Capability.ContextWindowTokens)
+			}
+			if resolved.Capability.ThinkingMode != "thinking" {
+				t.Fatalf("ThinkingMode = %q, want thinking", resolved.Capability.ThinkingMode)
+			}
+			if !containsString(resolved.Capability.ReasoningEfforts, "high") {
+				t.Fatalf("ReasoningEfforts = %v, want high", resolved.Capability.ReasoningEfforts)
+			}
+			if !resolved.Capability.Capabilities["vision"] {
+				t.Fatal("step-5-preview should advertise vision")
+			}
+			if !resolved.Capability.Capabilities["videoInput"] {
+				t.Fatal("step-5-preview should advertise videoInput")
+			}
+			if !resolved.Capability.Capabilities["toolCalls"] {
+				t.Fatal("step-5-preview should advertise toolCalls")
+			}
+			pricing := resolved.Capability.Pricing
+			if pricing == nil {
+				t.Fatal("Pricing = nil, want step-5-preview pricing")
+			}
+			assertFloatPointerValue(t, pricing.InputCacheHitPrice, 0.35, "Pricing.InputCacheHitPrice")
+			assertFloatPointerValue(t, pricing.InputCacheMissPrice, 7, "Pricing.InputCacheMissPrice")
+			assertFloatPointerValue(t, pricing.OutputPrice, 20, "Pricing.OutputPrice")
+		})
+	}
 }
 
 func TestResolveUpstreamCapability_GPT56BedrockBuiltin(t *testing.T) {
-	upstream := &UpstreamConfig{
-		ModelMapping: map[string]string{
-			"agent": "gpt-5.6-terra",
-		},
-	}
+	upstream := &UpstreamConfig{}
 
-	resolved := ResolveUpstreamCapability("agent", upstream, nil)
+	resolved := ResolveUpstreamCapability("gpt-5.6-terra", upstream, nil)
 	if !resolved.Known || resolved.Source != "builtin" {
 		t.Fatalf("source = %q known=%v, want builtin known", resolved.Source, resolved.Known)
 	}
@@ -846,6 +946,66 @@ func TestResolveUpstreamCapability_ClaudeOpusAliasesAndOpus5(t *testing.T) {
 				capability.MaxOutputTokens != 128_000 || !capability.Capabilities["reasoning"] ||
 				!capability.Capabilities["vision"] || !capability.Capabilities["toolCalls"] {
 				t.Fatalf("capability = %+v", capability)
+			}
+		})
+	}
+}
+
+func TestResolveUpstreamCapability_ClaudeOpus55Variants(t *testing.T) {
+	tests := []struct {
+		model       string
+		displayName string
+	}{
+		// Opus 5.5 是独立模型（非 Opus 5 别名）
+		{model: "claude-opus-5-5", displayName: "Claude Opus 5.5"},
+		{model: "claude-opus-5.5", displayName: "Claude Opus 5.5"},
+		{model: "claude-opus-5-5-20260922", displayName: "Claude Opus 5.5"},
+		{model: "anthropic/claude-opus-5-5", displayName: "Claude Opus 5.5"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			resolved := ResolveUpstreamCapability(tt.model, nil, nil)
+			if !resolved.Known || resolved.Source != "builtin" {
+				t.Fatalf("resolved = %+v, want builtin capability for %s", resolved, tt.model)
+			}
+			capability := resolved.Capability
+			if capability.DisplayName != tt.displayName || capability.ContextWindowTokens != 1_000_000 ||
+				capability.MaxOutputTokens != 128_000 || !capability.Capabilities["reasoning"] ||
+				!capability.Capabilities["vision"] || !capability.Capabilities["toolCalls"] {
+				t.Fatalf("capability = %+v for model %s", capability, tt.model)
+			}
+			if capability.ThinkingMode != "adaptive_always_on" {
+				t.Fatalf("ThinkingMode = %q, want adaptive_always_on", capability.ThinkingMode)
+			}
+		})
+	}
+}
+
+func TestResolveUpstreamCapability_GPT6SolLuna(t *testing.T) {
+	tests := []struct {
+		model       string
+		displayName string
+	}{
+		// Sol/Luna 是 GPT-6 家族独立 tier；裸 gpt-6 仍指向 Astra（另有测试覆盖）
+		{model: "gpt-6-sol", displayName: "GPT-6 Sol"},
+		{model: "openai/gpt-6-sol", displayName: "GPT-6 Sol"},
+		{model: "gpt-6-luna", displayName: "GPT-6 Luna"},
+		{model: "openai/gpt-6-luna", displayName: "GPT-6 Luna"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			resolved := ResolveUpstreamCapability(tt.model, nil, nil)
+			if !resolved.Known || resolved.Source != "builtin" {
+				t.Fatalf("resolved = %+v, want builtin capability for %s", resolved, tt.model)
+			}
+			capability := resolved.Capability
+			if capability.DisplayName != tt.displayName || capability.ContextWindowTokens != 1_050_000 ||
+				capability.MaxOutputTokens != 128_000 || !capability.Capabilities["reasoning"] ||
+				!capability.Capabilities["vision"] || !capability.Capabilities["toolCalls"] ||
+				!capability.Capabilities["webSearch"] {
+				t.Fatalf("capability = %+v for model %s", capability, tt.model)
 			}
 		})
 	}
@@ -1065,13 +1225,9 @@ func TestResolveUpstreamCapability_LiteLLMGPTVariants(t *testing.T) {
 }
 
 func TestResolveUpstreamCapability_Qwen37PlusTieredPricing(t *testing.T) {
-	upstream := &UpstreamConfig{
-		ModelMapping: map[string]string{
-			"agent": "qwen3.7-plus-2026-05-26",
-		},
-	}
+	upstream := &UpstreamConfig{}
 
-	resolved := ResolveUpstreamCapability("agent", upstream, nil)
+	resolved := ResolveUpstreamCapability("qwen3.7-plus-2026-05-26", upstream, nil)
 	if !resolved.Known || resolved.Source != "builtin" {
 		t.Fatalf("source = %q known=%v, want builtin known", resolved.Source, resolved.Known)
 	}
@@ -1182,10 +1338,55 @@ func TestResolveUpstreamCapability_MimoVisionCapabilities(t *testing.T) {
 	}
 }
 
-func TestResolveUpstreamCapability_RequestModelFallback(t *testing.T) {
-	upstream := &UpstreamConfig{
-		ModelMapping: map[string]string{"agent-1m": "vendor-hidden-model"},
+func TestResolveUpstreamCapability_MiMoV26Series(t *testing.T) {
+	// 事实源：MiMo 开放平台模型列表与 API 定价（mimo.mi.com/docs，2026-09-21 更新）。
+	// V2.6 全系全模态输入（文本/图像/视频/音频），1M 上下文、128K 最大输出；
+	// 定价为海外美元口径：pro 0.435/0.87（缓存 0.0036）、flash 0.14/0.28（0.0028）、
+	// ultraspeed 4.35/8.7（0.036）。
+	tests := []struct {
+		model       string
+		displayName string
+		cacheHit    float64
+		input       float64
+		output      float64
+	}{
+		{model: "mimo-v2.6-pro", displayName: "MiMo V2.6 Pro", cacheHit: 0.0036, input: 0.435, output: 0.87},
+		{model: "xiaomi/mimo-v2.6-pro", displayName: "MiMo V2.6 Pro", cacheHit: 0.0036, input: 0.435, output: 0.87},
+		{model: "mimo-v2.6-flash", displayName: "MiMo V2.6 Flash", cacheHit: 0.0028, input: 0.14, output: 0.28},
+		{model: "mimo-v2.6-pro-ultraspeed", displayName: "MiMo V2.6 Pro Ultraspeed", cacheHit: 0.036, input: 4.35, output: 8.7},
 	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			resolved := ResolveUpstreamCapability(tt.model, nil, nil)
+			if !resolved.Known || resolved.Source != "builtin" {
+				t.Fatalf("resolved = %+v, want builtin capability", resolved)
+			}
+			capability := resolved.Capability
+			if capability.DisplayName != tt.displayName {
+				t.Fatalf("DisplayName = %q, want %q", capability.DisplayName, tt.displayName)
+			}
+			if capability.ContextWindowTokens != 1048576 || capability.MaxOutputTokens != 131072 {
+				t.Fatalf("context/maxOutput = %d/%d, want 1048576/131072 (1M / 128K)", capability.ContextWindowTokens, capability.MaxOutputTokens)
+			}
+			// V2.6 全系支持全模态理解，不再保留 V2.5-Pro 的 text-only 差异
+			for _, name := range []string{"vision", "videoInput", "audioInput", "toolCalls", "jsonOutput", "webSearch", "reasoning", "contextCaching"} {
+				if !capability.Capabilities[name] {
+					t.Fatalf("Capabilities[%q] = false, want true", name)
+				}
+			}
+			pricing := capability.Pricing
+			if pricing == nil {
+				t.Fatal("Pricing = nil")
+			}
+			assertFloatPointerValue(t, pricing.InputCacheHitPrice, tt.cacheHit, "Pricing.InputCacheHitPrice")
+			assertFloatPointerValue(t, pricing.InputCacheMissPrice, tt.input, "Pricing.InputCacheMissPrice")
+			assertFloatPointerValue(t, pricing.OutputPrice, tt.output, "Pricing.OutputPrice")
+		})
+	}
+}
+
+func TestResolveUpstreamCapability_RequestModelFallback(t *testing.T) {
+	upstream := &UpstreamConfig{}
 
 	resolved := ResolveUpstreamCapability("agent-1m", upstream, map[string]UpstreamModelCapability{
 		"agent-*": {ContextWindowTokens: 1000000},

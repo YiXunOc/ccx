@@ -450,8 +450,13 @@ function requireEligibleGroups(result: NewApiVerifyResponse) {
   if (result.groupFetchError) {
     throw new Error(`无法获取上游分组: ${result.groupFetchError}`)
   }
-  const groups = eligibleNewApiGroups(result.groups, DEFAULT_NEWAPI_MAX_GROUP_MULTIPLIER)
+  const groups = eligibleNewApiGroups(result.groups, DEFAULT_NEWAPI_MAX_GROUP_MULTIPLIER, result.groupModelCounts)
   if (groups.length === 0) {
+    // 区分「倍率超限」与「倍率合格但可用模型数为 0」：后者是站点分组配置问题，需如实告知
+    const byRatio = eligibleNewApiGroups(result.groups, DEFAULT_NEWAPI_MAX_GROUP_MULTIPLIER)
+    if (byRatio.length > 0) {
+      throw new Error(`合格分组（${byRatio.map(g => g.name).join('、')}）的可用模型数均为 0，无法接入`)
+    }
     throw new Error(`没有倍率不高于 ${DEFAULT_NEWAPI_MAX_GROUP_MULTIPLIER} 的可用分组`)
   }
   return groups
@@ -669,6 +674,22 @@ watch(
   },
   { immediate: true },
 )
+
+/**
+ * 渠道编辑主保存前的钩子：绑定表单已填写时先执行绑定，避免「填了令牌点保存被静默丢弃」。
+ * 绑定失败时错误已显示在表单 alert 中，由调用方决定是否中止保存。
+ */
+function hasFilledBindForm(): boolean {
+  return !!props.isGeneric && !subscription.value && !!bindForm.value.accessToken.trim() && !!bindForm.value.userId.trim()
+}
+
+async function maybeBindBeforeSave(): Promise<{ attempted: boolean; ok: boolean }> {
+  if (!hasFilledBindForm()) return { attempted: false, ok: true }
+  await bindNewApi()
+  return { attempted: true, ok: !bindError.value }
+}
+
+defineExpose({ hasFilledBindForm, maybeBindBeforeSave })
 </script>
 
 <style scoped>

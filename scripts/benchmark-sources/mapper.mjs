@@ -16,6 +16,9 @@ export const DEEPSWE_MODEL_MAP = {
   'gpt-6-astra': 'gpt-6-astra',
   'gpt-6': 'gpt-6-astra',
   'astra': 'gpt-6-astra',
+  // GPT-6 Sol/Luna（2026-09-22 发布）：deepswe slug 与 canonical 同名
+  'gpt-6-sol': 'gpt-6-sol',
+  'gpt-6-luna': 'gpt-6-luna',
   'gpt-5-6-sol': 'gpt-5.6-sol',
   'gpt-5-6-terra': 'gpt-5.6-terra',
   'gpt-5-6-luna': 'gpt-5.6-luna',
@@ -23,6 +26,8 @@ export const DEEPSWE_MODEL_MAP = {
   'gpt-5-4': 'gpt-5.4',
   'claude-opus-4-8': 'claude-opus-4-8',
   'claude-opus-5': 'claude-opus-5',
+  // Claude Opus 5.5（2026-09-22 发布）：deepswe slug 与 canonical 同名
+  'claude-opus-5-5': 'claude-opus-5-5',
   'claude-fable-5': 'claude-fable-5',
   'claude-fable-5-1': 'claude-fable-5-1',
   'claude-sonnet-5': 'claude-sonnet-5',
@@ -49,6 +54,8 @@ export const DEEPSWE_MODEL_MAP = {
   'gpt-5-4-openai-compact': 'gpt-5.4',
   'grok-4-5': 'grok-4.5',
   'grok-4-6': 'grok-4.6',
+  // Grok 4.7（2026-09-21 发布）：deepswe 用连字符分段版本号
+  'grok-4-7': 'grok-4.7',
   'muse-spark-1-1': 'muse-spark-1.1',
   'muse-spark-1-2': 'muse-spark-1.2',
   'muse-spark-1-3': 'muse-spark-1.3',
@@ -68,12 +75,17 @@ export const BENCHLM_MODEL_MAP = {
   'gpt-6-astra': 'gpt-6-astra',
   'gpt-6': 'gpt-6-astra',
   'astra': 'gpt-6-astra',
+  // GPT-6 Sol/Luna（2026-09-22 发布）：benchlm slug 与 canonical 同名
+  'gpt-6-sol': 'gpt-6-sol',
+  'gpt-6-luna': 'gpt-6-luna',
   'claude-opus-4-8': 'claude-opus-4-8',
   'claude-opus-4-7': 'claude-opus-4-7',
   'claude-opus-4-7-adaptive': 'claude-opus-4-7',
   'claude-opus-4-6': 'claude-opus-4-6',
   'claude-opus-4-6-thinking': 'claude-opus-4-6',
   'claude-opus-5': 'claude-opus-5',
+  // Claude Opus 5.5（2026-09-22 发布）：benchlm slug 与 canonical 同名
+  'claude-opus-5-5': 'claude-opus-5-5',
   'gpt-5-6-terra': 'gpt-5.6-terra',
   'gpt-5-6-sol': 'gpt-5.6-sol',
   'gpt-5-6-luna': 'gpt-5.6-luna',
@@ -105,6 +117,8 @@ export const BENCHLM_MODEL_MAP = {
   'gpt-5-4-mini': 'gpt-5.4-mini',
   'grok-4-5': 'grok-4.5',
   'grok-4-6': 'grok-4.6',
+  // Grok 4.7（2026-09-21 发布）：benchlm slug 用连字符分段版本号
+  'grok-4-7': 'grok-4.7',
   // benchlm 只收录 beta 榜单 slug（2026-03-10 发布）；官方已 GA，canonical 不带 beta。
   // grok-4-20-multi-agent-beta 是多 agent 专用子形态（无总分），故意不映射。
   'grok-4-20-beta': 'grok-4.20',
@@ -113,6 +127,10 @@ export const BENCHLM_MODEL_MAP = {
   'muse-spark-1-3': 'muse-spark-1.3',
   'mimo-v2-5': 'mimo-v2.5',
   'mimo-v2-5-pro': 'mimo-v2.5-pro',
+  // MiMo V2.6 系列（2026-09-22 发布）：benchlm slug 与 canonical 同名连字符形式
+  'mimo-v2-6-pro-ultraspeed': 'mimo-v2.6-pro-ultraspeed',
+  'mimo-v2-6-pro': 'mimo-v2.6-pro',
+  'mimo-v2-6-flash': 'mimo-v2.6-flash',
   'deepseek-v4-flash': 'deepseek-v4-flash',
   'deepseek-v4-flash-base': 'deepseek-v4-flash',
   'deepseek-v4-flash-high': 'deepseek-v4-flash',

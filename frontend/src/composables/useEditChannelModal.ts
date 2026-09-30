@@ -2,12 +2,10 @@ import { ref, reactive, computed, watch, onUnmounted, nextTick } from 'vue'
 import { useTheme } from 'vuetify'
 import type { Channel } from '../services/api'
 import { ApiService } from '../services/api'
-import { useDialogHotkeys } from '@/composables/useDialogHotkeys'
 import {
   buildChannelPayload,
   embeddingCapabilitiesToRows,
   modelCapabilitiesToRows,
-  normalizeSelectableString,
   type EmbeddingCapabilityRow,
   type ModelCapabilityRow,
 } from '../utils/channelPayload'
@@ -51,7 +49,6 @@ export type EditChannelModalEmits = {
 
 type EditChannelModalEmit = <K extends keyof EditChannelModalEmits>(event: K, ...args: EditChannelModalEmits[K]) => void
 type ResolvedEditChannelModalProps = Readonly<EditChannelModalProps & { channelType: NonNullable<EditChannelModalProps['channelType']> }>
-
 
 export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: EditChannelModalEmit) {
   const { t } = useI18n()
@@ -116,14 +113,12 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     tags: [] as string[],
     apiKeys: [] as string[],
     apiKeyConfigs: undefined as Channel['apiKeyConfigs'],
-    modelMapping: {} as Record<string, string>,
     modelCapabilitiesText: '',
     modelCapabilityRows: [] as ModelCapabilityRow[],
     embeddingCapabilityRows: [] as EmbeddingCapabilityRow[],
     defaultContextWindowTokens: null as string | number | null,
     defaultMaxOutputTokens: null as string | number | null,
     allowUnknownContext: false,
-    reasoningMapping: {} as Record<string, 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>,
     reasoningParamStyle: 'reasoning' as 'reasoning' | 'reasoning_effort' | 'thinking',
     textVerbosity: '' as 'low' | 'medium' | 'high' | '',
     fastMode: false,
@@ -158,22 +153,11 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     stripCodexClientTools: false,
     convertImageUrlToB64Json: false,
     noVision: false,
-    noVisionModels: [] as string[],
-    visionFallbackModel: '',
-    visionFallbackReasoningEffort: '' as 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | '',
     historicalImageTurnLimit: 0,
   })
 
   const channelTypeRef = computed(() => props.channelType)
-  const {
-    serviceTypeOptions,
-    sourceModelOptions,
-    modelMappingHint,
-    targetModelPlaceholder,
-    reasoningEffortOptions,
-    reasoningParamStyleOptions,
-    textVerbosityOptions,
-  } = useEditChannelOptions(channelTypeRef, form, t)
+  const { serviceTypeOptions } = useEditChannelOptions(channelTypeRef)
 
   // 多 BaseURL 文本输入（独立变量，保留用户输入的换行）
   const baseUrlsText = ref('')
@@ -202,7 +186,6 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
       form.stripBillingHeader = defaultStripBillingHeader([form.baseUrl, ...form.baseUrls])
     },
   )
-
 
   function resetTransientUiState() {
     resetRestoredKeys()
@@ -291,8 +274,6 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     return single ? [single] : []
   }
 
-
-
   const { headerClasses, avatarColor, headerIconStyle, subtitleClasses } = useChannelEditorHeaderState(theme)
 
   const isFormValid = computed(() => {
@@ -328,19 +309,15 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
       website: form.website ?? '',
       description: props.channel.description || '',
       tags: [...(props.channel.tags || [])],
-      modelMapping: { ...(props.channel.modelMapping || {}) },
       modelCapabilities: { ...(props.channel.modelCapabilities || {}) },
       embeddingCapabilities: { ...(props.channel.embeddingCapabilities || {}) },
       defaultCapability: { ...(props.channel.defaultCapability || {}) },
       allowUnknownContext: !!props.channel.allowUnknownContext,
-      reasoningMapping: { ...(props.channel.reasoningMapping || {}) },
       reasoningParamStyle: props.channel.reasoningParamStyle,
       textVerbosity: props.channel.textVerbosity,
       fastMode: !!props.channel.fastMode,
       supportedModels: [...(props.channel.supportedModels || [])],
       noVision: !!props.channel.noVision,
-      noVisionModels: [...(props.channel.noVisionModels || [])],
-      visionFallbackModel: props.channel.visionFallbackModel || '',
       lowQuality: !!props.channel.lowQuality,
       injectDummyThoughtSignature: !!props.channel.injectDummyThoughtSignature,
       stripThoughtSignature: !!props.channel.stripThoughtSignature,
@@ -440,7 +417,6 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     return payload
   }
 
-
   // 表单操作
   const resetForm = () => {
     resetTransientUiState()
@@ -459,14 +435,12 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     form.description = ''
     form.apiKeys = []
     form.apiKeyConfigs = undefined
-    form.modelMapping = {}
     form.modelCapabilitiesText = ''
     form.modelCapabilityRows = []
     form.embeddingCapabilityRows = []
     form.defaultContextWindowTokens = null
     form.defaultMaxOutputTokens = null
     form.allowUnknownContext = false
-    form.reasoningMapping = {}
 
     form.reasoningParamStyle = 'reasoning'
     form.textVerbosity = ''
@@ -503,9 +477,6 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     form.stripCodexClientTools = false
     form.convertImageUrlToB64Json = false
     form.noVision = false
-    form.noVisionModels = []
-    form.visionFallbackModel = ''
-    form.visionFallbackReasoningEffort = ''
     form.historicalImageTurnLimit = 0
 
     // 重置 baseUrlsText
@@ -552,7 +523,6 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
         }))
       : undefined
 
-    form.modelMapping = { ...(channel.modelMapping || {}) }
     form.modelCapabilitiesText = Object.keys(channel.modelCapabilities || {}).length > 0
       ? JSON.stringify(normalizeModelCapabilities(channel.modelCapabilities), null, 2)
       : ''
@@ -563,7 +533,6 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     form.defaultContextWindowTokens = channel.defaultCapability?.contextWindowTokens || null
     form.defaultMaxOutputTokens = channel.defaultCapability?.maxOutputTokens || null
     form.allowUnknownContext = !!channel.allowUnknownContext
-    form.reasoningMapping = { ...(channel.reasoningMapping || {}) }
 
     form.reasoningParamStyle = channel.reasoningParamStyle || 'reasoning'
     form.textVerbosity = channel.textVerbosity || ''
@@ -591,7 +560,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     form.rateLimitMaxConcurrent = (channel.rateLimitMaxConcurrent && channel.rateLimitMaxConcurrent > 0) ? channel.rateLimitMaxConcurrent : null
     form.rateLimitAutoFromHeaders = channel.rateLimitAutoFromHeaders !== false
     form.routePrefix = channel.routePrefix || ''
-    const { validPatterns, hasInvalidPatterns } = filterValidSupportedModelPatterns(channel.supportedModels || [])
+    const { validPatterns } = filterValidSupportedModelPatterns(channel.supportedModels || [])
     form.supportedModels = validPatterns
     form.autoBlacklistBalance = channel.autoBlacklistBalance ?? true
     form.normalizeMetadataUserId = channel.normalizeMetadataUserId ?? true
@@ -602,9 +571,6 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     form.stripCodexClientTools = channel.codexToolCompat ?? channel.stripCodexClientTools ?? false
     form.convertImageUrlToB64Json = !!channel.convertImageUrlToB64Json
     form.noVision = !!channel.noVision
-    form.noVisionModels = [...(channel.noVisionModels || [])]
-    form.visionFallbackModel = channel.visionFallbackModel || ''
-    form.visionFallbackReasoningEffort = (channel.reasoningMapping?.[form.visionFallbackModel] || '') as 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | ''
     form.historicalImageTurnLimit = channel.historicalImageTurnLimit ?? 0
 
     // 立即同步 baseUrl 到预览变量，避免等待 debounce
@@ -694,11 +660,6 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     updateCustomHeaders,
   } = useChannelEditorFormDerived(channelTypeRef, form, baseUrlsText)
 
-  // 将 modelMappingRows 转换为 form.modelMapping 对象（保存时使用）
-
-  // 从渠道数据初始化 modelMappingRows
-
-
   // 辅助函数：更新表单字段
   const updateForm = (partial: Record<string, unknown>) => {
     if ('stripBillingHeader' in partial) {
@@ -706,7 +667,6 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     }
     Object.assign(form, partial)
   }
-
 
   const handleSubmit = async () => {
     if (submitting.value || !formRef.value) return
@@ -831,19 +791,6 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     }
   )
 
-  // ESC 取消 & Cmd/Ctrl+Enter 确认（经全局对话框快捷键栈，仅栈顶时生效）
-  useDialogHotkeys(
-    () => props.show,
-    {
-      esc: () => {
-        if (submitting.value) return false
-        if (isAnySelectMenuOpen.value || Date.now() < suppressDialogEscapeUntil.value) return false
-        handleCancel()
-      },
-      confirm: () => handleSubmit(),
-    },
-  )
-
   onUnmounted(() => {
     detachScrollListener()
     if (formBaseUrlPreviewTimer !== null) {
@@ -896,6 +843,8 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     resumeKey,
     ensureTargetModelsLoaded,
     updateForm,
+    isAnySelectMenuOpen,
+    suppressDialogEscapeUntil,
     handleSubmit,
     handleCancel,
     scrollToSection,

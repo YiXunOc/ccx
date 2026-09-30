@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/BenedictKing/ccx/internal/config"
@@ -305,6 +306,95 @@ func TestEffortAwareQualityTierLunaReplay(t *testing.T) {
 	// 未注册模型回退家族规则（与模型级判定一致）
 	if got := EffortAwareQualityTier("totally-unknown-model", EffortMax, ModelFamilyOpenAI); got != ModelProfileQualityTier("totally-unknown-model", ModelFamilyOpenAI) {
 		t.Fatalf("未知模型应回退家族规则: %v", got)
+	}
+}
+
+func TestEffortAwareQualityTierHy4PreviewReplay(t *testing.T) {
+	for _, tt := range []struct {
+		effort EffortLevel
+		want   QualityTier
+	}{
+		{"", QualityTierLow},
+		{EffortOff, QualityTierLow},
+		{EffortMinimal, QualityTierLow},
+		{EffortLow, QualityTierLow},
+		{EffortMedium, QualityTierLow},
+		{EffortHigh, QualityTierHigh},
+		{EffortXhigh, QualityTierHigh},
+		{EffortMax, QualityTierHigh},
+		{EffortUltra, QualityTierHigh},
+	} {
+		if got := EffortAwareQualityTier("hy4-preview", tt.effort, ModelFamilyUnknown); got != tt.want {
+			t.Fatalf("hy4-preview effort=%q tier = %v, want %v", tt.effort, got, tt.want)
+		}
+	}
+}
+
+func TestEffortAwareQualityTierSupportedEffortsMonotonic(t *testing.T) {
+	profiles := config.BuiltinModelBenchmarkProfiles()
+	seenModels := make(map[string]struct{})
+	for _, profile := range profiles {
+		modelID := profile.CanonicalModel
+		if modelID == "" {
+			continue
+		}
+		if _, exists := seenModels[modelID]; exists {
+			continue
+		}
+		seenModels[modelID] = struct{}{}
+
+		resolved := config.ResolveUpstreamCapability(modelID, nil, nil)
+		if !resolved.Known {
+			continue
+		}
+		family := InferModelFamily(modelID, resolved.Capability.Provider)
+		levels := make([]EffortLevel, 0, len(resolved.Capability.ReasoningEfforts))
+		seenLevels := make(map[EffortLevel]struct{})
+		for _, raw := range resolved.Capability.ReasoningEfforts {
+			level := NormalizeEffortLevel(raw)
+			if level == "" {
+				continue
+			}
+			if _, exists := seenLevels[level]; exists {
+				continue
+			}
+			seenLevels[level] = struct{}{}
+			levels = append(levels, level)
+		}
+		sort.Slice(levels, func(i, j int) bool {
+			return EffortLevelOrdinal(levels[i]) < EffortLevelOrdinal(levels[j])
+		})
+		for i := 1; i < len(levels); i++ {
+			lower := EffortAwareQualityTier(modelID, levels[i-1], family)
+			higher := EffortAwareQualityTier(modelID, levels[i], family)
+			if qualityTierRank(higher) < qualityTierRank(lower) {
+				t.Fatalf("%s effort tier decreased: %s=%s, %s=%s", modelID, levels[i-1], lower, levels[i], higher)
+			}
+		}
+	}
+}
+
+func TestEffortAwareQualityTierKnownMonotonicRegressions(t *testing.T) {
+	for _, tt := range []struct {
+		model  string
+		effort EffortLevel
+		want   QualityTier
+	}{
+		{"deepseek-v4.1-flash", EffortMax, QualityTierHigh},
+		{"gemini-3.5-flash", EffortHigh, QualityTierNormal},
+		{"glm-5.2", EffortHigh, QualityTierNormal},
+		{"glm-5.2", EffortMax, QualityTierNormal},
+		{"kimi-k3", EffortHigh, QualityTierHigh},
+		{"qwen3.8-max", EffortHigh, QualityTierHigh},
+	} {
+		resolved := config.ResolveUpstreamCapability(tt.model, nil, nil)
+		family := ModelFamilyUnknown
+		if resolved.Known {
+			family = InferModelFamily(tt.model, resolved.Capability.Provider)
+		}
+		if got := EffortAwareQualityTier(tt.model, tt.effort, family); got != tt.want {
+			t.Fatalf("%s effort=%s tier = %s, want %s", tt.model, tt.effort, got, tt.want)
+		}
 	}
 }
 

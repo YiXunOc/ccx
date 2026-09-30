@@ -57,6 +57,7 @@ var builtinModelsManifests = []BuiltinModelsManifest{
 			"claude-opus-4-8",
 			"claude-opus-4-7",
 			"claude-opus-4-6",
+			"claude-opus-5-5",
 			"claude-sonnet-5",
 			"claude-sonnet-4-6",
 			"claude-sonnet-4-5",
@@ -228,8 +229,14 @@ var builtinModelsManifests = []BuiltinModelsManifest{
 	},
 }
 
+// mimoModelIDs 小米 MiMo 官方入口兜底文本模型清单。
+// 来源：MiMo 开放平台模型列表（mimo.mi.com/docs，2026-09-21 更新）：
+// V2.6 系列（pro / flash / pro-ultraspeed）为当前主力；V2.5 系列官方公告 2026-10-21 下线，保留至下线日。
 func mimoModelIDs() []string {
 	return []string{
+		"mimo-v2.6-pro-ultraspeed",
+		"mimo-v2.6-pro",
+		"mimo-v2.6-flash",
 		"mimo-v2.5-pro",
 		"mimo-v2.5",
 	}
@@ -254,8 +261,9 @@ func deepseekModelIDs() []string {
 // volcengineAgentPlanModelIDs 火山方舟 Agent Plan(/api/plan) 入口的兜底文本模型清单。
 // 当用户未绑定火山云 Access Key（无法调用管控面模型发现接口）时，
 // 用此清单让渠道立即可用；绑定 Access Key 后由 FetchModels 覆盖为真实清单。
-// 清单来源：火山方舟 Agent Plan 套餐概览(2026-08)；minimax-m2.7/kimi-k2.6 已于 2026-08-18 下线，
-// glm-5.2 自 2026-08-18 起停止新用户服务并于 2026-08-31 下线路由至 glm-5.3，均已移除。
+// 清单来源：火山方舟 Agent Plan 套餐概览(2026-09)；minimax-m2.7/kimi-k2.6/glm-5.2 已下线移除，
+// 本次新增 glm-5.3-flash / deepseek-v4.1-flash / kimi-k2.8-preview。
+// 向量化模型 doubao-embedding-vision 属独立向量渠道，不纳入本文本清单。
 func VolcengineAgentPlanModelIDs() []string {
 	return volcengineAgentPlanModelIDs()
 }
@@ -271,14 +279,18 @@ func volcengineAgentPlanModelIDs() []string {
 		"glm-latest",
 		"deepseek-v4-flash",
 		"deepseek-v4-pro",
+		"deepseek-v4.1-flash",
 		"kimi-k3",
 		"kimi-k2.7-code",
+		"kimi-k2.8-preview",
+		"glm-5.3-flash",
 	}
 }
 
 // volcengineCodingPlanModelIDs 火山方舟 Coding Plan(/api/coding) 入口的兜底文本模型清单。
-// 与 Agent Plan 差异：Coding Plan 不含 doubao-seed-2.0-mini、doubao-seed-evolving、glm-latest、kimi-k3。
-// 清单来源：火山方舟 Coding Plan 套餐概览(2026-08)；下线的 minimax-m2.7/kimi-k2.6/glm-5.2 已移除。
+// 与 Agent Plan 差异：Coding Plan 不含 doubao-seed-2.0-mini、doubao-seed-evolving、glm-latest、kimi-k3，
+// 亦不含 deepseek-v4.1-flash（官方标注「仅 Agent Plan 个人版支持」）。
+// 清单来源：火山方舟 Coding Plan 套餐概览(2026-09)；下线的 minimax-m2.7/kimi-k2.6/glm-5.2 已移除。
 // VolcengineCodingPlanModelIDs 火山方舟 Coding Plan(/api/coding) 入口的兜底文本模型清单，语义同 Agent Plan 版。
 func VolcengineCodingPlanModelIDs() []string {
 	return volcengineCodingPlanModelIDs()
@@ -293,6 +305,8 @@ func volcengineCodingPlanModelIDs() []string {
 		"deepseek-v4-flash",
 		"deepseek-v4-pro",
 		"kimi-k2.7-code",
+		"kimi-k2.8-preview",
+		"glm-5.3-flash",
 	}
 }
 

@@ -2,7 +2,6 @@ package responses
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -59,7 +58,9 @@ func handleSuccess(
 	}
 
 	// 非流式响应处理
-	bodyBytes, err := io.ReadAll(resp.Body)
+	// 流式桥接：上游实际返回 SSE（仅接受流式渠道的兼容改写）时合成回非流式体，
+	// 后续转换/usage 提取与原生非流式路径完全一致。
+	bodyBytes, err := common.ReadUpstreamNonStreamBody(c, resp, upstreamType)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "Failed to read response"})
 		return nil, err
@@ -106,6 +107,12 @@ func handleSuccess(
 		if originalReq.TransformerMetadata != nil {
 			if v, ok := originalReq.TransformerMetadata["codex_tool_compat_enabled"].(bool); ok {
 				codexEnabled = v
+			}
+		}
+		if !codexEnabled {
+			// additional_tools 提升路径（默认开启，不经渠道开关）
+			if hoisted, ok := c.Get("codex_additional_tools_hoisted"); ok {
+				codexEnabled, _ = hoisted.(bool)
 			}
 		}
 		if codexEnabled {

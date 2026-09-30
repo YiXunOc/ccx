@@ -2,6 +2,8 @@
 import { computed } from 'vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   CheckCircle2,
@@ -9,18 +11,19 @@ import {
   Check,
   Loader2,
   Radar,
+  Zap,
 } from 'lucide-vue-next'
 import ChannelEditorHeader from './channel-edit/ChannelEditorHeader.vue'
 import QuickCreatePanel from './channel-edit/QuickCreatePanel.vue'
 import BasicConfigPanel from './channel-edit/BasicConfigPanel.vue'
 import AuthPanel from './channel-edit/AuthPanel.vue'
-import ModelMappingPanel from './channel-edit/ModelMappingPanel.vue'
 import ModelCapabilityPanel from './channel-edit/ModelCapabilityPanel.vue'
 import EmbeddingCompatibilityPanel from './channel-edit/EmbeddingCompatibilityPanel.vue'
 import AdvancedPanel from './channel-edit/AdvancedPanel.vue'
 import CustomHeadersPanel from './channel-edit/CustomHeadersPanel.vue'
 import CustomParamsPanel from './channel-edit/CustomParamsPanel.vue'
 import StreamTimeoutPanel from './channel-edit/StreamTimeoutPanel.vue'
+import NewApiAccountPanel from '@/components/subscriptions/NewApiAccountPanel.vue'
 import { useChannelEditDialog, type ChannelEditDialogEmit, type ChannelEditDialogProps } from '@/composables/useChannelEditDialog'
 
 const props = defineProps<ChannelEditDialogProps>()
@@ -50,23 +53,12 @@ const {
   keyModelsStatus,
   activeSection,
   sections,
-  modelMappingRows,
   modelCapabilityRows,
-  mappedTargetModels,
-  newModelMapping,
   headerRows,
   newHeader,
-  showTargetSuggestions,
-  activeTargetInputId,
   fetchedModelsError,
-  filteredTargetModels,
-  showSourceSuggestions,
-  activeSourceInputId,
-  filteredSourceModels,
   reasoningParamStyleOptions,
   textVerbosityOptions,
-  DEFAULT_SELECT_VALUE,
-  reasoningEffortOptions,
   form,
   applyFormUpdates,
   disabledApiKeys,
@@ -81,27 +73,21 @@ const {
   serviceTypeOptions,
   headerServiceTypeItems,
   supportsOpenAIAdvancedOptions,
-  supportsReasoningMappingOptions,
   supportsChannelDiscovery,
-  modelMappingHint,
-  targetModelPlaceholder,
   showModelMappingPresets,
   showMessagesOpenAIChannelPresets,
   showClaudeChannelPresets,
   showCodexResponsesPresets,
+  applyPreset,
   fetchingModels,
-  sourceModelOptions,
   targetModelDatalist,
   commonSupportedModelFilters,
   supportedModelsError,
   selectedSupportedModelSet,
-  sourceMappingError,
   discoveringChannelConfig,
   channelDiscoveryResult,
   channelDiscoveryError,
-  channelDiscoveryModelMappingEntries,
   channelDiscoveryCompatEntries,
-  channelDiscoveryReasoningEntries,
   channelDiscoverySuccessfulProtocols,
   channelDiscoveryCapabilityEntries,
   expectedRequestUrls,
@@ -109,28 +95,15 @@ const {
   clearCopilotPollTimer,
   scrollToSection,
   setSectionRef,
-  showTargetDropdown,
-  hideTargetDropdown,
-  showSourceDropdown,
-  hideSourceDropdown,
-  selectSourceModel,
-  selectTargetModel,
   removeExistingApiKey,
   handleQuickPaste,
   updateQuickServiceType,
   clearDuplicateKeyHighlight,
   moveApiKeyToTop,
   moveApiKeyToBottom,
-  addModelMappingRow,
-  removeModelMappingRow,
   toggleSupportedModelFilter,
-  handleTargetFocus,
-  applyPreset,
   syncUpstreamModels,
-  updateMappingRow,
   updateModelCapabilityRows,
-  startMappingTargetEdit,
-  finishMappingTargetEdit,
   addHeaderRow,
   removeHeaderRow,
   updateHeaderRow,
@@ -156,6 +129,29 @@ const {
 const embeddingTargetModels = computed(() =>
   targetModelDatalist.value.map(m => ({ title: m, value: m }))
 )
+
+const isSupportedModelSelected = (filter: string) => selectedSupportedModelSet.value.has(filter)
+
+// new-api 托管渠道：显式 autoManagedKind 标记，或已关联订阅
+const isNewApiManagedChannel = computed(() =>
+  props.channel?.autoManagedKind === 'new_api' || !!props.channel?.subscriptionUid,
+)
+// generic 自动托管渠道：autoManaged=true、无 providerId、尚未绑定 new-api
+const isGenericAutoManagedChannel = computed(() =>
+  !!props.channel?.autoManaged && !props.channel?.providerId && props.channel?.autoManagedKind !== 'new_api',
+)
+
+// CustomParamsPanel 更新：触碰竞速开关时打 racingTouched 标记，保存时才显式写入 racing
+function handleCustomParamsUpdate(updates: Record<string, unknown>) {
+  if ('racingEnabled' in updates) form.racingTouched = true
+  Object.assign(form, updates)
+}
+
+// accounts 区更新：面板内部已自刷新订阅与账号状态，这里无需回写渠道表单
+// （刷新渠道列表会触发 props.channel 变化并重置表单，丢失未保存的编辑）。
+function handleAccountsUpdated() {
+  // no-op：面板内部状态自洽
+}
 </script>
 
 <template>
@@ -326,6 +322,21 @@ const embeddingTargetModels = computed(() =>
                           <button v-if="copilotPolling || copilotOAuthLoading" type="button" class="text-xs text-muted-foreground underline" @click="clearCopilotPollTimer(); copilotPolling = false; copilotOAuthLoading = false">{{ t('copilotOAuth.cancel') }}</button>
                         </div>
                       </div>
+                      <!-- new-api 账号管理（订阅绑定/多账号），对齐 web EditChannelModal accounts 区 -->
+                      <div v-if="isNewApiManagedChannel || isGenericAutoManagedChannel" class="mt-4">
+                        <NewApiAccountPanel
+                          :subscription-uid="channel?.subscriptionUid || ''"
+                          :channel-name="channel?.name"
+                          :base-url="channel?.baseUrl"
+                          :channel-uid="channel?.channelUid"
+                          :channel-kind="channelType"
+                          :is-generic="isGenericAutoManagedChannel"
+                          :auto-managed-kind="channel?.autoManagedKind"
+                          :channel-proxy-url="form.proxyUrl"
+                          :channel-proxy-prefer-direct="form.proxyPreferDirect"
+                          @updated="handleAccountsUpdated"
+                        />
+                      </div>
                     </section>
 
                     <!-- Section: 模型重定向 -->
@@ -383,39 +394,6 @@ const embeddingTargetModels = computed(() =>
                             </span>
                           </div>
 
-                          <div v-if="channelDiscoveryModelMappingEntries.length" class="space-y-1.5">
-                            <div class="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
-                              {{ t('channelDiscovery.mapping') }}
-                            </div>
-                            <div class="flex flex-wrap items-center gap-1.5">
-                              <span
-                                v-for="[source, target] in channelDiscoveryModelMappingEntries"
-                                :key="source"
-                                class="rounded-md border border-primary/20 bg-primary/10 px-2 py-1 font-mono text-[10px] text-primary"
-                              >
-                                {{ source }} -> {{ target }}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div v-if="channelDiscoveryReasoningEntries.length" class="space-y-1.5">
-                            <div class="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
-                              {{ t('channelDiscovery.reasoning') }}
-                            </div>
-                            <div class="flex flex-wrap items-center gap-1.5">
-                              <span
-                                v-for="[source, effort] in channelDiscoveryReasoningEntries"
-                                :key="source"
-                                class="rounded-md border border-secondary/30 bg-secondary/10 px-2 py-1 font-mono text-[10px] text-secondary-foreground"
-                              >
-                                {{ source }}={{ effort }}
-                              </span>
-                            </div>
-                            <p class="text-xs leading-5 text-muted-foreground">
-                              {{ t('channelDiscovery.reasoningNote') }}
-                            </p>
-                          </div>
-
                           <div v-if="channelDiscoveryCompatEntries.length" class="space-y-1.5">
                             <div class="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
                               {{ t('channelDiscovery.compat') }}
@@ -471,60 +449,109 @@ const embeddingTargetModels = computed(() =>
                         </div>
                       </div>
 
-                      <ModelMappingPanel
-                        :model-mapping-rows="modelMappingRows"
-                        :new-model-mapping="newModelMapping"
-                        :source-model-options="sourceModelOptions"
-                        :filtered-source-models="filteredSourceModels"
-                        :reasoning-effort-options="reasoningEffortOptions"
-                        :filtered-target-models="filteredTargetModels"
-                        :channel-type="channelType"
-                        :show-target-suggestions="showTargetSuggestions"
-                        :active-target-input-id="activeTargetInputId"
-                        :show-source-suggestions="showSourceSuggestions"
-                        :active-source-input-id="activeSourceInputId"
-                        :DEFAULT_SELECT_VALUE="DEFAULT_SELECT_VALUE"
-                        :vision-fallback-model="form.visionFallbackModel"
-                        :vision-fallback-reasoning-effort="form.visionFallbackReasoningEffort"
-                        :supported-models-text="form.supportedModelsText"
-                        :model-mapping-hint="modelMappingHint"
-                        :target-model-placeholder="targetModelPlaceholder"
-                        :show-model-mapping-presets="showModelMappingPresets"
-                        :show-messages-open-a-i-channel-presets="showMessagesOpenAIChannelPresets"
-                        :show-claude-channel-presets="showClaudeChannelPresets"
-                        :show-codex-responses-presets="showCodexResponsesPresets"
-                        :supports-reasoning-mapping-options="supportsReasoningMappingOptions"
-                        :common-supported-model-filters="commonSupportedModelFilters"
-                        :selected-supported-model-set="selectedSupportedModelSet"
-                        :source-mapping-error="sourceMappingError"
-                        :fetch-models-error="fetchedModelsError"
-                        :supported-models-error="supportedModelsError"
-                        @update:new-model-mapping="(updates) => Object.assign(newModelMapping, updates)"
-                        @update:vision-fallback-model="form.visionFallbackModel = $event"
-                        @update:vision-fallback-reasoning-effort="form.visionFallbackReasoningEffort = $event"
-                        @update:supported-models-text="form.supportedModelsText = $event"
-                        @add-model-mapping-row="addModelMappingRow"
-                        @remove-model-mapping-row="removeModelMappingRow"
-                        @update-mapping-row="updateMappingRow"
-                        @sync-upstream-models="syncUpstreamModels"
-                        @apply-preset="applyPreset"
-                        @show-target-dropdown="showTargetDropdown"
-                        @hide-target-dropdown="hideTargetDropdown"
-                        @select-target-model="selectTargetModel"
-                        @handle-target-focus="handleTargetFocus"
-                        @target-edit-start="startMappingTargetEdit"
-                        @target-edit-end="finishMappingTargetEdit"
-                        @show-source-dropdown="showSourceDropdown"
-                        @hide-source-dropdown="hideSourceDropdown"
-                        @select-source-model="selectSourceModel"
-                        @append-supported-model-filter="toggleSupportedModelFilter"
-                      />
+                      <!-- 一键预设：应用 serviceType/reasoningParamStyle/authHeader/codexToolCompat/fastMode 等预设字段 -->
+                      <div
+                        v-if="showModelMappingPresets || showMessagesOpenAIChannelPresets || showClaudeChannelPresets || showCodexResponsesPresets"
+                        class="flex flex-wrap items-center gap-1.5"
+                      >
+                        <div class="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                          <Zap class="h-3 w-3 text-primary" />
+                          {{ t('addChannel.oneClickSetup') }}
+                        </div>
+                        <template v-if="showModelMappingPresets">
+                          <Button
+                            v-for="tag in ['gpt-5.5', 'gpt-5.4']"
+                            :key="'openai-' + tag"
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            class="h-6 rounded-md border border-border/70 bg-background px-2.5 text-[10px] font-medium text-muted-foreground hover:border-primary/40 hover:text-primary hover:bg-primary/5 shadow-3xs"
+                            @click="applyPreset(tag)"
+                          >
+                            {{ tag }}
+                          </Button>
+                        </template>
+                        <template v-if="showMessagesOpenAIChannelPresets">
+                          <Button
+                            v-for="tag in ['MiMo', 'DeepSeek']"
+                            :key="'messages-openai-' + tag"
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            class="h-6 rounded-md border border-border/70 bg-background px-2.5 text-[10px] font-medium text-muted-foreground hover:border-primary/40 hover:text-primary hover:bg-primary/5 shadow-3xs"
+                            @click="applyPreset(tag)"
+                          >
+                            {{ tag }}
+                          </Button>
+                        </template>
+                        <template v-if="showClaudeChannelPresets">
+                          <Button
+                            v-for="tag in ['MiMo', 'DeepSeek', 'MiniMax']"
+                            :key="'claude-' + tag"
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            class="h-6 rounded-md border border-border/70 bg-background px-2.5 text-[10px] font-medium text-muted-foreground hover:border-primary/40 hover:text-primary hover:bg-primary/5 shadow-3xs"
+                            @click="applyPreset(tag)"
+                          >
+                            {{ tag }}
+                          </Button>
+                        </template>
+                        <template v-if="showCodexResponsesPresets">
+                          <Button
+                            v-for="tag in ['MiMo', 'DeepSeek', 'MiniMax']"
+                            :key="'codex-' + tag"
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            class="h-6 rounded-md border border-border/70 bg-background px-2.5 text-[10px] font-medium text-muted-foreground hover:border-primary/40 hover:text-primary hover:bg-primary/5 shadow-3xs"
+                            @click="applyPreset(tag)"
+                          >
+                            {{ tag }}
+                          </Button>
+                        </template>
+                      </div>
+
+                      <section
+                        v-if="channelType !== 'images' && channelType !== 'vectors'"
+                        class="space-y-2 rounded-xl border border-primary/20 bg-gradient-to-b from-primary/[0.02] to-transparent p-5 shadow-sm"
+                      >
+                        <Label class="text-xs font-semibold text-muted-foreground">
+                          {{ t('addChannel.supportedModelsLabel') }}
+                        </Label>
+                        <Textarea
+                          :model-value="form.supportedModelsText"
+                          :placeholder="t('addChannel.supportedModelsPlaceholder')"
+                          class="w-full min-h-[64px] font-mono text-xs"
+                          :class="supportedModelsError ? 'border-destructive/40 focus-visible:ring-destructive/20' : ''"
+                          @update:model-value="(val) => form.supportedModelsText = val as string"
+                        />
+                        <p class="text-[10px] leading-4" :class="supportedModelsError ? 'text-destructive' : 'text-muted-foreground'">
+                          {{ supportedModelsError || t('addChannel.supportedModelsHint') }}
+                        </p>
+                        <div class="flex items-center flex-wrap gap-2">
+                          <span class="text-[10px] font-bold uppercase tracking-wider text-primary">
+                            {{ t('addChannel.commonFilters') }}
+                          </span>
+                          <Button
+                            v-for="filter in commonSupportedModelFilters"
+                            :key="filter"
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            class="h-6 rounded-md border border-border/70 bg-background px-2.5 text-[10px] font-medium text-muted-foreground hover:border-primary/40 hover:text-primary hover:bg-primary/5 shadow-3xs"
+                            :class="isSupportedModelSelected(filter) ? 'border-primary/40 text-primary' : ''"
+                            @click="toggleSupportedModelFilter(filter)"
+                          >
+                            {{ filter }}
+                          </Button>
+                        </div>
+                      </section>
                       <ModelCapabilityPanel
                         v-if="channelType !== 'images' && channelType !== 'vectors'"
                         class="mt-6"
                         :rows="modelCapabilityRows"
                         :target-models="targetModelDatalist"
-                        :mapped-target-models="mappedTargetModels"
                         :fetching-models="fetchingModels"
                         :fetch-models-error="fetchedModelsError"
                         :error="errors.modelCapabilitiesText"
@@ -536,7 +563,6 @@ const embeddingTargetModels = computed(() =>
                         class="mt-6"
                         :rows="form.embeddingCapabilityRows"
                         :target-models="embeddingTargetModels"
-                        :mapped-target-models="mappedTargetModels"
                         :fetching-models="fetchingModels"
                         :fetch-models-error="fetchedModelsError"
                         :error="embeddingCapabilitiesError"
@@ -579,7 +605,7 @@ const embeddingTargetModels = computed(() =>
                       <div class="mt-6">
                         <CustomParamsPanel
                           :form="form"
-                          @update:form="(updates) => Object.assign(form, updates)"
+                          @update:form="handleCustomParamsUpdate"
                         />
                       </div>
                     </section>

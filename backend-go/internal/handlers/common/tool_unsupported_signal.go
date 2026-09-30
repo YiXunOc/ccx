@@ -193,15 +193,10 @@ func MaybeLearnVerifiedToolCalls(c *gin.Context, upstream *config.UpstreamConfig
 	cache.ClearVerifiedToolCallPseudoMiss(routeIdentity, keyHash, model)
 }
 
-// MaybeForgetVerifiedToolCalls 白名单的失败撤销（学习闭环的负向对偶）。
-//
-// 背景：渠道间排他把带工具流量锁定到白名单渠道；白名单渠道自身故障
-// （上游空流/限流）时若无撤销机制会无路可退（2026-09-13 ark 空流事故）。
-// 带工具请求在该组合上以无效响应（空流/无效响应体）失败时撤销 verified
-// 记录——渠道级集合随即摘牌，排他 fail-open 放开全部渠道；后续真实成功
-// 经 MaybeLearnVerifiedToolCalls 重建。白名单由此成为动态自愈集合。
-// kind 为该次尝试的执行协议，撤销必须与学习落在同一路由身份上。
-func MaybeForgetVerifiedToolCalls(c *gin.Context, upstream *config.UpstreamConfig, apiKey, model string, attemptBody []byte, kind string) {
+// MaybeForgetVerifiedToolCallsOnUnsupported 处理明确的工具能力拒绝。
+// 空流、超时、断流和无效响应只说明本次请求不可用，不能证明渠道没有工具能力，
+// 因此不会撤销 verified；只有上游 400/422 明确点名工具能力不支持时才调用此函数。
+func MaybeForgetVerifiedToolCallsOnUnsupported(c *gin.Context, upstream *config.UpstreamConfig, apiKey, model string, attemptBody []byte, kind, evidence string) {
 	if c == nil || upstream == nil || model == "" {
 		return
 	}
@@ -217,23 +212,29 @@ func MaybeForgetVerifiedToolCalls(c *gin.Context, upstream *config.UpstreamConfi
 		return
 	}
 	keyHash := autopilot.KeyHashFromAPIKey(apiKey)
-	if cache.Record(routeIdentity, keyHash, model, config.TraitVerifiedToolCalls, false, config.CompatSourceRuntimeSignal, "带工具请求收到空/无效响应，撤销正向白名单记录") {
-		RequestLogf(c, "[ToolCallCompat] 渠道 %s 模型 %s 带工具请求无效响应，已撤销正向白名单（排他将 fail-open 放开候选）",
+	if strings.TrimSpace(evidence) == "" {
+		evidence = "上游明确拒绝工具调用能力，撤销正向白名单记录"
+	}
+	if cache.Record(routeIdentity, keyHash, model, config.TraitVerifiedToolCalls, false, config.CompatSourceErrorSignal, evidence) {
+		RequestLogf(c, "[ToolCallCompat] 渠道 %s 模型 %s 明确拒绝工具调用能力，已撤销正向白名单（排他将 fail-open 放开候选）",
 			upstream.Name, model)
 	}
 }
 
 // MaybeCountPseudoToolCallMiss 白名单负反馈补盲：agentic 干净 200 却零真实工具调用、
 // 且输出命中伪工具调用标记文本（模型用纯文本"扮演"工具调用）时，对该组合的 verified
-// 条目计一次连续 miss，连续达阈值即撤销（与 MaybeForgetVerifiedToolCalls 的失败路径
+// 条目计一次连续 miss，连续达阈值即撤销（与 MaybeForgetVerifiedToolCallsOnUnsupported 的明确拒绝路径
 // 撤销互补，覆盖"假成功"形态）。
 //
 // 防误判约束（缺一不可）：
 //   - 流式 2xx 干净完成（streamErr == nil）——出错流不算证据；
 //   - 请求带工具且非强制 tool_choice——强制形态走 MaybeLearnForcedToolChoiceMiss，不双算；
 //   - 全程零真实工具调用（!sawToolCall）且有伪标记命中——纯文本正常回答（无标记）是
-//     模型合法选择，不计数；
-//   - 该组合存在启用中的 verified 条目——无可撤销时不计数（避免无谓状态）。
+//     模型合法选择，不计数。
+//
+// 无启用中的 verified 条目时同样计数：白名单按协议 fail-open，集合为空的窗口内
+// 伪标记 miss 是唯一的劣化证据留存，达阈值后竞速不再对该组合派影子
+// （ChannelCompatCache.VerifiedToolCallPseudoMissed），窗口自动收敛。
 //
 // kind 为该次尝试的执行协议（executionKind），与 MaybeLearnVerifiedToolCalls 同路由身份。
 func MaybeCountPseudoToolCallMiss(c *gin.Context, upstream *config.UpstreamConfig, apiKey, model string, attemptBody []byte, sawToolCall, sawPseudoMarker bool, streamErr error, kind string) {
@@ -246,6 +247,12 @@ func MaybeCountPseudoToolCallMiss(c *gin.Context, upstream *config.UpstreamConfi
 	if !BodyHasTools(attemptBody) || ForcedToolChoiceInBody(attemptBody) {
 		return
 	}
+	countVerifiedToolCallPseudoMiss(c, upstream, apiKey, model, kind, "成功路径")
+}
+
+// countVerifiedToolCallPseudoMiss RecordVerifiedToolCallPseudoMiss 的公共收尾：
+// 路由身份归一 + 计数 + 日志。origin 标注证据来源（成功路径/竞速让出）。
+func countVerifiedToolCallPseudoMiss(c *gin.Context, upstream *config.UpstreamConfig, apiKey, model, kind, origin string) {
 	routeIdentity := config.ToolRouteIdentity(upstream, kind)
 	if routeIdentity == "" {
 		return
@@ -257,10 +264,68 @@ func MaybeCountPseudoToolCallMiss(c *gin.Context, upstream *config.UpstreamConfi
 	keyHash := autopilot.KeyHashFromAPIKey(apiKey)
 	streak, revoked := cache.RecordVerifiedToolCallPseudoMiss(routeIdentity, keyHash, model)
 	if revoked {
-		RequestLogf(c, "[ToolCallCompat] 渠道 %s 模型 %s 连续伪工具调用标记文本，已撤销正向白名单（排他将 fail-open 放开候选）",
-			upstream.Name, model)
+		RequestLogf(c, "[ToolCallCompat] 渠道 %s 模型 %s 连续伪工具调用标记文本（%s），已撤销正向白名单（排他将 fail-open 放开候选）",
+			upstream.Name, model, origin)
 	} else if streak > 0 {
-		RequestLogf(c, "[ToolCallCompat] 渠道 %s 模型 %s 输出伪工具调用标记文本（连续 %d/%d 次）",
-			upstream.Name, model, streak, 3)
+		RequestLogf(c, "[ToolCallCompat] 渠道 %s 模型 %s 输出伪工具调用标记文本（%s，连续 %d/%d 次）",
+			upstream.Name, model, origin, streak, 3)
 	}
+}
+
+// toolCallLearningContextKey 本次尝试的工具学习身份（竞速闸门「让出即证据」用）。
+const toolCallLearningContextKey = "ccx.tool_call_learning_identity"
+
+// toolCallLearningIdentity 一次渠道尝试的工具学习身份：上游配置（路由锚）×Key×模型×执行协议。
+type toolCallLearningIdentity struct {
+	upstream *config.UpstreamConfig
+	apiKey   string
+	model    string
+	kind     string
+}
+
+// setToolCallLearningIdentity 在每次渠道尝试执行前把学习身份写入 gin context。
+// 竞速分支持有独立 context 副本（startShadow 的 c.Copy 之后各自设置），互不串扰；
+// 成功路径的学习调用在尝试收尾处直接使用词法作用域变量，不读此值。
+func setToolCallLearningIdentity(c *gin.Context, upstream *config.UpstreamConfig, apiKey, model, kind string) {
+	if c == nil || upstream == nil {
+		return
+	}
+	c.Set(toolCallLearningContextKey, toolCallLearningIdentity{upstream: upstream, apiKey: apiKey, model: model, kind: kind})
+}
+
+func toolCallLearningIdentityFromContext(c *gin.Context) (toolCallLearningIdentity, bool) {
+	if c == nil {
+		return toolCallLearningIdentity{}, false
+	}
+	v, ok := c.Get(toolCallLearningContextKey)
+	if !ok {
+		return toolCallLearningIdentity{}, false
+	}
+	id, ok := v.(toolCallLearningIdentity)
+	return id, ok && id.upstream != nil
+}
+
+// notePseudoToolCallYield 竞速质量闸门让出路径的白名单负反馈（让出即证据）。
+//
+// 「竞速败出分支不参与自学习」红线（upstream_failover.go）针对的是被取消而未
+// 跑完的分支——部分流的部分标记不代表渠道真实能力；闸门让出不同：伪标记已在
+// 该分支自身首包缓冲中实测命中，是已完成的观察，与成功路径
+// MaybeCountPseudoToolCallMiss 同强度，不应因竞速语境丢弃。白名单 fail-open
+// 窗口（协议集合为空）由此获得收敛能力：劣化组合每命中一次计一次 miss，达
+// 阈值即不再对其派影子（racing.go toolWhitelistAllows）。
+//
+// 守卫与成功路径对齐：仅非强制 tool_choice 计数（强制形态由直连完成路径的
+// MaybeLearnForcedToolChoiceMiss 覆盖，竞速让出不双算）。首包时刻无法预知后续
+// 是否出现真实 function_call，接受这一理论误计——真实成功经正向学习即时清零
+// 重建（MaybeLearnVerifiedToolCalls）。
+func notePseudoToolCallYield(c *gin.Context) {
+	id, ok := toolCallLearningIdentityFromContext(c)
+	if !ok {
+		return
+	}
+	body := GetEffectiveRequestBody(c, nil)
+	if !BodyHasTools(body) || ForcedToolChoiceInBody(body) {
+		return
+	}
+	countVerifiedToolCallPseudoMiss(c, id.upstream, id.apiKey, id.model, id.kind, "竞速让出")
 }

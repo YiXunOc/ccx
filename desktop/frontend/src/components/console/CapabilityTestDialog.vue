@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Switch } from '@/components/ui/switch'
 import { Loader2, X, Play, Square, ArrowRight, CheckCircle2, XCircle, Clock, Gauge } from 'lucide-vue-next'
 import { useCapabilityTests } from '@/composables/useCapabilityTests'
 import { useLanguage } from '@/composables/useLanguage'
@@ -50,6 +51,8 @@ const DEFAULT_CAPABILITY_TEST_RPM = 30
 const rpmValue = ref(DEFAULT_CAPABILITY_TEST_RPM)
 const copyingKey = ref('')
 const copyMessage = ref<{ type: 'success' | 'error'; text: string } | null>(null)
+// 以渠道认可模型列表为探测范围（随下次测试启动生效）
+const useChannelModels = ref(false)
 
 // 加载 snapshot
 watch(() => props.open, async (isOpen) => {
@@ -200,7 +203,7 @@ function hasProtocolLatency(test: CapabilityProtocolJobResult): boolean {
 async function handleTestProtocol(protocol: string) {
   isStarting.value = true
   try {
-    await startProtocolTest(props.channelType, props.channelId, protocol, undefined, rpmValue.value)
+    await startProtocolTest(props.channelType, props.channelId, protocol, undefined, rpmValue.value, useChannelModels.value)
   } finally {
     isStarting.value = false
   }
@@ -328,6 +331,11 @@ onBeforeUnmount(() => {
                   <Input v-model.number="rpmValue" type="number" min="1" max="60" step="1" class="h-6 w-14 text-[11px] font-mono px-1.5" @blur="handleRpmBlur" />
                 </div>
 
+                <div class="flex items-center gap-1.5 text-[10px] text-muted-foreground" :title="t('capability.useChannelModelsHint')">
+                  <Switch v-model="useChannelModels" />
+                  <span class="cursor-pointer select-none" @click="useChannelModels = !useChannelModels">{{ t('capability.useChannelModels') }}</span>
+                </div>
+
                 <span v-if="progress?.totalModels && isActive" class="text-[10px] text-muted-foreground">
                   {{ progress?.completedModels || 0 }}/{{ progress?.totalModels || 0 }} {{ t('capability.models') }}
                 </span>
@@ -437,7 +445,9 @@ onBeforeUnmount(() => {
                       </tr>
                       <tr class="border-b border-border/50 bg-background/30">
                         <td colspan="6" class="px-3 py-2">
-                          <CapabilityModelResultBadge :test="test" :pending-text="t('capability.modelQueued')" :retry-enabled="!isProtocolBusy(test)" @retry-model="handleRetryModel" />
+                          <div class="flex items-center gap-2 flex-wrap">
+                            <CapabilityModelResultBadge :test="test" :pending-text="t('capability.modelQueued')" :retry-enabled="!isProtocolBusy(test)" @retry-model="handleRetryModel" />
+                          </div>
                         </td>
                       </tr>
                     </template>

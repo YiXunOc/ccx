@@ -1,12 +1,56 @@
 package autopilot
 
 import (
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/BenedictKing/ccx/internal/config"
 	"github.com/BenedictKing/ccx/internal/scheduler"
 )
+
+func TestCandidateScoreBreakdownIncludesAllWeightedDimensions(t *testing.T) {
+	sc := ScoredCandidate{
+		QualityScore:         2.25,
+		StabilityScore:       2,
+		SpeedScore:           1,
+		CostScore:            1,
+		SavingsScore:         0.8,
+		TierMatchBonus:       10,
+		FamilyPrefScore:      2,
+		ProviderQualityScore: 0.5,
+		DomainStrengthScore:  0.75,
+		QuotaHeadroomScore:   0.5,
+		Penalty:              1.25,
+	}
+	weights := ScoringWeights{
+		WQuality: 1, WStability: 1, WSpeed: 2, WCost: 2, WSavings: 0.75,
+		WTierMatch: 0.2, WFamily: 0.2, WProviderQuality: 1.2, WDomain: 0.5, WQuotaHeadroom: 0.5,
+	}
+
+	breakdown := candidateScoreBreakdown(sc, weights)
+	if len(breakdown) != 10 {
+		t.Fatalf("breakdown length = %d, want 10", len(breakdown))
+	}
+	contribution := 0.0
+	seen := make(map[string]bool, len(breakdown))
+	for _, item := range breakdown {
+		if seen[item.Dimension] {
+			t.Fatalf("duplicate dimension %q", item.Dimension)
+		}
+		seen[item.Dimension] = true
+		contribution += item.Score * item.Weight
+	}
+	sc.Score = contribution - sc.Penalty
+	if math.Abs(sc.Score-11.225) > 1e-12 {
+		t.Fatalf("formula contribution = %v, want 11.225", sc.Score)
+	}
+	for _, dimension := range []string{"tier_match", "quota_headroom"} {
+		if !seen[dimension] {
+			t.Fatalf("missing trace dimension %q", dimension)
+		}
+	}
+}
 
 // ── 五元组候选（渠道 × 协议 × key × 模型 × effort）专项测试 ──
 
@@ -112,7 +156,7 @@ func TestResolvePinnedAPIKey(t *testing.T) {
 }
 
 // explicitMultiKeyConfig 构建显式映射多 key 渠道（非 AutoManaged）。
-func explicitMultiKeyConfig(t *testing.T, keys []config.APIKeyConfig, mapping map[string]string, supportedModels []string) (config.Config, *config.ConfigManager, func()) {
+func explicitMultiKeyConfig(t *testing.T, keys []config.APIKeyConfig, supportedModels []string) (config.Config, *config.ConfigManager, func()) {
 	t.Helper()
 	plainKeys := make([]string, 0, len(keys))
 	for _, k := range keys {
@@ -126,7 +170,6 @@ func explicitMultiKeyConfig(t *testing.T, keys []config.APIKeyConfig, mapping ma
 			APIKeys:         plainKeys,
 			APIKeyConfigs:   keys,
 			Status:          "active",
-			ModelMapping:    mapping,
 			SupportedModels: supportedModels,
 		}},
 		AutopilotRouting: config.AutopilotRoutingConfig{
@@ -146,7 +189,7 @@ func TestExpandChannelCandidatesExplicitMultiKey(t *testing.T) {
 	cfg, cfgManager, cleanup := explicitMultiKeyConfig(t, []config.APIKeyConfig{
 		{Key: "sk-a", KeyUID: "kuid_a", QuotaGroup: "vip"},
 		{Key: "sk-b"},
-	}, map[string]string{"claude-opus-4-8": "claude-opus-4-8"}, []string{"claude-opus-4-8"})
+	}, []string{"claude-opus-4-8"})
 	defer cleanup()
 	_ = g2
 	_ = g3
@@ -187,22 +230,14 @@ func TestExpandChannelCandidatesExplicitMultiKey(t *testing.T) {
 	}
 }
 
-// 单渠道 64 行硬顶：9 模型映射 × 9 key = 81 > 64，截断保序。
+// 单渠道多 key 展开上限行为：9 key × 请求模型 1 行 = 9 行。
+// （显式 ModelMapping 已退役：SupportedModels 只做准入过滤，不再枚举多模型行。）
 func TestExpandChannelCandidatesRowLimit(t *testing.T) {
 	keys := make([]config.APIKeyConfig, 0, 9)
 	for i := 0; i < 9; i++ {
 		keys = append(keys, config.APIKeyConfig{Key: "sk-" + string(rune('a'+i))})
 	}
-	mapping := map[string]string{}
-	for i := 0; i < 9; i++ {
-		m := "model-" + string(rune('a'+i))
-		mapping[m] = m
-	}
-	supported := make([]string, 0, 9)
-	for m := range mapping {
-		supported = append(supported, m)
-	}
-	_, cfgManager, cleanup := explicitMultiKeyConfig(t, keys, mapping, supported)
+	_, cfgManager, cleanup := explicitMultiKeyConfig(t, keys, nil)
 	defer cleanup()
 	router := NewSmartRouter(nil, nil, nil, cfgManager)
 	profile := BuildRequestProfile(RequestProfileFeatures{Model: "model-a", ChannelKind: "messages", Operation: "completion", EstTokens: 1000})
@@ -211,8 +246,8 @@ func TestExpandChannelCandidatesRowLimit(t *testing.T) {
 	ch := scheduler.ChannelInfo{Index: 0, Name: up.Name, Status: "active"}
 	var got []channelScoreEntry
 	got = router.expandChannelCandidates(ch, &up, "messages", scheduler.ChannelRouteRef{}, resolutions, nil, got, nil, "")
-	if len(got) != routingCandidateRowsPerChannelLimit {
-		t.Fatalf("81 组合应截断到 %d 行, got %d", routingCandidateRowsPerChannelLimit, len(got))
+	if len(got) != len(keys) {
+		t.Fatalf("9 key 应展开 9 行, got %d", len(got))
 	}
 }
 
@@ -224,7 +259,6 @@ func TestExpandChannelCandidatesNoKeysFailOpen(t *testing.T) {
 			ChannelUID:      "ch_nokey",
 			BaseURL:         "https://x.example.com",
 			Status:          "active",
-			ModelMapping:    map[string]string{"claude-opus-4-8": "claude-opus-4-8"},
 			SupportedModels: []string{"claude-opus-4-8"},
 		}},
 		AutopilotRouting: config.AutopilotRoutingConfig{SchemaVersion: 99, RoutingMode: "auto"},
@@ -272,7 +306,6 @@ func TestBuildChannelEntryForKeyPerKeyCost(t *testing.T) {
 			APIKeys:         []string{"sk-cheap", "sk-dear"},
 			APIKeyConfigs:   []config.APIKeyConfig{{Key: "sk-cheap"}, {Key: "sk-dear", GroupMultiplier: &m2, MaxGroupMultiplier: &m3, MultiplierSource: "manual"}},
 			Status:          "active",
-			ModelMapping:    map[string]string{"claude-opus-4-8": "claude-opus-4-8"},
 			SupportedModels: []string{"claude-opus-4-8"},
 		}},
 		AutopilotRouting: config.AutopilotRoutingConfig{SchemaVersion: 99, RoutingMode: "auto"},
@@ -365,20 +398,71 @@ func TestTruncateTraceCandidates(t *testing.T) {
 	}
 }
 
-// 执行 pin 回填：行档透传、意图固定档覆盖。
+// 执行 pin 回填：行档透传、客户端显式档优先，配置关闭时意图可接管。
 func TestApplyCandidatePin(t *testing.T) {
+	router := &SmartRouter{}
 	ch := &scheduler.ChannelInfo{}
 	entry := channelScoreEntry{KeyIdentity: "kuid_a", Effort: EffortHigh}
-	applyCandidatePin(ch, entry, nil)
+	router.applyCandidatePin(ch, entry, nil)
 	if ch.PinnedKeyIdentity != "kuid_a" || ch.PinnedEffort != "high" {
 		t.Fatalf("pin = %q/%q, want kuid_a/high", ch.PinnedKeyIdentity, ch.PinnedEffort)
 	}
-	// 意图固定档覆盖行档。
+	// 未声明客户端档位时，意图固定档覆盖行档。
 	pinned := &scheduler.ChannelInfo{}
 	profile := &RequestProfile{IntentEffortPin: &IntentEffortPin{Effort: EffortXhigh, Set: true}}
-	applyCandidatePin(pinned, entry, profile)
+	router.applyCandidatePin(pinned, entry, profile)
 	if pinned.PinnedEffort != "xhigh" {
 		t.Fatalf("意图 pin 应覆盖行档: %q, want xhigh", pinned.PinnedEffort)
+	}
+
+	// 默认尊重客户端显式 off，不能在最终回填阶段又被意图改回高档。
+	clientPinned := &scheduler.ChannelInfo{}
+	profile = &RequestProfile{
+		ClientEffort:         EffortOff,
+		ClientEffortExplicit: true,
+		IntentEffortPin:      &IntentEffortPin{Effort: EffortXhigh, Set: true},
+	}
+	router.applyCandidatePin(clientPinned, entry, profile)
+	if clientPinned.PinnedEffort != "off" {
+		t.Fatalf("客户端显式档应优先: %q, want off", clientPinned.PinnedEffort)
+	}
+
+	// 显式关闭 RespectClientThinking 后，允许人工意图接管。
+	cfg := makeRoutingConfig(true, true, map[string][]string{"worker": {"high"}})
+	cfg.AutopilotRouting.ReasoningEffort.RespectClientThinking = false
+	manager, cleanup := createTestConfigManagerForResolver(t, cfg)
+	defer cleanup()
+	overrideRouter := &SmartRouter{configManager: manager}
+	overridden := &scheduler.ChannelInfo{}
+	overrideRouter.applyCandidatePin(overridden, entry, profile)
+	if overridden.PinnedEffort != "xhigh" {
+		t.Fatalf("关闭 RespectClientThinking 后意图应接管: %q, want xhigh", overridden.PinnedEffort)
+	}
+}
+
+func TestEffectiveCandidateEffortMatchesExecutionPriority(t *testing.T) {
+	router := &SmartRouter{}
+	profile := &RequestProfile{
+		ClientEffort:         EffortOff,
+		ClientEffortExplicit: true,
+		IntentEffortPin:      &IntentEffortPin{Effort: EffortXhigh, Set: true},
+	}
+	if got := router.effectiveCandidateEffort(profile, EffortMedium); got != EffortOff {
+		t.Fatalf("默认应按客户端 off 评估: got %q", got)
+	}
+
+	cfg := makeRoutingConfig(true, true, map[string][]string{"worker": {"high"}})
+	cfg.AutopilotRouting.ReasoningEffort.RespectClientThinking = false
+	manager, cleanup := createTestConfigManagerForResolver(t, cfg)
+	defer cleanup()
+	overrideRouter := &SmartRouter{configManager: manager}
+	if got := overrideRouter.effectiveCandidateEffort(profile, EffortMedium); got != EffortXhigh {
+		t.Fatalf("配置允许意图接管时应按 xhigh 评估: got %q", got)
+	}
+
+	profile.IntentEffortPin.Set = false
+	if got := overrideRouter.effectiveCandidateEffort(profile, EffortMedium); got != EffortMedium {
+		t.Fatalf("不尊重客户端且无意图时应按候选行 medium 评估: got %q", got)
 	}
 }
 
@@ -457,7 +541,6 @@ func TestBuildChannelEntryForKeyProfileMatch(t *testing.T) {
 			BaseURL:         "https://p.example.com",
 			APIKeys:         []string{"sk-healthy", "sk-dead"},
 			Status:          "active",
-			ModelMapping:    map[string]string{"claude-opus-4-8": "claude-opus-4-8"},
 			SupportedModels: []string{"claude-opus-4-8"},
 		}},
 		AutopilotRouting: config.AutopilotRoutingConfig{SchemaVersion: 99, RoutingMode: "auto"},

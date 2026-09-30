@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ApiKeyManagementSection from './ApiKeyManagementSection.vue'
 import { maskApiKey } from '../../utils/apiKeyMask'
+import type { APIKeyConfig } from '../../services/api-types'
 
 const apiMocks = vi.hoisted(() => ({
   patchKeyMultiplier: vi.fn(),
@@ -36,7 +37,8 @@ vi.mock('../../utils/hash', () => ({
 }))
 
 vi.mock('../../i18n', () => ({
-  useI18n: () => ({ t: (key: string) => key }),
+  useI18n: () => ({ t: (key: string, params?: Record<string, unknown>) =>
+    params?.count === undefined ? key : `${key}:${params.count}` }),
 }))
 
 const passthroughStub = defineComponent({ template: '<div v-bind="$attrs"><slot /></div>' })
@@ -194,7 +196,7 @@ describe('ApiKeyManagementSection', () => {
     expect(apiMocks.patchKeyMultiplier).not.toHaveBeenCalled()
   })
 
-  it('converts decimal multiplier inputs to JSON numbers on field commit', async () => {
+  it('stages decimal multiplier inputs as JSON numbers while typing', async () => {
     const wrapper = mountSection({
       apiKeyConfigs: [
         { key: 'sk-1', keyUid: 'uid-1', groupMultiplier: 1, maxGroupMultiplier: 2 },
@@ -212,8 +214,6 @@ describe('ApiKeyManagementSection', () => {
     expect(multiplierInputs).toHaveLength(1)
     await multiplierInputs[0].vm.$emit('update:modelValue', '0.15')
     await nextTick()
-    // 数字框失焦/回车定稿（change 事件）即暂存为表单数字
-    await multiplierInputs[0].vm.$emit('change', '0.15')
 
     const events = wrapper.emitted('update:apiKeyConfigs')
     expect(events).toBeTruthy()
@@ -221,6 +221,30 @@ describe('ApiKeyManagementSection', () => {
     expect(lastConfig[0].groupMultiplier).toBe(0.15)
     expect(lastConfig[0].groupMultiplier).toBeTypeOf('number')
     expect(apiMocks.patchKeyMultiplier).not.toHaveBeenCalled()
+  })
+
+  it('flushes the focused multiplier input before the save shortcut runs', async () => {
+    const wrapper = mountSection({
+      apiKeyConfigs: [
+        { key: 'sk-1', keyUid: 'uid-1', groupMultiplier: 0.12 },
+      ],
+      channelUid: 'ch-1',
+      channelKind: 'messages',
+    })
+    await nextTick()
+    await wrapper.find('[aria-label="channelCard.keyDetail"]').trigger('click')
+    await nextTick()
+
+    const multiplierInput = wrapper.findAllComponents(inputStub)
+      .find(input => input.props('type') === 'number')
+    expect(multiplierInput).toBeDefined()
+    const inputElement = multiplierInput!.element as HTMLInputElement
+    inputElement.value = '0.13'
+    await multiplierInput!.trigger('keydown.enter', { ctrlKey: true })
+
+    const events = wrapper.emitted('update:apiKeyConfigs') || []
+    const lastConfig = events[events.length - 1]?.[0] as Array<Record<string, unknown>>
+    expect(lastConfig[0].groupMultiplier).toBe(0.13)
   })
 
   it('expands multiplier editor inline without save/cancel/mark-public buttons', async () => {
@@ -245,6 +269,45 @@ describe('ApiKeyManagementSection', () => {
       .filter(b => ['app.actions.save', 'app.actions.cancel', 'subscription.keyMultiplier.markPublic'].some(k => b.text().includes(k)))
     expect(actionButtons).toHaveLength(0)
     expect(wrapper.text()).toContain('subscription.keyMultiplier.stagedHint')
+  })
+
+  it('reopens another key with the staged multiplier after the parent updates props', async () => {
+    const wrapper = mountSection({
+      apiKeys: ['sk-1', 'sk-2'],
+      apiKeyConfigs: [
+        { key: 'sk-1', keyUid: 'uid-1', groupMultiplier: 1 },
+        { key: 'sk-2', keyUid: 'uid-2' },
+      ],
+      channelUid: 'ch-1',
+      channelKind: 'messages',
+    })
+    await nextTick()
+
+    const detailButtons = wrapper.findAll('[aria-label="channelCard.keyDetail"]')
+    await detailButtons[1].trigger('click')
+    await nextTick()
+
+    const multiplierInput = wrapper.findAllComponents(inputStub)
+      .find(input => input.props('type') === 'number')
+    expect(multiplierInput).toBeDefined()
+    await multiplierInput!.vm.$emit('update:modelValue', '0.12')
+    await multiplierInput!.vm.$emit('change', '0.12')
+    await nextTick()
+
+    const configEvents = wrapper.emitted('update:apiKeyConfigs') || []
+    const staged = configEvents[configEvents.length - 1]?.[0] as APIKeyConfig[]
+    expect(staged?.find(config => config.key === 'sk-2')?.groupMultiplier).toBe(0.12)
+    await wrapper.setProps({ apiKeyConfigs: staged })
+    await nextTick()
+
+    const stagedDetailButton = wrapper.findAll('[aria-label="channelCard.keyDetail"]')[1]
+    await stagedDetailButton.trigger('click')
+    await nextTick()
+    await wrapper.findAll('[aria-label="channelCard.keyDetail"]')[1].trigger('click')
+    await nextTick()
+    const reopenedInput = wrapper.findAllComponents(inputStub)
+      .find(input => input.props('type') === 'number')
+    expect(reopenedInput?.props('modelValue')).toBe(0.12)
   })
 
   it('keeps Kimi credential bound to the correct key row after save and reload with reversed credential order', async () => {
@@ -398,6 +461,69 @@ describe('ApiKeyManagementSection', () => {
 })
 
 describe('分组模型排除行内化', () => {
+  it.each([
+    { group: undefined, secondMultiplier: 0.12 },
+    { group: '', secondMultiplier: 0.08 },
+    { group: '   ', secondMultiplier: 0.12 },
+  ])('未分组 Key 独立显示作用范围：$group / $secondMultiplier', async ({ group, secondMultiplier }) => {
+    const wrapper = mountSection({
+      apiKeys: ['sk-1', 'sk-2'],
+      apiKeyConfigs: [
+        { key: 'sk-1', keyUid: 'uid-1', quotaGroup: group, groupMultiplier: 0.08 },
+        { key: 'sk-2', keyUid: 'uid-2', quotaGroup: group, groupMultiplier: secondMultiplier },
+      ],
+      channelUid: 'ch-1',
+      channelKind: 'chat',
+    })
+
+    for (const button of wrapper.findAll('[aria-label="channelCard.keyDetail"]')) {
+      await button.trigger('click')
+      expect(wrapper.text()).toContain('channelCard.independentKey')
+      expect(wrapper.text()).toContain('channelCard.affectedCurrentKey')
+      expect(wrapper.text()).toContain('channelCard.keyModelPolicy')
+      expect(wrapper.text()).not.toContain('channelCard.affectedGroupKeys')
+    }
+  })
+
+  it('明确分组按最新配置统计，排除其他分组与未分组 Key', async () => {
+    const configs = [
+      { key: 'sk-1', keyUid: 'uid-1', quotaGroup: ' coding ' },
+      { key: 'sk-2', keyUid: 'uid-2', quotaGroup: 'coding', enabled: false },
+      { key: 'sk-3', keyUid: 'uid-3', quotaGroup: 'other' },
+      { key: 'sk-4', keyUid: 'uid-4' },
+    ]
+    const wrapper = mountSection({
+      apiKeys: configs.map(config => config.key),
+      apiKeyConfigs: configs,
+      channelUid: 'ch-1',
+      channelKind: 'chat',
+    })
+
+    await wrapper.get('[aria-label="channelCard.keyDetail"]').trigger('click')
+    expect(wrapper.text()).toContain('channelCard.affectedGroupKeys:2')
+    expect(wrapper.text()).toContain('channelCard.groupModelPolicy')
+    await wrapper.setProps({ apiKeyConfigs: configs.map(config => ({ ...config, quotaGroup: '' })) })
+    expect(wrapper.text()).toContain('channelCard.affectedCurrentKey')
+    expect(wrapper.text()).not.toContain('channelCard.affectedGroupKeys')
+  })
+
+  it('同模型的独立 Key 排除记录可区分并正确恢复', async () => {
+    const records = ['sk-alpha-123456', 'sk-beta-654321'].map(key => ({
+      quotaGroup: '', key, model: 'model-x', disabledAt: '2026-09-25T00:00:00Z',
+    }))
+    const wrapper = mountSection({ disabledGroupModels: records })
+    const rows = wrapper.findAll('.group-model-policy-list .px-3')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].text()).toContain(maskApiKey(records[0].key))
+    expect(rows[1].text()).toContain(maskApiKey(records[1].key))
+    await rows[1].get('button').trigger('click')
+    expect(wrapper.emitted('restore-group-model')?.[0]).toEqual([records[1]])
+
+    await wrapper.setProps({ disabledGroupModels: [records[1]] })
+    expect(wrapper.get('.group-model-policy-list').text()).toContain(maskApiKey(records[1].key))
+    expect(wrapper.get('.group-model-policy-list').text()).not.toContain(maskApiKey(records[0].key))
+  })
+
   it('统一详情按钮行内展开，模型选定即提交且无对话框按钮', async () => {
     const wrapper = mountSection({
       apiKeyConfigs: [
