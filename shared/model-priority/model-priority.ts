@@ -4,6 +4,7 @@ const modelPriorityPatterns: RegExp[] = [
   // Anthropic Claude
   /fable-5[.-]1/i,
   /fable-5/i,
+  /opus-5[.-]5/i,
   /opus-5/i,
   /opus-4[.-]8/i,
   /opus-4-7/i,
@@ -19,6 +20,8 @@ const modelPriorityPatterns: RegExp[] = [
 
   // OpenAI GPT 系列
   /gpt-6-astra/i,
+  /gpt-6-sol/i,
+  /gpt-6-luna/i,
   /gpt-6/i,
   /astra/i,
   /gpt-5\.6-sol/i,
@@ -57,6 +60,7 @@ const modelPriorityPatterns: RegExp[] = [
   /gemini-2\.5-flash/i,
 
   // xAI Grok
+  /grok-4\.7/i,
   /grok-4\.6/i,
   /grok-4\.5/i,
   /grok-4\.3/i,
@@ -108,6 +112,7 @@ const modelPriorityPatterns: RegExp[] = [
   /minimax-?m3/i,
   /minimax-?m2\.7/i,
   /minimax-?m2\.5/i,
+  /mimo-v2\.6/i,
   /mimo-v2\.5/i,
   /doubao-seed-2-0/i,
   /ernie-4\.5/i,

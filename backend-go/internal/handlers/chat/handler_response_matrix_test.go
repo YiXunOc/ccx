@@ -2,6 +2,7 @@ package chat
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -275,7 +276,7 @@ func TestChatHandler_BoundResponsesExecutesPhysicalRoute(t *testing.T) {
 	chatNative := config.UpstreamConfig{
 		ChannelUID: "native-chat", LogicalChannelUID: logicalUID, AccountUID: "account",
 		Name: "native-chat", BaseURL: "http://127.0.0.1:1", APIKeys: []string{"native"},
-		Status: "active", ServiceType: "openai", ModelMapping: map[string]string{"alias": "mapped-model"},
+		Status: "active", ServiceType: "openai",
 	}
 	responsesPhysical := chatNative
 	responsesPhysical.ChannelUID = "physical-responses"
@@ -311,6 +312,12 @@ func TestChatHandler_BoundResponsesExecutesPhysicalRoute(t *testing.T) {
 	defer chatMetrics.Stop()
 	defer responsesMetrics.Stop()
 	sch := scheduler.NewChannelScheduler(cm, metrics.NewMetricsManager(), responsesMetrics, metrics.NewMetricsManager(), chatMetrics, metrics.NewMetricsManager(), session.NewTraceAffinityManager(), nil)
+	sch.SetModelSupportResolverProvider(func(_ context.Context, _ scheduler.ChannelKind, _ *config.UpstreamConfig, model string) (bool, string, string, string) {
+		if model == "alias" {
+			return true, "mapped-model", "test_resolver", ""
+		}
+		return true, model, "test_resolver", ""
+	})
 	r := gin.New()
 	r.POST("/v1/chat/completions", Handler(&config.EnvConfig{ProxyAccessKey: "secret-key", MaxRequestBodySize: 1024 * 1024}, cm, sch))
 

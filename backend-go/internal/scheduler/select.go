@@ -1622,7 +1622,10 @@ func (s *ChannelScheduler) getActiveChannelsWithTrace(ctx context.Context, kind 
 		if status != "disabled" {
 			// 过滤不支持当前模型的渠道
 			if model != "" {
-				supported, reason := s.resolveModelSupport(ctx, kind, &upstream, model)
+				supported, actual, reason := s.resolveModelSupportWithActual(ctx, kind, &upstream, model)
+				if supported && actual != "" {
+					ch.ActualModel = actual
+				}
 				if !supported {
 					prefix := kindSchedulerLogPrefix(kind)
 					log.Printf("[%s-ModelFilter] 跳过渠道 [%d] %s: 模型 %q 不被 supportedModels 支持 (%s)", prefix, i, upstream.Name, model, reason)
@@ -1650,22 +1653,28 @@ func (s *ChannelScheduler) getActiveChannelsWithTrace(ctx context.Context, kind 
 // UpstreamConfig.ExplainModelSupport；权威拒绝则直接过滤，避免空 SupportedModels
 // 把画像已确认不支持的模型重新放回候选。
 func (s *ChannelScheduler) resolveModelSupport(ctx context.Context, kind ChannelKind, upstream *config.UpstreamConfig, model string) (bool, string) {
+	supported, _, reason := s.resolveModelSupportWithActual(ctx, kind, upstream, model)
+	return supported, reason
+}
+
+func (s *ChannelScheduler) resolveModelSupportWithActual(ctx context.Context, kind ChannelKind, upstream *config.UpstreamConfig, model string) (bool, string, string) {
 	s.mu.RLock()
 	resolver := s.modelSupportResolverFunc
 	s.mu.RUnlock()
 
 	if resolver != nil {
-		supported, _, source, reason := resolver(ctx, kind, upstream, model)
+		supported, actual, source, reason := resolver(ctx, kind, upstream, model)
 		if supported {
-			return true, ""
+			return true, actual, ""
 		}
 		if source == ModelSupportSourceAuthoritativeDeny {
-			return false, reason
+			return false, "", reason
 		}
 		// resolver 未命中 → 回退到原有 ExplainModelSupport
 	}
 
-	return upstream.ExplainModelSupport(model)
+	supported, reason := upstream.ExplainModelSupport(model)
+	return supported, "", reason
 }
 
 // findBestAvailableChannelPriority 找到当前最佳可用渠道的优先级（用于 affinity 覆盖判断）

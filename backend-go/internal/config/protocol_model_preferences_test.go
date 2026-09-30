@@ -61,6 +61,16 @@ func TestProtocolPreferencesCRUDAndPersistence(t *testing.T) {
 	if cm.GetLogicalChannel(lc.LogicalChannelUID).ProtocolModelPreferences.ProtocolForModel("model") != "chat" {
 		t.Fatal("omission cleared binding")
 	}
+	cm.Close()
+	reloaded, err := NewConfigManager(path, filepath.Join(dir, "backups"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Close()
+	if reloaded.GetLogicalChannel(lc.LogicalChannelUID).ProtocolModelPreferences.ProtocolForModel("model") != "chat" {
+		t.Fatal("binding lost across restart")
+	}
+	cm = reloaded
 	snap := cm.GetConfig()
 	snap.LogicalChannels[0].ProtocolModelPreferences["chat"][0] = "changed"
 	if cm.GetLogicalChannel(lc.LogicalChannelUID).ProtocolModelPreferences.ProtocolForModel("model") != "chat" {

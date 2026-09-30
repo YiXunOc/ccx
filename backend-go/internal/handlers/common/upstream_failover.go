@@ -2,6 +2,7 @@
 package common
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -614,8 +615,10 @@ func TryUpstreamWithAllKeys(
 	// 五元组调度 pin 的明文 key：身份反查一次（key 已被移除/轮换时为空 = 不锁定）。
 	pinnedAPIKey := autopilot.ResolvePinnedAPIKey(upstream, tryOpts.executionKeyIdentity)
 
-	// 先应用用户配置的模型映射。endpoint 级自动映射会在选定 Key 后再覆盖本次尝试的模型。
-	redirectedModel := config.RedirectModel(model, upstream)
+	// 请求模型直接进入尝试流程。endpoint 级自动映射会在选定 Key 后再覆盖本次尝试的模型：
+	// 显式 ModelMapping 已退役，模型承接与映射由 autopilot ModelResolver 画像映射
+	// 在选模阶段统一决策。
+	redirectedModel := model
 	capabilityRequestModel := model
 
 	// 历史图片轮次限制：替换历史图片为占位符，避免不必要的 vision 回退
@@ -633,24 +636,6 @@ func TryUpstreamWithAllKeys(
 		if upstream.NoVision {
 			RequestLogf(c, "[%s-Vision] 跳过不支持视觉的渠道 [%d] %s", apiType, executionIndex, upstream.Name)
 			return false, "", 0, nil, nil, fmt.Errorf("channel %s does not support vision", upstream.Name)
-		}
-		if isNoVisionModel(upstream, redirectedModel) {
-			if upstream.VisionFallbackModel != "" {
-				fallback := upstream.VisionFallbackModel
-				RequestLogf(c, "[%s-Vision] 模型 %s 不支持视觉，使用 fallback: %s (渠道 [%d] %s)", apiType, redirectedModel, fallback, executionIndex, upstream.Name)
-				if replaced, err := sjson.SetBytes(requestBody, "model", fallback); err == nil {
-					requestBody = replaced
-				}
-				redirectedModel = fallback
-				capabilityRequestModel = fallback
-				if err := channelScheduler.ValidateUpstreamContext(executionKind, redirectedModel, upstream, contextRequirement); err != nil {
-					RequestLogf(c, "[%s-Vision] fallback 模型 %s 不满足上下文需求，跳过渠道 [%d] %s: %v", apiType, redirectedModel, executionIndex, upstream.Name, err)
-					return false, "", 0, nil, nil, err
-				}
-			} else {
-				RequestLogf(c, "[%s-Vision] 模型 %s 不支持视觉且无 fallback，跳过渠道 [%d] %s", apiType, redirectedModel, executionIndex, upstream.Name)
-				return false, "", 0, nil, nil, fmt.Errorf("model %s does not support vision", redirectedModel)
-			}
 		}
 	}
 
@@ -687,6 +672,9 @@ func TryUpstreamWithAllKeys(
 			c.Set("effortClampedByClient", false)
 			// 自动映射未命中原因同样按 attempt 重置：映射成功的尝试不携带上一轮的失败原因。
 			c.Set("mappingFailReason", "")
+			// 流式桥接改写标记同样按 attempt 重置：仅对已应用改写的 Key 生效，
+			// 防止上一 attempt 的标记污染无需改写的后续 Key（见 ForceStreamRequestBody）。
+			SetUpstreamStreamBridge(c, false)
 			// 释放上一轮 attempt 的并发信号量（首次为空操作）
 			if activeRateLimitRelease != nil {
 				activeRateLimitRelease()
@@ -801,10 +789,10 @@ func TryUpstreamWithAllKeys(
 			upstreamCopy.BaseURL = currentBaseURL
 
 			// Phase 3B-2: 应用 EndpointAttemptPolicy 的自动模型映射（含 effort 原子改写）。
-			// ResolvedRouteTarget 来自 ModelResolver（AutoManaged 渠道，三条件门控通过），
-			// 优先级低于 RedirectModel（手动配置短路后 target 恒为 nil，不会双重映射）。
+			// ResolvedRouteTarget 来自 ModelResolver（AutoManaged 渠道，三条件门控通过）。
 			attemptModel := redirectedModel
 			var appliedMappedModel string
+			var resolvedAttemptTarget *autopilot.ResolvedRouteTarget
 			if endpointPolicy != nil {
 				keyHash := autopilot.KeyHashFromAPIKey(apiKey)
 				euid := autopilot.GenerateEndpointUID(upstream.ChannelUID, currentBaseURL, keyHash)
@@ -842,7 +830,7 @@ func TryUpstreamWithAllKeys(
 					if BodyHasTools(requestBody) {
 						if wlCache := config.SharedChannelCompatCache(); wlCache != nil {
 							routeIdentity := config.ToolRouteIdentity(upstream, string(executionKind))
-							if routes := wlCache.VerifiedToolCallRoutes(string(executionKind), true); len(routes) > 0 && routes[routeIdentity] {
+							if routes := wlCache.VerifiedToolCallRoutesForExclusive(string(executionKind), true); len(routes) > 0 && routes[routeIdentity] {
 								if verified := wlCache.VerifiedToolCallModelsForChannel(routeIdentity, true); len(verified) > 0 && !verified[strings.ToLower(target.Model)] {
 									RequestLogf(c, "[%s-AutoModel] override %s -> %s 不在工具白名单内，放弃 override 按原始模型透传（渠道 %s 白名单 %d 组合）",
 										apiType, model, target.Model, upstream.Name, len(verified))
@@ -863,15 +851,18 @@ func TryUpstreamWithAllKeys(
 						pinnedTarget.EffortDecided = true
 						target = &pinnedTarget
 					}
-					// Atomic rewrite: model + effort together
+					// 此处请求体仍是入口协议形态，只改写 model。effort 必须等 buildRequest
+					// 完成协议转换后再按物理上游协议写入，否则 Responses→Chat/Gemini
+					// 会在中间结构体反序列化时静默丢掉目标协议字段。
 					// 注意必须赋回外层 attemptBody：此前此处用 := 声明了块内影子变量，
 					// 模型改写只短暂进入 gin context，随后的 system 归一化/参数约束等步骤
 					// 基于外层旧 body 再次 Set，会把改写静默覆盖（火山渠道 auto_resolve 后
 					// 仍以原模型发出、上游 400 的根因）。
-					if rewritten, rewriteOk := atomicModelEffortRewrite(attemptBody, target, upstreamCopy, executionKind); rewriteOk {
+					if rewritten, rewriteOk := atomicModelRewrite(attemptBody, target); rewriteOk {
 						attemptBody = rewritten
 						attemptModel = target.Model
 						appliedMappedModel = target.Model
+						resolvedAttemptTarget = target
 						RestoreRequestBody(c, attemptBody)
 						c.Set("requestBodyBytes", attemptBody)
 						RequestLogf(c, "[%s-AutoModel] endpoint=%s model override: %s -> %s (effort=%s, decided=%v)",
@@ -897,6 +888,36 @@ func TryUpstreamWithAllKeys(
 					c.Set("mappingFailReason", mappingFailReason)
 					RequestLogf(c, "[%s-AutoModel] endpoint=%s 自动映射未命中，按原始模型透传: model=%s reason=%s",
 						apiType, euid, model, mappingFailReason)
+				}
+			}
+
+			// 已学习"仅接受流式"的 Key：非流式请求做流式桥接兼容改写——上游请求强制
+			// stream:true，上游 SSE 由各 handler 非流式路径按 Content-Type 检测并合成
+			// 回非流式响应体（见 common.ReadUpstreamNonStreamBody）。改写后若上游仍 400，
+			// 既有学习/放行/failover 逻辑逐 Key 退避，无死循环。
+			// 请求体无顶层 stream 字段语义的入口（gemini）或执行协议，退回发送前跳过，
+			// 省一次必然 400 的上游往返。同渠道其他 Key/模型照常尝试，流式请求不受影响。
+			if !isStream && upstream.ChannelUID != "" {
+				keyHash := autopilot.KeyHashFromAPIKey(apiKey)
+				if state, ok := channelCompatCache.Trait(upstream.ChannelUID, keyHash, attemptModel, config.TraitRequiresStream); ok && state.Enabled {
+					bodyKind := string(kind)
+					executionKindStr := string(executionKind)
+					if StreamBridgeSupportedKind(bodyKind) && StreamBridgeSupportedKind(executionKindStr) {
+						if rewritten, changed := ForceStreamRequestBody(attemptBody, bodyKind, executionKindStr); changed {
+							attemptBody = rewritten
+							RestoreRequestBody(c, attemptBody)
+							c.Set("requestBodyBytes", attemptBody)
+							SetUpstreamStreamBridge(c, true)
+							channelCompatCache.MarkApplied(upstream.ChannelUID, keyHash, attemptModel, config.TraitRequiresStream)
+							RequestLogf(c, "[%s-ChannelCompat] 渠道 %s 模型 %s 仅接受流式请求，非流式请求已改写为流式桥接（上游 SSE 将合成回非流式响应）",
+								apiType, upstream.Name, attemptModel)
+						}
+					} else {
+						failedKeys[apiKey] = true
+						RequestLogf(c, "[%s-ChannelCompat] 渠道 %s 模型 %s 已学习仅接受流式请求，入口/执行协议 %s/%s 暂不支持流式桥接，跳过 Key: %s",
+							apiType, upstream.Name, attemptModel, bodyKind, executionKindStr, utils.MaskAPIKey(apiKey))
+						continue
+					}
 				}
 			}
 
@@ -1057,6 +1078,11 @@ func TryUpstreamWithAllKeys(
 				return false, "", 0, nil, nil, fmt.Errorf("request build failed: %w", err)
 			}
 			req = WithRequestLogContext(req, c)
+			// 在最终物理协议请求上落 effort，保证实际发送内容与调度决策、日志一致。
+			// 该步骤位于 provider 转换之后，因此跨协议路由不会再丢失 effort。
+			if resolvedAttemptTarget != nil {
+				applyResolvedEffortToProviderRequest(req, resolvedAttemptTarget, upstreamCopy, executionKind)
+			}
 			originalReasoningEffort := extractReasoningEffortForLog(requestBody)
 			actualAttemptModel, actualReasoningEffort := extractActualRequestLogDetails(req)
 			if actualAttemptModel == "" {
@@ -1064,6 +1090,10 @@ func TryUpstreamWithAllKeys(
 			}
 			c.Set(autopilotActualModelKey, actualAttemptModel)
 			c.Set(autopilotActualEffortKey, actualReasoningEffort)
+			// 竞速质量闸门「让出即证据」的学习身份：分支在 claim 裁决处只有 gin
+			// context 可用，提前把本尝试的 渠道×Key×模型×协议 挂上（影子分支持
+			// 独立 context 副本，互不串扰；模型与成功路径学习同口径 attemptModel）。
+			setToolCallLearningIdentity(c, upstream, apiKey, attemptModel, string(executionKind))
 
 			// (Key,模型) 持久化限制复查：autopilot 映射在选 Key 之后才发生，
 			// 选 Key 阶段的 IsKeyModelDisabledNow 只能按映射前模型检查，
@@ -1350,11 +1380,31 @@ func TryUpstreamWithAllKeys(
 					resp.Header, resp.StatusCode, signalReason,
 				)
 
-				// 检查是否应永久拉黑该 Key（认证/权限/余额错误）
+				// 检查是否应永久拉黑该 Key（认证/权限错误）或降级限制 (Key,模型)（余额/配额错误）
 				blResult := ShouldBlacklistKey(resp.StatusCode, respBodyBytes)
 				if blResult.ShouldBlacklist {
 					isBalanceError := IsBalanceOrQuotaBlacklistReason(blResult.Reason)
-					if !isBalanceError || upstream.IsAutoBlacklistBalanceEnabled() {
+					restrictModel := actualAttemptModel
+					if restrictModel == "" {
+						restrictModel = model
+					}
+					if isBalanceError && restrictModel != "" {
+						// 余额/配额类：降级为 (Key,模型) 组合级限制，保留该 Key 对其他模型的调度；
+						// 仅当限制覆盖全部模型（白名单精确判定 / 阈值）时才升级为整 Key 拉黑。
+						blacklistMessage := blResult.Message
+						if strings.EqualFold(apiType, "Vectors") {
+							blacklistMessage = errorBodySummaryForLog(apiType, resp.StatusCode, respBodyBytes)
+						}
+						if HandleBalanceClassKeyFailure(cfgManager, upstream, executionAPIType, executionIndex,
+							apiKey, restrictModel, blResult.Reason, blacklistMessage, blResult.RecoverAt) {
+							RequestLogf(c, "[%s-Blacklist] 渠道 %s 模型 %s 余额/配额受限已覆盖全部模型，升级整 Key 拉黑 (Key: %s)",
+								apiType, upstream.Name, restrictModel, utils.MaskAPIKey(apiKey))
+							// 升级拉黑意味着整把 Key 不可用，写入 global 桶。
+							recordModelCircuitGlobal(c, metricsManager, upstream, apiKey, blResult.Reason, apiType)
+						}
+						// 未升级时不记熔断：配额类按约定不进熔断（recordModelCircuitFailure 文档），
+						// 持久化组合限制本身已阻断该组合调度。
+					} else if !isBalanceError || upstream.IsAutoBlacklistBalanceEnabled() {
 						blacklistMessage := blResult.Message
 						if strings.EqualFold(apiType, "Vectors") {
 							blacklistMessage = errorBodySummaryForLog(apiType, resp.StatusCode, respBodyBytes)
@@ -1362,7 +1412,8 @@ func TryUpstreamWithAllKeys(
 						if err := cfgManager.BlacklistKeyWithRecoverAt(executionAPIType, executionIndex, apiKey, blResult.Reason, blacklistMessage, blResult.RecoverAt); err != nil {
 							RequestLogf(c, "[%s-Blacklist] 拉黑 Key 失败: %v", apiType, err)
 						}
-						// 认证/权限/余额错误写入 global 桶：整把 Key 不可用，所有模型都受影响。
+						// 认证/权限错误写入 global 桶：整把 Key 不可用，所有模型都受影响。
+						// 余额类无模型名可定位组合时也走此兜底整 Key 拉黑。
 						recordModelCircuitGlobal(c, metricsManager, upstream, apiKey, blResult.Reason, apiType)
 					}
 				} else if restrictionReason := keyModelRestrictionReason(respBodyBytes); actualAttemptModel != "" && restrictionReason != "" &&
@@ -1505,6 +1556,22 @@ func TryUpstreamWithAllKeys(
 					}
 				}
 
+				// 流式要求自学习（被动侧）：上游以 400/422 明确表示该端点仅接受 stream:true 时，
+				// 记忆该 渠道-Key-模型 组合仅支持流式。与其他兼容项不同：非流式请求没有可自动
+				// 改写之处（强制 stream:true 需要合成非流式响应，不属于兼容改写），不做同 Key
+				// 重试；学到结论后按正常流程 failover 到其他渠道（错误分类已放行该文案），
+				// 后续非流式请求在 attempt 循环开头直接跳过该组合。流式请求不受影响。
+				if (resp.StatusCode == 400 || resp.StatusCode == 422) && upstream.ChannelUID != "" && !c.Writer.Written() {
+					if signal := StreamRequirementFromError(resp.StatusCode, respBodyBytes, isStream); signal != nil {
+						keyHash := autopilot.KeyHashFromAPIKey(apiKey)
+						if channelCompatCache.Record(upstream.ChannelUID, keyHash, attemptModel,
+							signal.Trait, signal.Enabled, config.CompatSourceErrorSignal, signal.Evidence) {
+							RequestLogf(c, "[%s-ChannelCompat] 渠道 %s 模型 %s 仅接受流式请求，已记忆，非流式请求将跳过该组合",
+								apiType, upstream.Name, attemptModel)
+						}
+					}
+				}
+
 				// document 能力自学习（被动侧）：请求携带 document 块且上游以 400/422 拒绝时，
 				// 记忆该 渠道-Key-模型 组合不支持 document，供 SmartRouter 在选渠道阶段规避。
 				// 与上下文上限同策略：只记录不做同 Key 重试（请求体没有可自动改写之处，
@@ -1541,6 +1608,8 @@ func TryUpstreamWithAllKeys(
 							RequestLogf(c, "[%s-ToolCallCompat] 渠道 %s 模型 %s 拒绝工具调用（%s），已记忆并将在后续路由中规避",
 								apiType, upstream.Name, attemptModel, signal.Evidence)
 						}
+						MaybeForgetVerifiedToolCallsOnUnsupported(c, upstream, apiKey, attemptModel, attemptBody,
+							string(executionKind), signal.Evidence)
 					}
 				}
 
@@ -1707,7 +1776,9 @@ func TryUpstreamWithAllKeys(
 			// 上下文窗口自学习（放宽侧）：2xx 完成即实证该渠道×协议×模型可承载本次输入，
 			// 棘轮只升不降。失败/取消/空响应不学习（err 非 nil 时内部直接返回）。
 			MaybeRecordContextWindowProven(c, apiType, upstreamCopy, executionKind, attemptModel, usage, err)
-			// 竞速败出分支不参与任何自学习（部分流的部分标记不代表渠道真实能力）。
+			// 竞速败出分支不参与任何自学习（部分流的部分标记不代表渠道真实能力）；
+			// 例外：闸门让出分支的伪标记命中已在 claim 时刻单独计数
+			// （notePseudoToolCallYield——首包缓冲实测命中是已完成观察，非部分流推断）。
 			racingSuperseded := isRacingSuperseded(c, err)
 			if isStream {
 				FinishStreamTimeoutObservation(c)
@@ -1796,9 +1867,6 @@ func TryUpstreamWithAllKeys(
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, metricsServiceType, executionKind)
 					// 空响应 / 无效响应体 / 首字超时 / 断流都是该渠道-模型确实不可用的表现。
 					recordModelCircuitFailure(c, metricsManager, upstream, apiKey, model, err.Error(), apiType)
-					// 白名单失败撤销：带工具请求的无效响应撤销该组合的 verified 记录，
-					// 渠道摘牌后排他 fail-open 放开候选（白名单渠道故障时无路可退的兜底）。
-					MaybeForgetVerifiedToolCalls(c, upstream, apiKey, attemptModel, attemptBody, string(executionKind))
 					if markURLFailure != nil {
 						markURLFailure(currentBaseURL)
 					}
@@ -1810,7 +1878,20 @@ func TryUpstreamWithAllKeys(
 					// SSE 流内检测到拉黑条件：Header 未发送，可安全 failover + 拉黑 Key
 					failedKeys[apiKey] = true
 					isBalanceError := IsBalanceOrQuotaBlacklistReason(blErr.Reason)
-					if !isBalanceError || upstream.IsAutoBlacklistBalanceEnabled() {
+					restrictModel := actualAttemptModel
+					if restrictModel == "" {
+						restrictModel = model
+					}
+					balanceRestricted := false
+					if isBalanceError && restrictModel != "" {
+						// 余额/配额类：降级为 (Key,模型) 组合级限制，覆盖全部模型时才升级整 Key 拉黑。
+						balanceRestricted = true
+						if HandleBalanceClassKeyFailure(cfgManager, upstream, executionAPIType, executionIndex,
+							apiKey, restrictModel, blErr.Reason, blErr.Message, "") {
+							RequestLogf(c, "[%s-Blacklist] SSE 流内余额/配额受限已覆盖全部模型，升级整 Key 拉黑 (Key: %s)",
+								apiType, utils.MaskAPIKey(apiKey))
+						}
+					} else if !isBalanceError || upstream.IsAutoBlacklistBalanceEnabled() {
 						if blacklistErr := cfgManager.BlacklistKey(executionAPIType, executionIndex, apiKey, blErr.Reason, blErr.Message); blacklistErr != nil {
 							RequestLogf(c, "[%s-Blacklist] 拉黑 Key 失败: %v", apiType, blacklistErr)
 						}
@@ -1821,7 +1902,11 @@ func TryUpstreamWithAllKeys(
 					if markURLFailure != nil {
 						markURLFailure(currentBaseURL)
 					}
-					CompleteLog(channelLogStore, metricsKey, logRequestID, http.StatusOK, false, fmt.Sprintf("key blacklisted: %s - %s", blErr.Reason, blErr.Message), isRetryAttempt)
+					sseLogAction := "key blacklisted"
+					if balanceRestricted {
+						sseLogAction = "key model restricted"
+					}
+					CompleteLog(channelLogStore, metricsKey, logRequestID, http.StatusOK, false, fmt.Sprintf("%s: %s - %s", sseLogAction, blErr.Reason, blErr.Message), isRetryAttempt)
 					RequestLogf(c, "[%s-Blacklist] SSE 流内错误触发拉黑 (Key: %s, 原因: %s)，尝试下一个密钥", apiType, utils.MaskAPIKey(apiKey), blErr.Reason)
 					continue
 				} else {
@@ -1862,7 +1947,7 @@ func TryUpstreamWithAllKeys(
 				metricsManager.ReleaseProbe(currentBaseURL, apiKey, metricsServiceType)
 				delete(probeAcquired, probeKey)
 			}
-			// 记录渠道日志（竞速赢家补记 won 标记，未参与竞速时无操作）
+			// 记录渠道日志（竞速赢家补记 won 标记；武装未竞速时清除创建期角色标记）
 			CompleteChannelLogWithRacingOutcome(channelLogStore, metricsKey, logRequestID, c)
 			CompleteLog(channelLogStore, metricsKey, logRequestID, http.StatusOK, true, "", isRetryAttempt)
 			recordAttemptCompleted(c, logRequestID, upstream.ChannelUID, "success", http.StatusOK, time.Since(attemptStartedAt).Milliseconds())
@@ -2441,12 +2526,12 @@ func recordModelCircuitGlobal(c *gin.Context, metricsManager *metrics.MetricsMan
 // 配额/账号限流（已有 cooldown 与 scope 冷却机制）、内容审核（换渠道不改变请求内容）、
 // 客户端取消、以及 RecordRequestFinalizeIgnored 的中间态重试。
 //
-// model 传本次请求链路的基准模型：手动 RedirectModel / autopilot 映射场景下为
-// 客户端请求的原始模型（读侧 scheduler 渠道级过滤、keypool Key 级过滤都以原始模型
+// model 传本次请求链路的基准模型，即客户端请求的原始模型（显式映射已退役；
+// 读侧 scheduler 渠道级过滤、keypool Key 级过滤都以原始模型
 // 为键，写读不一致会让熔断在 AutoManaged 渠道上完全失效）；联邦 sibling / 溢出
 // 重定向发生跨模型执行时，调用点的 model 已被改写为执行模型，与读侧
 // circuitModel（见 modelCircuitChecker）同源。不要改传 attemptModel /
-// redirectedModel——那两者在手动映射场景与熔断读侧的键不一致。
+// redirectedModel——那两者与熔断读侧的键可能不一致。
 func recordModelCircuitFailure(c *gin.Context, metricsManager *metrics.MetricsManager,
 	upstream *config.UpstreamConfig, apiKey, model, errSummary, apiType string) {
 	if metricsManager == nil || upstream == nil || upstream.ChannelUID == "" || model == "" {
@@ -2500,8 +2585,8 @@ func keyAutoWeightFactor(metricsManager *metrics.MetricsManager) keypool.AutoWei
 // 把 apiKey → keyHash 的换算放在这里，让 keypool 无需感知哈希算法。
 // metricsManager 为 nil 时返回 nil（fail-open，不做该项过滤）。
 //
-// circuitModel 是熔断表的模型键，取本次请求链路的基准模型：手动 RedirectModel /
-// autopilot 映射场景下即客户端请求的原始模型（此时 model 未被改写）；联邦
+// circuitModel 是熔断表的模型键，取本次请求链路的基准模型：请求未被改写时即
+// 客户端请求的原始模型（此时 model 未被改写）；联邦
 // sibling / 溢出重定向发生跨模型执行时为改写后的执行模型（调用点位于改写之后），
 // 与写侧 recordModelCircuitFailure 传入的 model、scheduler 渠道级过滤使用的
 // ActualModel 三层同键。**不使用** keypool 传入的模型参数。原因：熔断的读侧
@@ -2511,8 +2596,9 @@ func keyAutoWeightFactor(metricsManager *metrics.MetricsManager) keypool.AutoWei
 // 熔断将完全失效。
 //
 // keypool 侧传入的 model 仍用于 per-key 白名单与 IsKeyModelDisabledNow 判定，
-// 那两个机制按重定向后的模型比较才正确，因此签名保留该参数。
-// 注意 IsKeyModelDisabledNow 在此只能覆盖手动 RedirectModel 的场景；autopilot
+// 那两个机制按请求模型比较才正确，因此签名保留该参数。
+// 注意 IsKeyModelDisabledNow 在此覆盖请求模型与持久化 (Key,模型) 限制的组合；
+// autopilot
 // 映射目标由发送前的复查兜底（见请求构建后的 KeyModel 复查块），两层合起来
 // 才保证持久化限制对自动映射渠道生效。
 func modelCircuitChecker(metricsManager *metrics.MetricsManager, circuitModel string) keypool.ModelCircuitChecker {
@@ -2686,9 +2772,8 @@ func isSystemHeaderError(errStr string) bool {
 	return false
 }
 
-// atomicModelEffortRewrite 原子地改写请求体中的 model 和 effort。
-// 保证：如果 effort 改写失败，model 也保持不变（原子性）。
-// 返回 (newBody, true) 表示成功，(originalBody, false) 表示失败或无需改写。
+// atomicModelRewrite 只改写入口协议请求体中的 model。
+// effort 会在 provider 完成协议转换后写入最终出站请求。
 // isEffortClampedByClient 判断客户端显式声明的 effort 是否被 autopilot 的选择钳位。
 // 仅当客户端 effort 的序数值严格低于 autopilot 选择的 effort 时返回 true。
 // 客户端未显式声明 effort 时返回 false。
@@ -2701,45 +2786,56 @@ func isEffortClampedByClient(clientRaw string, clientExplicit bool, targetEffort
 	return clientOrd >= 0 && targetOrd >= 0 && clientOrd < targetOrd
 }
 
-func atomicModelEffortRewrite(body []byte, target *autopilot.ResolvedRouteTarget, upstream *config.UpstreamConfig, kind scheduler.ChannelKind) ([]byte, bool) {
+func atomicModelRewrite(body []byte, target *autopilot.ResolvedRouteTarget) ([]byte, bool) {
 	if target == nil || target.Model == "" {
 		return body, false
 	}
-
-	// Step 1: 改写 model
 	modelBody, err := sjson.SetBytes(body, "model", target.Model)
 	if err != nil {
 		return body, false
 	}
-
-	// Step 2: 如果 effort 由 Autopilot 决定，注入 reasoning params
-	if target.EffortDecided && target.Effort != "" {
-		// adaptive_only guard: ThinkingMode=adaptive_only 的模型不注入 thinking params
-		// （模型自身决定思考深度，Autopilot 只负责模型选择）
-		cap := config.ResolveUpstreamCapability(target.Model, upstream, nil)
-		if cap.Known && cap.Capability.ThinkingMode == "adaptive_only" {
-			// 只改写 model，不注入 effort
-			return modelBody, true
-		}
-
-		style := effortInjectionStyle(kind, upstream)
-		if style == "" {
-			// 该渠道类型不接受思考参数（images/vectors），只改写 model。
-			return modelBody, true
-		}
-		var reqMap map[string]interface{}
-		if err := json.Unmarshal(modelBody, &reqMap); err != nil {
-			return body, false
-		}
-		config.ApplyReasoningParamStyle(reqMap, style, string(target.Effort))
-		effortBody, err := json.Marshal(reqMap)
-		if err != nil {
-			return body, false
-		}
-		return effortBody, true
-	}
-
 	return modelBody, true
+}
+
+// rewriteOutboundEffort 将 Autopilot 决定的 effort 写入已经完成协议转换的请求体。
+func rewriteOutboundEffort(body []byte, target *autopilot.ResolvedRouteTarget, upstream *config.UpstreamConfig, kind scheduler.ChannelKind) ([]byte, bool) {
+	if target == nil || !target.EffortDecided || target.Effort == "" {
+		return body, false
+	}
+	cap := config.ResolveUpstreamCapability(target.Model, upstream, nil)
+	if cap.Known && cap.Capability.ThinkingMode == "adaptive_only" {
+		return body, false
+	}
+	style := effortInjectionStyle(kind, upstream)
+	if style == "" {
+		return body, false
+	}
+	var reqMap map[string]interface{}
+	if err := json.Unmarshal(body, &reqMap); err != nil {
+		return body, false
+	}
+	config.ApplyReasoningParamStyle(reqMap, style, string(target.Effort))
+	config.NormalizeReasoningObjectForUpstream(reqMap, upstream)
+	effortBody, err := json.Marshal(reqMap)
+	if err != nil {
+		return body, false
+	}
+	return effortBody, true
+}
+
+// applyResolvedEffortToProviderRequest 原地更新最终出站 HTTP 请求并保持 GetBody 可重放。
+func applyResolvedEffortToProviderRequest(req *http.Request, target *autopilot.ResolvedRouteTarget, upstream *config.UpstreamConfig, kind scheduler.ChannelKind) bool {
+	body := snapshotRequestBodyForLog(req)
+	rewritten, ok := rewriteOutboundEffort(body, target, upstream, kind)
+	if !ok {
+		return false
+	}
+	req.Body = io.NopCloser(bytes.NewReader(rewritten))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(rewritten)), nil
+	}
+	req.ContentLength = int64(len(rewritten))
+	return true
 }
 
 // effortInjectionStyle 决定该渠道的 effort 注入形态。
@@ -2756,22 +2852,8 @@ func effortInjectionStyle(kind scheduler.ChannelKind, upstream *config.UpstreamC
 	case scheduler.ChannelKindGemini:
 		return config.ReasoningParamStyleGemini
 	}
-	serviceType := ""
-	if upstream != nil {
-		serviceType = strings.ToLower(strings.TrimSpace(upstream.ServiceType))
-	}
-	switch serviceType {
-	case "gemini":
-		return config.ReasoningParamStyleGemini
-	case "openai":
-		return "reasoning_effort"
-	case "responses", "copilot":
-		return "reasoning"
-	case "claude":
-		return "thinking"
-	}
-	if upstream != nil && upstream.ReasoningParamStyle != "" {
-		return upstream.ReasoningParamStyle
+	if style := config.EffectiveReasoningParamStyle(upstream); style != "" {
+		return style
 	}
 	// ServiceType 缺失时保留旧调用方的 kind 回退；route-aware 调用优先使用上游物理服务类型。
 	switch kind {

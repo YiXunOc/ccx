@@ -29,7 +29,7 @@ func protocolPreferenceAllows(cfg *config.Config, route ChannelRouteRef, request
 			continue
 		}
 		if actualModel == "" {
-			actualModel = config.RedirectModel(requestModel, &u)
+			actualModel = requestModel
 		}
 		for _, model := range []string{requestModel, actualModel} {
 			bound := cfg.ProtocolForLogicalModel(u.LogicalChannelUID, model)
@@ -94,7 +94,10 @@ func (s *ChannelScheduler) addBoundProtocolCandidates(ctx context.Context, cfg *
 				continue
 			}
 			u := &us[ch.Index]
-			actual := config.RedirectModel(model, u)
+			actual := ch.ActualModel
+			if actual == "" {
+				actual = model
+			}
 			bound := cfg.ProtocolForLogicalModel(u.LogicalChannelUID, actual)
 			if bound == "" {
 				bound = cfg.ProtocolForLogicalModel(u.LogicalChannelUID, model)

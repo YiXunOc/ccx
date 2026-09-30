@@ -18,6 +18,7 @@ export interface TimeWindowStats {
   cacheCreationTokens?: number
   cacheReadTokens?: number
   cacheHitRate?: number
+  userRequestCount?: number // 用户请求数（双口径：≠requestCount 时显示「X 请求 / Y 次尝试」）
 }
 
 export type CircuitState = 'closed' | 'open' | 'half_open'
@@ -243,17 +244,23 @@ export interface Channel {
   remark?: string
   website?: string
   insecureSkipVerify?: boolean
-  modelMapping?: Record<string, string>
   modelCapabilities?: Record<string, UpstreamModelCapability>
   embeddingCapabilities?: Record<string, EmbeddingCapability>
   defaultCapability?: UpstreamModelCapability
   allowUnknownContext?: boolean
-  reasoningMapping?: Record<string, 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>
   reasoningParamStyle?: 'reasoning' | 'reasoning_effort' | 'thinking'
   textVerbosity?: 'low' | 'medium' | 'high' | ''
   fastMode?: boolean
   customHeaders?: Record<string, string>
   proxyUrl?: string
+  proxyPreferDirect?: boolean           // 直连优先：配代理时先直连，失败（网络错误/451/403）自动回退代理
+  racing?: { enabled?: boolean }        // 渠道级竞速参与开关（不参与=不做主触发也不做影子目标）
+  costMultiplier?: number               // 渠道级充值倍率（EffectiveCost = ListCost × 倍率，0/空=不参与）
+  maxGroupMultiplier?: number           // 渠道级最高分组倍率上限（Key 分组倍率超过则自动退出调度，0/空=不启用闸门）
+  channelPaymentCurrency?: string       // 充值币种（如 LDC/CNY/USD）
+  channelPaymentAmount?: number         // 充值金额（0/空=不参与）
+  channelCreditCurrency?: string        // 渠道显示/计价币种（如 USD）
+  channelCreditAmount?: number          // 渠道到账金额（0/空=不参与）
   requestTimeoutMs?: number
   responseHeaderTimeoutMs?: number
   streamFirstContentTimeoutMs?: number
@@ -286,8 +293,6 @@ export interface Channel {
   passbackThinkingBlocks?: boolean
   supportedModels?: string[]
   noVision?: boolean
-  noVisionModels?: string[]
-  visionFallbackModel?: string
   historicalImageTurnLimit?: number
   compactModel?: string
   // 主动限速（渠道级生产代理限速）
@@ -581,8 +586,6 @@ export interface ChannelDiscoveryRequest {
   customHeaders?: Record<string, string>
   proxyUrl?: string
   insecureSkipVerify?: boolean
-  modelMapping?: Record<string, string>
-  reasoningMapping?: Record<string, string>
   targetClients?: ChannelDiscoveryTargetClient[]
 }
 
@@ -637,11 +640,7 @@ export interface ChannelDiscoveryRecommendation {
   channelKind: ChannelDiscoveryKind | ''
   serviceType: Channel['serviceType'] | ''
   baseUrls?: string[]
-  modelMapping: Record<string, string>
-  reasoningMapping?: Record<string, string>
   supportedModels?: string[]
-  noVisionModels?: string[]
-  visionFallbackModel?: string
   compat?: Partial<Record<string, boolean>>
   urlRecommendation?: {
     current: string
@@ -785,11 +784,18 @@ export interface ChannelLogEntry {
   isRetry: boolean
   interfaceType?: string
   requestSource?: string
+  selectionReason?: string
+  selectionTraceSummary?: string
+  racingRole?: string
+  racingStatus?: string    // won | lost
   status: string  // pending/connecting/first_byte/streaming/completed/failed/cancelled/racing_lost
   startTime: string
   connectedAt?: string
   firstByteAt?: string
   completedAt?: string
+  firstContentLatencyMs?: number
+  maxStreamIdleMs?: number
+  maxToolCallIdleMs?: number
 
   // 代理上下文观测（subagent 识别）
   agentRole?: string         // main | subagent
@@ -797,11 +803,30 @@ export interface ChannelLogEntry {
   parentThreadId?: string    // Codex parent thread id
   agentConfidence?: string   // exact | heuristic
   sessionId?: string         // 扁平化会话标识
+
+  // Autopilot trace 关联
+  autopilotTraceUid?: string
+  requestCorrelationId?: string
+}
+
+// 熔断成因依据：渠道日志是后端内存态，重启即清空，而熔断状态持久化恢复。
+// 日志为空且渠道非 closed 时后端返回该字段，用于解释熔断来源而非留下黑盒。
+export interface ChannelBreakerEvidence {
+  circuitState: 'open' | 'half_open' | 'closed'
+  lastFailureAt?: string
+  circuitBrokenAt?: string
+  nextRetryAt?: string
+  backoffLevel: number
+  consecutiveFailures: number
+  // true 表示熔断依据的最近失败早于本次进程启动，即日志已随重启清空
+  predatesRestart: boolean
+  processStartedAt: string
 }
 
 export interface ChannelLogsResponse {
   channelIndex: number
   logs: ChannelLogEntry[]
+  breakerEvidence?: ChannelBreakerEvidence
 }
 
 // ============== 活跃度类型 ==============
@@ -1175,6 +1200,8 @@ export interface SubscriptionItem {
   lastBalanceRefreshAt?: string
   lastBalanceRefreshError?: string
   baseUrl?: string
+  proxyUrl?: string
+  proxyPreferDirect?: boolean
   accessTokenMasked?: string
   userId?: string
   authTokenMode?: 'bearer' | 'raw_auth' | string
@@ -1241,6 +1268,8 @@ export interface NewApiVerifyRequest {
   authTokenMode?: string
   displayName?: string
   subscriptionUid?: string
+  proxyUrl?: string
+  proxyPreferDirect?: boolean
 }
 
 export interface NewApiVerifyResponse {
@@ -1273,6 +1302,8 @@ export interface NewApiProvisionRequest {
   channelKind: ChannelKind
   userId?: string
   authTokenMode?: 'bearer' | 'raw_auth' | string
+  proxyUrl?: string
+  proxyPreferDirect?: boolean
   channelName?: string
   provisionKeyName?: string
   provisionGroup?: string
@@ -1483,6 +1514,7 @@ export interface SmartRoutingConfig {
   mode: AutopilotMode
   killSwitchActive: boolean
   costPreference: string
+  racingEnabled?: boolean   // 竞速模式总开关（随整卡 PUT /smart-routing/config 保存）
   l2ProbeEnabled?: boolean
   readiness?: AutoReadinessReport
 }
@@ -1537,10 +1569,32 @@ export interface DomainStrengthEvidence {
 
 export interface RoutingCandidate {
   channelUid: string
+  channelName?: string
+  candidateKey?: string    // 五元组标识（v3）：channelUID|protocol|keyIdentity|model|effort；v2 前为二元组 channelUID|model
   metricsKey?: string
+  keyMask?: string
   originTier?: string
   channelKind?: string
+  executionKind?: string
+  protocolFidelity?: string
+  conversionPenalty?: number
   healthState?: string
+  mappedModel?: string
+  mappingSource?: string
+  mappingReason?: string
+  actualModel?: string     // v3：候选行实际发送模型（五元组模型维）
+  keyIdentity?: string     // v3：候选行 key 身份（KeyUID 或 kh_ 哈希前缀）
+  quotaGroup?: string      // v3：key 分组
+  effort?: string          // v3：思考档位（空 = passthrough）
+  baseQualityTier?: string
+  effortQualityTier?: string
+  effortQualityScore?: number
+  effortEvidenceClass?: string
+  effortQualityKnown?: boolean
+  effortAwareTotalScore?: number
+  qualityConfidence?: number
+  qualityDiscount?: number
+  qualityDiscountReason?: string
   totalScore: number
   scores?: CandidateScore[]
   domainEvidence?: DomainStrengthEvidence
@@ -1583,16 +1637,322 @@ export interface RoutingDecisionTrace {
 }
 
 export interface AutopilotTraceListResponse {
-  traces: RoutingDecisionTrace[]
+  traces: TraceSummary[]
   total: number
+  partial?: boolean
+  hasMore: boolean
 }
 
 export interface AutopilotTraceStats {
   totalCount: number
+  comparedCount: number
+  matchedCount?: number
   mismatchCount: number
+  uncomparedCount?: number
+  successCount?: number
+  failOpenCount?: number
   mismatchRate: number
   taskClassDist: Record<string, number>
   modeDist: Record<string, number>
+}
+
+// ============== Trace v2 类型 ==============
+
+export type ComparisonStatus = 'matched' | 'mismatched' | 'uncompared'
+export type Cohort = 'treatment' | 'control' | 'bypass'
+
+/** 列表摘要（v2） */
+export interface TraceSummary {
+  traceUid: string
+  schemaVersion: number
+  createdAt: string
+  releaseId?: string
+  cohort?: Cohort
+  mode: string
+  requestKind: string
+  taskClass: string
+  taskDomain?: string
+  requestedModel?: string
+  actualModel?: string
+  actualEffort?: string
+  comparisonStatus: ComparisonStatus
+  recommendedChannelUid?: string
+  actualChannelUid?: string
+  outcome?: string
+  success?: boolean
+  requestDurationMs?: number
+  historicalSchema?: boolean
+}
+
+/** Scheduler 裁决摘要 */
+export interface SchedulerDecisionSummary {
+  stages?: { name: string; count: number }[]
+  skipReasons?: string[]
+  skippedCandidates?: SkippedCandidateSummary[]
+  selectedUid?: string
+  selectedName?: string
+  selectionCode?: string
+}
+
+/** scheduler 阶段被过滤渠道的明细 */
+export interface SkippedCandidateSummary {
+  channelIndex: number
+  channelName: string
+  stage: string
+  reason: string
+  details?: string
+}
+
+/** endpoint 尝试摘要 */
+export interface EndpointAttemptSummary {
+  attemptUid: string
+  attemptSeq: number
+  status: string
+  channelUid: string
+  endpointLabel: string
+  actualModel?: string
+  actualEffort?: string
+  result: string
+  statusCode?: number
+  durationMs?: number
+}
+
+/** trace 详情（v2） */
+export interface TraceDetailV2 {
+  traceUid: string
+  schemaVersion: number
+  traceRevision?: number
+  createdAt: string
+  requestCorrelationId?: string
+  source?: string
+  releaseId?: string
+  policyFingerprint?: string
+  targetMode?: string
+  effectiveMode?: string
+  cohort?: Cohort
+  bypassReason?: string
+  persistenceClass?: string
+  comparisonStatus: ComparisonStatus
+  requestKind: string
+  taskClass: string
+  taskDomain?: string
+  requestedModel?: string
+  actualModel?: string
+  actualEffort?: string
+  agentRole?: string
+  manualIntentUid?: string
+  advisorDecisionUid?: string
+  candidates?: RoutingCandidate[]
+  candidatesBefore: number
+  candidatesAfter: number
+  globalFilterReasons?: Record<string, string[]>
+  sortReasons?: string[]
+  recommendedChannelUid?: string
+  selectedChannelUid?: string
+  estimatedCost?: number
+  costConfidence?: number
+  fallbackUsed: boolean
+  schedulerDecision?: SchedulerDecisionSummary
+  endpointAttempts?: EndpointAttemptSummary[]
+  attemptsTruncated?: boolean
+  attemptsTotal?: number
+  attemptsByResult?: Record<string, number>
+  outcome?: string
+  success?: boolean
+  channelFallback?: boolean
+  statusCode?: number
+  requestDurationMs?: number
+  firstByteLatencyMs?: number
+  completedAt?: string
+  durationMs: number
+  historicalSchema?: boolean
+}
+
+export interface AutopilotTraceDetailResponse {
+  trace: TraceDetailV2
+}
+
+// ============== 成本报表（Phase 4 Item 2） ==============
+
+export interface CostReportRow {
+  groupKey: string
+  totalRequests: number
+  successCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens: number
+  cacheReadTokens: number
+  listCostUSD: number
+  effectiveCostUSD: number
+  pricingComplete?: boolean
+  unpricedModels?: string[]
+  zeroCostCount?: number
+  configuredMultiplierCount?: number
+  subscriptionCostCount?: number
+  unpricedCostCount?: number
+  // 请求侧压缩统计（RTK 模式）
+  compressedRequests?: number
+  originalTokensSaved?: number
+  compressedTokensAfter?: number
+  compressionFallbackCount?: number
+  compressionSavingsPct?: number
+}
+
+export interface CostReportResponse {
+  groupBy: 'user' | 'model' | 'key'
+  apiType: string
+  duration: string
+  rows: CostReportRow[]
+}
+
+// ============== 智能路由诊断 / 路由预演 ==============
+
+export type SmartRoutingDiagnoseChannelKind = 'messages' | 'chat' | 'responses' | 'gemini' | 'images' | 'vectors'
+
+/** 智能路由 dry-run 请求。 */
+export interface SmartRoutingDiagnoseRequest {
+  model: string
+  channelKind: SmartRoutingDiagnoseChannelKind
+  operation?: string
+  agentRole?: 'main' | 'subagent' | ''
+  agentType?: string
+  hasImage?: boolean
+  estTokens?: number
+  visionNeed?: boolean
+  imageGenNeed?: boolean
+  embeddingNeed?: boolean
+  toolUseNeed?: boolean
+  reasoningNeed?: boolean
+  contextNeed?: number
+}
+
+/** 后端 RequestProfile 当前使用 Go 字段名序列化。 */
+export interface SmartRoutingDiagnoseProfile {
+  Model: string
+  ChannelKind: string
+  Operation: string
+  AgentRole: string
+  AgentType: string
+  HasImage: boolean
+  EstTokens: number
+  QualityNeed: string
+  ContextNeed: number
+  VisionNeed: boolean
+  ImageGenNeed: boolean
+  EmbeddingNeed: boolean
+  ToolUseNeed: boolean
+  ReasoningNeed: boolean
+  TaskClass: string
+  TaskDomain: string
+}
+
+export interface SmartRoutingDiagnoseCandidate {
+  channelUid: string
+  score: number
+  qualityScore: number
+  stabilityScore: number
+  speedScore: number
+  costScore: number
+  savingsScore: number
+  selected: boolean
+  filterReasons?: string[]
+  candidateKey?: string
+  mappedModel?: string
+  mappingSource?: string
+  mappingReason?: string
+  actualModel?: string
+  keyIdentity?: string
+  quotaGroup?: string
+  effort?: string
+  baseQualityTier?: string
+  effortQualityTier?: string
+  effortQualityScore?: number
+  effortEvidenceClass?: string
+  effortQualityKnown?: boolean
+  effortAwareTotalScore?: number
+  qualityConfidence?: number
+  qualityDiscount?: number
+  qualityDiscountReason?: string
+}
+
+export interface SmartRoutingDiagnosePlan {
+  requestProfile: SmartRoutingDiagnoseProfile
+  candidates: SmartRoutingDiagnoseCandidate[]
+  selectedChannelUid?: string
+  selectedModel?: string
+  fallbackUsed: boolean
+  sortReasons?: string[]
+  mode: string
+  logicalGroups?: SmartRoutingDiagnoseLogicalGroup[]
+}
+
+// 候选按 LogicalChannel 聚合的诊断视图；仅用于展示，不改变真实调度。
+export interface SmartRoutingDiagnoseLogicalGroup {
+  logicalChannelUid?: string
+  logicalChannelName?: string
+  channelUids: string[]
+  bestChannelUid: string
+  bestScore: number
+  selectedCount: number
+  totalCount: number
+}
+
+export interface SmartRoutingDiagnoseResponse {
+  plan: SmartRoutingDiagnosePlan | null
+  mode: string
+  message?: string
+}
+
+// ─── 路由预演（Route Preview）──
+
+/** 路由预演请求：原始请求体 + 入站协议。 */
+export interface RoutePreviewRequest {
+  channelKind: SmartRoutingDiagnoseChannelKind
+  model?: string
+  operation?: string
+  body: Record<string, unknown> | unknown[]
+}
+
+/** 预演响应中的 scheduler 层诊断。 */
+export interface RoutePreviewSchedulerDiagnose {
+  ok: boolean
+  kind: string
+  reason?: string
+  summary?: string
+  trace?: RoutePreviewSelectionTrace
+  selected?: {
+    channelIndex: number
+    channelName: string
+    serviceType: string
+  }
+}
+
+export interface RoutePreviewSelectionTrace {
+  kind: string
+  model?: string
+  routePrefix?: string
+  stages?: Array<{ name: string; count: number }>
+  candidates?: Array<{
+    channelIndex: number
+    channelName: string
+    stage: string
+    reason: string
+    details?: string
+  }>
+  selected?: {
+    channelIndex: number
+    channelName: string
+    reason: string
+  }
+}
+
+/** 路由预演响应：SmartRouter 层 + scheduler 层两面。 */
+export interface RoutePreviewResponse {
+  plan: SmartRoutingDiagnosePlan | null
+  mode: string
+  extractedProfile: SmartRoutingDiagnoseProfile | null
+  schedulerDiagnose: RoutePreviewSchedulerDiagnose | null
+  message?: string
 }
 
 // ============== Admin API 端点路径常量 ==============
@@ -1676,8 +2036,6 @@ export interface CreateLogicalChannelProtocol {
   apiKeyConfigs?: APIKeyConfig[]
   baseUrls?: string[]
   baseUrl?: string
-  modelMapping?: Record<string, string>
-  reasoningMapping?: Record<string, string>
   priority?: number
   enabled?: boolean
   status?: string
@@ -1718,8 +2076,6 @@ export interface UpdateLogicalChannelProtocol {
   apiKeyConfigs?: APIKeyConfig[]
   baseUrls?: string[]
   baseUrl?: string
-  modelMapping?: Record<string, string>
-  reasoningMapping?: Record<string, string>
   priority?: number
   enabled?: boolean
   status?: string
@@ -1745,3 +2101,97 @@ export interface DeleteLogicalChannelResponse {
 export const LOGICAL_CHANNELS_PATH = '/api/logical-channels'
 export const logicalChannelPath = (uid: string) => `/api/logical-channels/${encodeURIComponent(uid)}`
 export const LOGICAL_CHANNELS_DASHBOARD_PATH = '/api/logical-channels/dashboard'
+
+// ============== 新增端点路径常量（对齐 web 端能力） ==============
+
+/** 成本报表（Phase 4 Item 2） */
+export const COST_REPORT_PATH = '/api/reports/cost'
+
+/** 智能路由 dry-run 诊断 */
+export const SMART_ROUTING_DIAGNOSE_PATH = '/api/smart-routing/diagnose'
+
+/** 路由预演（请求体直喂 + 两层对齐） */
+export const ROUTE_PREVIEW_PATH = '/api/autopilot/route-preview'
+
+/** 单条路由追踪详情 */
+export const autopilotTracePath = (traceUid: string) => `/api/traces/${encodeURIComponent(traceUid)}`
+
+/** 渠道级竞速独立端点（脚本直调用；UI 随 /smart-routing/config 整卡保存） */
+export const RACING_CONFIG_PATH = '/api/racing/config'
+
+/** 调度器选路 dry-run（按协议注册于 /api/{kind}/channels/scheduler/diagnose） */
+export const schedulerDiagnosePath = (kind: ChannelKind) =>
+  `/api/${kind}/channels/scheduler/diagnose`
+
+/** 每 Key 暂停（调度跳过该 key；恢复复用既有 restoreApiKey） */
+export const suspendKeyPath = (kind: ChannelKind, channelId: number | string) =>
+  `/api/${kind}/channels/${encodeURIComponent(String(channelId))}/keys/suspend`
+
+/** 订阅生命周期补齐（subscriptionPath 已在上方定义） */
+export const subscriptionLinkPath = (uid: string) => `${subscriptionPath(uid)}/link`
+export const subscriptionUnlinkPath = (uid: string) => `${subscriptionPath(uid)}/unlink`
+export const subscriptionPrimaryAccountPath = (uid: string) => `${subscriptionPath(uid)}/accounts/primary`
+
+// ============== 健康中心跨模块状态事件（对齐 web 端 api-types.ts） ==============
+
+/** 状态事件 REST 拉取端点 */
+export const HEALTH_CENTER_STATE_EVENTS_PATH = '/api/health-center/state-events'
+
+/** 状态事件 WebSocket 推送端点（eventbus.Event：含 manifest_drift / capability_drift 等） */
+export const HEALTH_CENTER_STATE_EVENTS_WS_PATH = '/api/health-center/state-events/stream'
+
+/** eventbus.Event 统一 envelope（与后端 internal/eventbus/event.go 对齐） */
+export interface StateEvent {
+  uid: string
+  type: string
+  scope?: string
+  /** channelUID / metricsKey / logicalChannelUid 等 */
+  subject?: string
+  /** messages / chat / ...（可选） */
+  channelKind?: string
+  /** 状态迁移前值 */
+  from?: string
+  /** 状态迁移后值 */
+  to?: string
+  cause?: string
+  payload?: Record<string, unknown>
+  createdAt: string
+}
+
+/** manifest_drift 事件 payload */
+export interface ManifestDriftPayload {
+  /** 新增模型 */
+  added?: string[]
+  /** 移除模型 */
+  removed?: string[]
+}
+
+/** capability_drift 事件 payload */
+export interface CapabilityDriftPayload {
+  /** 探测模型 */
+  model?: string
+  /** 经 model mapping 重定向后实际发往上游的模型 */
+  actualModel?: string
+  /** 探测协议 */
+  protocol?: string
+  /** 渠道可读名 */
+  channelName?: string
+  /** 注册表声明的能力 */
+  declared?: {
+    source?: string
+    matchedPattern?: string
+    contextWindow?: number
+    maxOutput?: number
+    thinkingMode?: string
+    reasoningEfforts?: string[]
+  }
+  /** 实际探测结果 */
+  actual?: {
+    success?: boolean
+    streamingSupported?: boolean
+    latencyMs?: number
+    error?: string
+  }
+  /** 漂移字段列表 */
+  driftFields?: string[]
+}

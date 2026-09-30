@@ -41,12 +41,10 @@ type UpstreamConfig struct {
 	Description           string                             `json:"description,omitempty"`
 	Website               string                             `json:"website,omitempty"`
 	InsecureSkipVerify    bool                               `json:"insecureSkipVerify,omitempty"`
-	ModelMapping          map[string]string                  `json:"modelMapping,omitempty"`
 	ModelCapabilities     map[string]UpstreamModelCapability `json:"modelCapabilities,omitempty"` // 实际模型能力覆盖，key 支持模型通配符
 	EmbeddingCapabilities map[string]EmbeddingCapability     `json:"embeddingCapabilities,omitempty"`
 	DefaultCapability     UpstreamModelCapability            `json:"defaultCapability,omitempty"`   // 渠道默认实际模型能力
 	AllowUnknownContext   bool                               `json:"allowUnknownContext,omitempty"` // 大上下文请求是否允许落到未知能力渠道
-	ReasoningMapping      map[string]string                  `json:"reasoningMapping,omitempty"`
 	ReasoningParamStyle   string                             `json:"reasoningParamStyle,omitempty"`
 	TextVerbosity         string                             `json:"textVerbosity,omitempty"`
 	FastMode              bool                               `json:"fastMode,omitempty"`
@@ -145,9 +143,7 @@ type UpstreamConfig struct {
 	MaxGroupMultiplier *float64 `json:"maxGroupMultiplier,omitempty"` // 最高分组倍率上限（如 1=不超过标准倍率）
 
 	// Vision 能力配置
-	NoVision            bool     `json:"noVision,omitempty"`            // 整个渠道不支持图片输入
-	NoVisionModels      []string `json:"noVisionModels,omitempty"`      // 不支持图片输入的模型列表（匹配 modelMapping 后的实际模型名）
-	VisionFallbackModel string   `json:"visionFallbackModel,omitempty"` // 含图请求命中 noVisionModels 时使用的替代模型
+	NoVision bool `json:"noVision,omitempty"` // 整个渠道不支持图片输入
 	// 历史图片轮次限制
 	HistoricalImageTurnLimit int `json:"historicalImageTurnLimit,omitempty"` // 超过此轮次的历史图片替换为占位符（0=不限制，2-10=限制轮次）
 	// Compact 专用模型配置
@@ -793,10 +789,19 @@ func normalizeAPIKeyConfigs(apiKeys []string, configs []APIKeyConfig) []APIKeyCo
 	return normalized
 }
 
+// mergeAndNormalizeAPIKeyConfigs 以 existing 为基底、把 incoming 逐条合并上去（按 KeyUID /
+// CredentialUID / Key 定位），未提及的 Key 配置保持原样。
+// 渠道编辑保存只下发变更 Key 的 trimmed 配置（托管渠道单卡补发仅带定位+倍率字段），
+// 若按 incoming 重建整份列表，其余 Key 的倍率/限额/凭证绑定会被静默清空。
 func mergeAndNormalizeAPIKeyConfigs(apiKeys []string, existing []APIKeyConfig, incoming []APIKeyConfig) []APIKeyConfig {
-	merged := make([]APIKeyConfig, 0, len(incoming))
+	merged := make([]APIKeyConfig, 0, len(existing)+len(incoming))
+	merged = append(merged, existing...)
 	for _, next := range incoming {
-		merged = append(merged, mergeAPIKeyConfig(findExistingAPIKeyConfig(existing, next), next))
+		if target := findExistingAPIKeyConfig(merged, next); target != nil {
+			*target = mergeAPIKeyConfig(target, next)
+			continue
+		}
+		merged = append(merged, next)
 	}
 	return normalizeAPIKeyConfigs(apiKeys, merged)
 }
@@ -1298,12 +1303,10 @@ type UpstreamUpdate struct {
 	Description              *string                            `json:"description"`
 	Website                  *string                            `json:"website"`
 	InsecureSkipVerify       *bool                              `json:"insecureSkipVerify"`
-	ModelMapping             map[string]string                  `json:"modelMapping"`
 	ModelCapabilities        map[string]UpstreamModelCapability `json:"modelCapabilities"`
 	EmbeddingCapabilities    map[string]EmbeddingCapability     `json:"embeddingCapabilities"`
 	DefaultCapability        *UpstreamModelCapability           `json:"defaultCapability"`
 	AllowUnknownContext      *bool                              `json:"allowUnknownContext"`
-	ReasoningMapping         map[string]string                  `json:"reasoningMapping"`
 	ReasoningParamStyle      *string                            `json:"reasoningParamStyle"`
 	TextVerbosity            *string                            `json:"textVerbosity"`
 	FastMode                 *bool                              `json:"fastMode"`
@@ -1361,9 +1364,7 @@ type UpstreamUpdate struct {
 	MaxGroupMultiplier *float64 `json:"maxGroupMultiplier"` // 最高分组倍率上限
 
 	// Vision 能力配置
-	NoVision            *bool    `json:"noVision"`
-	NoVisionModels      []string `json:"noVisionModels"`
-	VisionFallbackModel *string  `json:"visionFallbackModel"`
+	NoVision *bool `json:"noVision"`
 	// 历史图片轮次限制（0=不限制，2-10=限制轮次）
 	HistoricalImageTurnLimit *int `json:"historicalImageTurnLimit"`
 	// 自动托管字段
@@ -1446,9 +1447,9 @@ type Config struct {
 	// 竞速（影子请求）全局配置（可选，nil 默认关闭；行为参数由策略表自动推导）
 	Racing *GlobalRacingConfig `json:"racing,omitempty"`
 
-	// LogicalChannels 逻辑渠道列表（管理面聚合实体）。
-	// 运行时的物理渠道仍以六个 Upstream* 数组为准；本字段由 ConfigManager 在加载时
-	// 重建（按归组规则），由 /api/logical-channels 在事务内维护。空数组表示旧配置。
+	// LogicalChannels 逻辑渠道列表（管理面运行时聚合视图）。
+	// C 阶段起纯 V3 配置不再重复落盘本字段；保存时元数据写入 ChannelsV3，加载后
+	// 再恢复本视图。仍兼容旧文件中携带 logicalChannels 的双写形态。
 	LogicalChannels []LogicalChannel `json:"logicalChannels,omitempty"`
 	// LogicalChannelSchemaVersion 逻辑渠道配置 schema 版本。
 	// 首次引入版本为 1；非 1 时 ConfigManager 会触发一次重建以保证字段完整。
@@ -1622,6 +1623,7 @@ func (cm *ConfigManager) GetConfig() Config {
 		copy(cloned.LogicalChannels, cm.config.LogicalChannels)
 		for i := range cloned.LogicalChannels {
 			cloned.LogicalChannels[i].ProtocolModelPreferences = cm.config.LogicalChannels[i].ProtocolModelPreferences.Clone()
+			cloned.LogicalChannels[i].Settings = cloneLogicalChannelSettings(cm.config.LogicalChannels[i].Settings)
 			if len(cm.config.LogicalChannels[i].BaseURLs) > 0 {
 				cloned.LogicalChannels[i].BaseURLs = append([]string(nil), cm.config.LogicalChannels[i].BaseURLs...)
 			}
@@ -2691,6 +2693,67 @@ func (cm *ConfigManager) IsKeyModelDisabled(apiType string, channelIndex int, ap
 		return false
 	}
 	return (*upstreams)[channelIndex].IsKeyModelDisabledNow(apiKey, model, time.Now())
+}
+
+// balanceEscalateModelThreshold 余额/配额类组合限制升级为整 Key 拉黑的阈值：
+// 渠道未配置精确模型白名单（空白名单或含通配/排除条目）时，无法证明"全部模型
+// 都不可用"，以该 Key 生效中限制的不同模型数达到该值作为升级信号。
+const balanceEscalateModelThreshold = 3
+
+// ShouldEscalateBalanceKeyBlacklist 判断余额/配额类组合限制是否已覆盖该 Key 的
+// 全部可用模型，应升级为整 Key 拉黑。
+//
+// 规则 1（精确覆盖）：SupportedModels 非空且全部为精确模型名（无 * 通配、无 ! 排除）
+// 且每个条目都已有生效中的组合限制。
+// 规则 2（阈值）：生效中限制的不同模型数（忽略大小写）≥ balanceEscalateModelThreshold。
+// 已过期（RecoverAt 已到）的限制不计入。
+func (cm *ConfigManager) ShouldEscalateBalanceKeyBlacklist(apiType string, channelIndex int, apiKey string) bool {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	upstreams := cm.getUpstreamSliceLocked(apiType)
+	if upstreams == nil || channelIndex < 0 || channelIndex >= len(*upstreams) {
+		return false
+	}
+	upstream := &(*upstreams)[channelIndex]
+
+	now := time.Now()
+	restricted := make(map[string]struct{})
+	for _, dm := range upstream.DisabledKeyModels {
+		if dm.Key != apiKey {
+			continue
+		}
+		if !upstream.IsKeyModelDisabledNow(apiKey, dm.Model, now) {
+			continue
+		}
+		restricted[strings.ToLower(strings.TrimSpace(dm.Model))] = struct{}{}
+	}
+	if len(restricted) == 0 {
+		return false
+	}
+	if len(restricted) >= balanceEscalateModelThreshold {
+		return true
+	}
+
+	// 规则 1：仅当白名单全部为精确名时才可精确判定覆盖；含通配/排除条目时
+	// 单次命中不足以证明钱包耗尽（可能只是个别模型池空），回落阈值规则。
+	allExact := len(upstream.SupportedModels) > 0
+	for _, pattern := range upstream.SupportedModels {
+		trimmed := strings.TrimSpace(pattern)
+		if trimmed == "" || strings.Contains(trimmed, "*") || strings.HasPrefix(trimmed, "!") {
+			allExact = false
+			break
+		}
+	}
+	if !allExact {
+		return false
+	}
+	for _, pattern := range upstream.SupportedModels {
+		if _, ok := restricted[strings.ToLower(strings.TrimSpace(pattern))]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // RestoreKeyModel 手动移除指定渠道下 (apiKey, model) 组合的限制（持久化）。

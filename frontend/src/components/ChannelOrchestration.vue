@@ -591,6 +591,7 @@
                 :key="`chart-${getRouteKind(element)}-${getRouteIndex(element)}`"
                 :channel-id="getRouteIndex(element)"
                 :channel-type="getRouteKind(element)"
+                :protocol-routes="element.protocolRoutes"
                 @close="expandedChannelKey = null"
               />
             </div>
@@ -1169,7 +1170,7 @@ const initActiveChannels = () => {
 }
 
 // Watch channel changes - 监听引用变化即可（store refresh 时 channels 是全新数组引用）
-// 去掉 deep: true，避免深度遍历 apiKeys/modelMapping 等嵌套结构的性能开销
+// 去掉 deep: true，避免深度遍历 apiKeys/modelCapabilities 等嵌套结构的性能开销
 watch(() => props.channels, initActiveChannels, { immediate: true })
 
 // Watch dashboard prop changes (merged data passed from the parent component)

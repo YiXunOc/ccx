@@ -331,9 +331,9 @@ func TestModelProfileQualityTierRegistryReplay(t *testing.T) {
 	}{
 		{"gpt-6-astra", ModelFamilyOpenAI, QualityTierPremium, "direct 72.8 ≥ 69.95"},
 		{"gemini-3.8-flash", ModelFamilyGemini, QualityTierPremium, "direct 71.0 ≥ 69.95"},
-		// 2026-09-05 codexradar 覆盖率门槛（<60% 任务覆盖剔除）后 hy4-preview
-		// 无可靠证据（原插值 76.1 的源行全部被门槛/小样本剔除），回落模型族 low
-		{"hy4-preview", ModelFamilyUnknown, QualityTierLow, "覆盖门槛后无可靠证据，回落模型族"},
+		// hy4-preview 在 high 及以上思考具备高档能力；模型基础档代表未指定
+		// effort，不得由 low/high 跨档插值抬高，按显式能力约束固定为 low。
+		{"hy4-preview", ModelFamilyUnknown, QualityTierLow, "high 及以上为 high，基础档固定 low"},
 		{"claude-opus-5", ModelFamilyClaude, QualityTierHigh, "direct 68.9 < 69.95"},
 		{"claude-fable-5", ModelFamilyClaude, QualityTierHigh, "direct 65.4"},
 		{"gpt-5.6-sol", ModelFamilyOpenAI, QualityTierHigh, "direct 64.3"},

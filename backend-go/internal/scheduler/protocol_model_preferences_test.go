@@ -11,6 +11,15 @@ import (
 	"time"
 )
 
+func setBoundAliasResolver(s *ChannelScheduler) {
+	s.SetModelSupportResolverProvider(func(_ context.Context, _ ChannelKind, _ *config.UpstreamConfig, model string) (bool, string, string, string) {
+		if model == "alias" {
+			return true, "actual", "test_resolver", ""
+		}
+		return true, model, "test_resolver", ""
+	})
+}
+
 func boundAliasConfig() config.Config {
 	const (
 		accountUID = "bound-account"
@@ -24,7 +33,6 @@ func boundAliasConfig() config.Config {
 		BaseURL:           baseURL,
 		APIKeys:           []string{"test"},
 		Status:            "active",
-		ModelMapping:      map[string]string{"alias": "actual"},
 	}
 	v := *u.Clone()
 	v.ChannelUID = "target"
@@ -47,7 +55,7 @@ func TestChatRequestSelectsBoundMessagesSibling(t *testing.T) {
 		Upstream: []config.UpstreamConfig{{
 			Name: "high-priority-messages", ChannelUID: "messages-high", LogicalChannelUID: "logical-chat-messages",
 			AccountUID: "account-chat-messages", BaseURL: "https://messages.example", APIKeys: []string{"key"}, Status: "active",
-			Priority: 1, ModelMapping: map[string]string{"alias": "actual"},
+			Priority: 1,
 		}},
 		ChatUpstream: []config.UpstreamConfig{{
 			Name: "low-priority-chat", ChannelUID: "chat-low", LogicalChannelUID: "logical-chat-messages",
@@ -62,6 +70,7 @@ func TestChatRequestSelectsBoundMessagesSibling(t *testing.T) {
 	}
 	s, cleanup := createTestScheduler(t, cfg)
 	defer cleanup()
+	setBoundAliasResolver(s)
 	result, err := s.SelectChannelWithOptions(context.Background(), SelectionOptions{Kind: ChannelKindChat, Model: "alias"})
 	if err != nil {
 		t.Fatal(err)
@@ -105,6 +114,7 @@ func TestBoundProtocolCandidatesKeepClientProtocolIndependent(t *testing.T) {
 
 			s, cleanup := createTestScheduler(t, cfg)
 			defer cleanup()
+			setBoundAliasResolver(s)
 			result, err := s.SelectChannelWithOptions(context.Background(), SelectionOptions{Kind: tt.clientKind, Model: "alias"})
 			if err != nil {
 				t.Fatal(err)
@@ -125,6 +135,7 @@ func TestProtocolPreferencesSelectAlias(t *testing.T) {
 			}
 			s, cleanup := createTestScheduler(t, cfg)
 			defer cleanup()
+			setBoundAliasResolver(s)
 			result, err := s.SelectChannelWithOptions(context.Background(), SelectionOptions{Kind: ChannelKindMessages, Model: "alias"})
 			if missing {
 				if err == nil {
@@ -153,6 +164,7 @@ func TestProtocolPreferencesCrossProtocolRuntimeKind(t *testing.T) {
 				}
 				s, cleanup := createTestScheduler(t, cfg)
 				defer cleanup()
+				setBoundAliasResolver(s)
 				if mode == "affinity" {
 					first, err := s.SelectChannelWithOptions(context.Background(), SelectionOptions{Kind: ChannelKindMessages, Model: "alias", UserID: "user"})
 					if err != nil {
@@ -203,6 +215,7 @@ func TestBoundProtocolDeferredFallbackUsesExecutionRuntime(t *testing.T) {
 			}
 			s, cleanup := createTestScheduler(t, cfg)
 			defer cleanup()
+			setBoundAliasResolver(s)
 			if mode == "pressure" {
 				limiter := s.GetRateLimitManager().GetOrCreate("Chat", 0, ratelimit.Config{RPM: 4, WindowSeconds: 60})
 				for i := 0; i < 2; i++ {

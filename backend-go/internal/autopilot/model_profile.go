@@ -709,17 +709,25 @@ func directBenchmarkScoreFromEvidence(evidence []config.ModelBenchmarkEvidence) 
 // calibrateModelCapability 把不同 benchmark 的 coding 证据归一化到 DeepSWE 等价的
 // 0-100 分，统一到常规 effort 口径（medium/default），并携带证据等级。
 // 优先级：直测常规口径分（calibrateRegularEffort）> artificial_analysis
-// coding_index 线性校准（EvidenceCalibrated，封顶 high）。
+// coding_index 线性校准（EvidenceCalibrated，封顶 high）> 官方公告锚点折算
+// 等价分（calibrateOfficialReleaseEffort，EvidenceCalibrated，封顶 high）。
 // 模型不在注册表时 ok=false。
 func calibrateModelCapability(modelID string) (CalibrationResult, bool) {
 	benchmark := config.ResolveModelBenchmarkProfile(modelID)
 	if !benchmark.Known {
 		return CalibrationResult{}, false
 	}
-	if result, ok := calibrateRegularEffort(benchmark.Profile.BenchmarkEvidence); ok {
+	return calibrateBenchmarkEvidence(benchmark.Profile.BenchmarkEvidence)
+}
+
+func calibrateBenchmarkEvidence(evidence []config.ModelBenchmarkEvidence) (CalibrationResult, bool) {
+	if result, ok := calibrateRegularEffort(evidence); ok {
 		return result, true
 	}
-	if result, ok := calibrateArtificialAnalysisEffort(benchmark.Profile.BenchmarkEvidence); ok {
+	if result, ok := calibrateArtificialAnalysisEffort(evidence); ok {
+		return result, true
+	}
+	if result, ok := calibrateOfficialReleaseEffort(evidence); ok {
 		return result, true
 	}
 	return CalibrationResult{}, false
@@ -762,6 +770,62 @@ func calibrateArtificialAnalysisEffort(evidence []config.ModelBenchmarkEvidence)
 	return CalibrationResult{Score: best, Class: EvidenceDeflated, MeasuredEffort: measuredEffort}, true
 }
 
+// calibrateOfficialReleaseEffort 将官方公告 DeepSWE 等价证据折算到 medium 口径。
+// 等价分由 scripts/prefill-official-scores.mjs 按公告内锚点（已有 DeepSWE medium
+// 直测的模型）序数插值预折算为 medium 口径（0-1），此处 ×100 对齐直测分尺度，
+// medium/default 直取（与 AA 链同构），多条证据取最大；非 medium 档按全局
+// effort 比率折算（防御路径，当前管线只产出 medium）。
+// EvidenceCalibrated：锚点相对折算属估计值，封顶 high，premium 仍需真实直测。
+func calibrateOfficialReleaseEffort(evidence []config.ModelBenchmarkEvidence) (CalibrationResult, bool) {
+	if score, ok := officialReleaseEquivalentScore(evidence, EffortMedium); ok {
+		return CalibrationResult{Score: score, Class: EvidenceCalibrated, MeasuredEffort: EffortMedium}, true
+	}
+	best := -1.0
+	measuredEffort := EffortMedium
+	for _, ev := range evidence {
+		if ev.Domain != "coding" || ev.Benchmark != "official_release" || ev.Metric != "deepswe_equivalent" {
+			continue
+		}
+		level := NormalizeEffortLevel(ev.Effort)
+		if level == "" {
+			continue
+		}
+		ratio, ok := effortQualityRatioFor(level)
+		if !ok || ratio <= 0 {
+			continue
+		}
+		score := ev.RawValue * 100 / ratio
+		if best < 0 || score < best {
+			best = score
+			measuredEffort = level
+		}
+	}
+	if best < 0 {
+		return CalibrationResult{}, false
+	}
+	return CalibrationResult{Score: best, Class: EvidenceCalibrated, MeasuredEffort: measuredEffort}, true
+}
+
+// officialReleaseEquivalentScore 取指定 effort 档的官方公告等价分（百分制，跨条目取最大）。
+func officialReleaseEquivalentScore(evidence []config.ModelBenchmarkEvidence, level EffortLevel) (float64, bool) {
+	best := -1.0
+	for _, ev := range evidence {
+		if ev.Domain != "coding" || ev.Benchmark != "official_release" || ev.Metric != "deepswe_equivalent" {
+			continue
+		}
+		if NormalizeEffortLevel(ev.Effort) != level {
+			continue
+		}
+		if raw := ev.RawValue * 100; raw > best {
+			best = raw
+		}
+	}
+	if best < 0 {
+		return 0, false
+	}
+	return best, true
+}
+
 // normalizedCapabilityScore 返回常规 effort 口径的归一化能力分（无证据类信息）。
 func normalizedCapabilityScore(modelID string) float64 {
 	result, ok := calibrateModelCapability(modelID)
@@ -793,10 +857,32 @@ func qualityTierFromCalibration(calib CalibrationResult) QualityTier {
 	return tier
 }
 
-// ModelProfileQualityTier 优先按常规 effort 口径的归一化能力分推导质量档，
-// 无 benchmark 时回退到模型族规则。估计类证据（插值/折算/校准）封顶 high：
-// premium 必须有常规口径直测证明（等该模型补测 medium/default）。
+// explicitEffortQualityTier 返回少数模型经人工核定的 effort 档位。
+// hy4-preview 在 high 及以上思考具备高档能力；低于 high 的档位不能用
+// 跨档插值抬高。
+func explicitEffortQualityTier(canonicalModel string, effort EffortLevel) (QualityTier, bool) {
+	switch strings.ToLower(strings.TrimSpace(canonicalModel)) {
+	case "hy4-preview":
+		if EffortLevelOrdinal(effort) >= EffortLevelOrdinal(EffortHigh) {
+			return QualityTierHigh, true
+		}
+		return QualityTierLow, true
+	default:
+		return "", false
+	}
+}
+
+// ModelProfileQualityTier 先应用人工核定的 effort 能力边界，再按常规 effort
+// 口径的归一化能力分推导质量档；无 benchmark 时回退到模型族规则。
+// 人工边界用于表达 benchmark 无法区分的产品语义，优先级高于注册表刷新。
+// 估计类证据（插值/折算/校准）封顶 high：premium 必须有常规口径直测证明。
 func ModelProfileQualityTier(modelID string, family ModelFamily) QualityTier {
+	benchmark := config.ResolveModelBenchmarkProfile(modelID)
+	if benchmark.Known {
+		if tier, ok := explicitEffortQualityTier(benchmark.Profile.CanonicalModel, ""); ok {
+			return tier
+		}
+	}
 	if calib, ok := calibrateModelCapability(modelID); ok {
 		return qualityTierFromCalibration(calib)
 	}
@@ -888,6 +974,8 @@ func interpolatedEffortScore(evidence []config.ModelBenchmarkEvidence, level Eff
 //  3. 无该档证据 → 回落模型基础档（medium 口径）：effort 不低于 medium 时
 //     沿用基础档（effort 曲线单调不减），低于 medium 时按全局比率保守下调
 //     并封顶 high（low 档能力可能显著低于常规口径）。
+//  4. 对注册表明确支持的档位，QualityTier 沿 effort 序数单调不降；连续分和
+//     原始证据保持不变，仍用于同档候选的细粒度排序与观测。
 //
 // 模型不在注册表时回退模型族规则（与 ModelProfileQualityTier 一致）。
 // effort 为空表示未指定，等价 medium 口径（与模型基础档相同）。
@@ -912,7 +1000,18 @@ func EffortAwareQualityAssessmentFor(modelID string, effort EffortLevel, family 
 		}
 		return EffortQualityAssessment{Tier: tier, Score: priorScore, Evidence: EvidencePrior, Known: false}
 	}
-	evidence := benchmark.Profile.BenchmarkEvidence
+	assessment := effortQualityAssessmentFromProfile(benchmark.Profile, effort, family)
+	return applySupportedEffortTierFloor(modelID, effort, family, benchmark.Profile, assessment)
+}
+
+func effortQualityAssessmentFromProfile(profile config.ModelBenchmarkProfile, effort EffortLevel, family ModelFamily) EffortQualityAssessment {
+	applyExplicitTier := func(assessment EffortQualityAssessment) EffortQualityAssessment {
+		if tier, ok := explicitEffortQualityTier(profile.CanonicalModel, effort); ok {
+			assessment.Tier = tier
+		}
+		return assessment
+	}
+	evidence := profile.BenchmarkEvidence
 
 	// 1. 该档可靠直测。
 	if score, ok := directEffortScore(evidence, effort); ok {
@@ -921,12 +1020,12 @@ func EffortAwareQualityAssessmentFor(modelID string, effort EffortLevel, family 
 			Class:          EvidenceDirect,
 			MeasuredEffort: effort,
 		}
-		return EffortQualityAssessment{Tier: qualityTierFromCalibration(calib), Score: score, Evidence: calib.Class, Known: true}
+		return applyExplicitTier(EffortQualityAssessment{Tier: qualityTierFromCalibration(calib), Score: score, Evidence: calib.Class, Known: true})
 	}
 	// 1b. DeepSWE 未覆盖时，用 AA coding_index 的同档数据补齐。
 	if score, ok := artificialAnalysisCodingScore(evidence, effort); ok {
 		calib := CalibrationResult{Score: score, Class: EvidenceCalibrated, MeasuredEffort: effort}
-		return EffortQualityAssessment{Tier: qualityTierFromCalibration(calib), Score: score, Evidence: calib.Class, Known: true}
+		return applyExplicitTier(EffortQualityAssessment{Tier: qualityTierFromCalibration(calib), Score: score, Evidence: calib.Class, Known: true})
 	}
 
 	// 2. 同模型曲线插值该档（估计值，封顶 high）。
@@ -936,29 +1035,78 @@ func EffortAwareQualityAssessmentFor(modelID string, effort EffortLevel, family 
 			Class:          EvidenceInterpolated,
 			MeasuredEffort: effort,
 		}
-		return EffortQualityAssessment{Tier: qualityTierFromCalibration(calib), Score: score, Evidence: calib.Class, Known: true}
+		return applyExplicitTier(EffortQualityAssessment{Tier: qualityTierFromCalibration(calib), Score: score, Evidence: calib.Class, Known: true})
 	}
 
 	// 3. 回落模型基础档。即使缺少当前档直测，也按 effort 曲线比率
 	// 缩放常规分，确保 high/max 与 medium 不会得到完全相同的评分。
-	calib, ok := calibrateModelCapability(modelID)
+	calib, ok := calibrateBenchmarkEvidence(evidence)
 	if !ok {
-		tier := ModelProfileQualityTierFromFamily(family, modelID)
-		return EffortQualityAssessment{Tier: tier, Score: 0, Evidence: EvidencePrior, Known: false}
+		tier := ModelProfileQualityTierFromFamily(family, profile.CanonicalModel)
+		return applyExplicitTier(EffortQualityAssessment{Tier: tier, Score: 0, Evidence: EvidencePrior, Known: false})
 	}
 	if effort == "" || effort == EffortMedium {
-		return EffortQualityAssessment{Tier: qualityTierFromCalibration(calib), Score: calib.Score, Evidence: calib.Class, Known: true}
+		return applyExplicitTier(EffortQualityAssessment{Tier: qualityTierFromCalibration(calib), Score: calib.Score, Evidence: calib.Class, Known: true})
 	}
 	ratio, hasRatio := effortQualityRatioFor(effort)
 	if !hasRatio || ratio <= 0 {
-		return EffortQualityAssessment{Tier: qualityTierFromCalibration(calib), Score: calib.Score, Evidence: calib.Class, Known: true}
+		return applyExplicitTier(EffortQualityAssessment{Tier: qualityTierFromCalibration(calib), Score: calib.Score, Evidence: calib.Class, Known: true})
 	}
 	deflated := CalibrationResult{
 		Score:          calib.Score * ratio,
 		Class:          EvidenceDeflated,
 		MeasuredEffort: effort,
 	}
-	return EffortQualityAssessment{Tier: qualityTierFromCalibration(deflated), Score: deflated.Score, Evidence: deflated.Class, Known: true}
+	return applyExplicitTier(EffortQualityAssessment{Tier: qualityTierFromCalibration(deflated), Score: deflated.Score, Evidence: deflated.Class, Known: true})
+}
+
+// applySupportedEffortTierFloor 保证同一模型在注册表声明支持的档位中，
+// 更高 effort 的粗粒度质量档不低于任一较低 effort。榜单分数可能受 harness、
+// 采集日期和统计噪声影响而局部下降；这些原始差异仍保留在 Score/Evidence 中。
+func applySupportedEffortTierFloor(
+	modelID string,
+	effort EffortLevel,
+	family ModelFamily,
+	profile config.ModelBenchmarkProfile,
+	assessment EffortQualityAssessment,
+) EffortQualityAssessment {
+	targetOrdinal := EffortLevelOrdinal(effort)
+	if targetOrdinal < 0 {
+		return assessment
+	}
+	originalAssessment := assessment
+	resolved := config.ResolveUpstreamCapability(modelID, nil, nil)
+	if !resolved.Known {
+		return assessment
+	}
+
+	targetSupported := false
+	seen := make(map[EffortLevel]struct{}, len(resolved.Capability.ReasoningEfforts))
+	for _, raw := range resolved.Capability.ReasoningEfforts {
+		level := NormalizeEffortLevel(raw)
+		if level == "" {
+			continue
+		}
+		if _, exists := seen[level]; exists {
+			continue
+		}
+		seen[level] = struct{}{}
+		ordinal := EffortLevelOrdinal(level)
+		if ordinal == targetOrdinal {
+			targetSupported = true
+		}
+		if ordinal < 0 || ordinal >= targetOrdinal {
+			continue
+		}
+		lower := effortQualityAssessmentFromProfile(profile, level, family)
+		if qualityTierRank(lower.Tier) > qualityTierRank(assessment.Tier) {
+			assessment.Tier = lower.Tier
+		}
+	}
+	if !targetSupported {
+		return originalAssessment
+	}
+	return assessment
 }
 
 // ── ModelProfile ──
@@ -1049,19 +1197,4 @@ func applyUpstreamModelCapability(profile *ModelProfile, capability config.Upstr
 		profile.SupportedEffortLevels = append(profile.SupportedEffortLevels, level)
 	}
 	profile.SupportsEffortControl = len(profile.SupportedEffortLevels) > 0
-}
-
-// requestEffortOfProfile 返回请求实际生效的思考等级：手动意图 pin 优先于
-// 客户端显式声明；空表示未指定（按 medium 口径评定，与模型基础档同义）。
-func requestEffortOfProfile(profile *RequestProfile) EffortLevel {
-	if profile == nil {
-		return ""
-	}
-	if profile.IntentEffortPin != nil && profile.IntentEffortPin.Set && profile.IntentEffortPin.Effort != "" {
-		return profile.IntentEffortPin.Effort
-	}
-	if profile.ClientEffort != "" {
-		return profile.ClientEffort
-	}
-	return ""
 }

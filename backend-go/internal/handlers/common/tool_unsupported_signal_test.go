@@ -245,10 +245,11 @@ func TestMaybeCountPseudoToolCallMiss(t *testing.T) {
 		t.Fatalf("守卫场景全部不应计数，got streak=%d", got)
 	}
 
-	// 无 verified 条目的模型：不计数
+	// 无 verified 条目的模型：同样计数（fail-open 窗口的劣化证据留存，供竞速影子规避）
 	MaybeCountPseudoToolCallMiss(c, upstream, apiKey, "m2", toolBody, false, true, nil, "messages")
-	if _, ok := cache.Trait("ch_test#messages", keyHash, "m2", config.TraitVerifiedToolCalls); ok {
-		t.Fatal("无 verified 条目时不应产生任何状态")
+	state2, ok := cache.Trait("ch_test#messages", keyHash, "m2", config.TraitVerifiedToolCalls)
+	if !ok || state2.Enabled || state2.AutoMissStreak != 1 {
+		t.Fatalf("无 verified 条目时应记入 Enabled=false 的 miss 计数，got %+v, ok=%v", state2, ok)
 	}
 
 	// 连续 3 次 miss：撤销
@@ -269,5 +270,29 @@ func TestMaybeCountPseudoToolCallMiss(t *testing.T) {
 	}
 	if !enabled() {
 		t.Fatal("真实工具调用后条目应保持启用")
+	}
+}
+
+func TestMaybeForgetVerifiedToolCallsOnUnsupported(t *testing.T) {
+	restore := config.SwapSharedChannelCompatCacheForTest(config.NewChannelCompatCache())
+	defer restore()
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	upstream := &config.UpstreamConfig{ChannelUID: "ch_test", Name: "test-channel"}
+	const apiKey = "sk-test"
+	const model = "m1"
+	body := []byte(`{"model":"m1","tools":[{"type":"function","function":{"name":"exec"}}]}`)
+	keyHash := autopilot.KeyHashFromAPIKey(apiKey)
+	cache := config.SharedChannelCompatCache()
+	cache.Record("ch_test#responses", keyHash, model, config.TraitVerifiedToolCalls, true, config.CompatSourceRuntimeSignal, "runtime")
+
+	MaybeForgetVerifiedToolCallsOnUnsupported(c, upstream, apiKey, model, body, "responses", "tools are not supported")
+	state, ok := cache.Trait("ch_test#responses", keyHash, model, config.TraitVerifiedToolCalls)
+	if !ok || state.Enabled {
+		t.Fatalf("明确工具能力拒绝后应撤销 verified，got %+v, ok=%v", state, ok)
+	}
+	if state.Source != config.CompatSourceErrorSignal {
+		t.Fatalf("撤销证据来源应为 error_signal，got %q", state.Source)
 	}
 }

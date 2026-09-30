@@ -256,6 +256,17 @@ func BuiltinAgentModelProfiles() map[string]AgentModelProfile {
 			"GPT-6 Astra", 272000, 1050000, 128000, "tokens",
 			[]string{"low", "medium", "high", "xhigh", "max"}, true,
 		),
+		// GPT-6 Sol/Luna（2026-09-22 发布）是独立 tier 模型（非 Astra 别名）：
+		// Sol $2/$10 中档编码与 agent，Luna $0.10/$0.50 低成本高频；effort 多一档 none。
+		// Priority Tier 未见官方文档支持，保守关闭，待有证据再开。
+		"gpt-6-sol": builtinGPTAgentModelProfile(
+			"GPT-6 Sol", 272000, 1050000, 128000, "tokens",
+			[]string{"none", "low", "medium", "high", "xhigh", "max"}, false,
+		),
+		"gpt-6-luna": builtinGPTAgentModelProfile(
+			"GPT-6 Luna", 272000, 1050000, 128000, "tokens",
+			[]string{"none", "low", "medium", "high", "xhigh", "max"}, false,
+		),
 		"claude-haiku-4-5*": {
 			DisplayName:         "Claude Haiku 4.5",
 			ContextWindowTokens: 200000,
@@ -300,6 +311,13 @@ func BuiltinAgentModelProfiles() map[string]AgentModelProfile {
 		},
 		"claude-opus-5*": {
 			DisplayName:         "Claude Opus 5",
+			ContextWindowTokens: 1000000,
+			MaxOutputTokens:     128000,
+			ReasoningEfforts:    []string{"low", "medium", "high", "xhigh", "max"},
+		},
+		// Opus 5.5 是独立模型（非 Opus 5 别名）；pattern 更长，resolvePatternValue 长度降序保证优先命中。
+		"claude-opus-5-5*": {
+			DisplayName:         "Claude Opus 5.5",
 			ContextWindowTokens: 1000000,
 			MaxOutputTokens:     128000,
 			ReasoningEfforts:    []string{"low", "medium", "high", "xhigh", "max"},
@@ -836,13 +854,9 @@ func ResolveAgentModelProfile(requestModel string, global map[string]AgentModelP
 
 // ResolveUpstreamCapability 解析渠道中实际模型的能力。
 func ResolveUpstreamCapability(requestModel string, upstream *UpstreamConfig, global map[string]UpstreamModelCapability) ResolvedUpstreamCapability {
-	actualModel := requestModel
-	if upstream != nil {
-		actualModel = RedirectModel(requestModel, upstream)
-	}
 	// allowRequestModelFallback=true：未提供动态映射结果时，保留历史行为——渠道/全局能力表
 	// 按 requestModel 的通配符也可命中，兼容"能力表只登记请求侧别名"的既有配置。
-	return resolveUpstreamCapabilityForModels(requestModel, actualModel, upstream, global, true)
+	return resolveUpstreamCapabilityForModels(requestModel, requestModel, upstream, global, true)
 }
 
 // ResolveMappedUpstreamCapability 解析动态路由已决定的实际上游模型能力。

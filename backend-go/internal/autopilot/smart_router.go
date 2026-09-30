@@ -3,6 +3,7 @@ package autopilot
 import (
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -358,7 +359,7 @@ func (r *SmartRouter) BuildPlanWithOptions(profile *RequestProfile, opts BuildPl
 		scored := r.scoreChannelEntry(&e, ctx)
 		scoredEntries = append(scoredEntries, scoredChannelEntry{entry: e, scored: scored})
 	}
-	sortScoredChannelEntries(scoredEntries)
+	sortScoredChannelEntries(scoredEntries, profile.Model)
 
 	selectedCandidates := make([]RoutingPlanCandidate, 0, len(scoredEntries))
 	filteredCandidates := make([]RoutingPlanCandidate, 0, len(scoredEntries))
@@ -692,20 +693,34 @@ func toStringSet(items []string) map[string]bool {
 
 // executeFilter 执行 SmartRouter 过滤逻辑。
 // applyCandidatePin 把五元组候选行的执行 pin 写入回填的 ChannelInfo：
-// key 身份 + 思考档位。意图固定档（IntentEffortPin，意图匹配在回填前完成）
-// 覆盖行档——用户显式意图优先于自动决策。零值 pin 表示不锁定，执行层走原行为。
-func applyCandidatePin(ch *scheduler.ChannelInfo, e channelScoreEntry, profile *RequestProfile) {
+// key 身份 + 思考档位。RespectClientThinking 开启（或配置不可用）时，客户端显式
+// effort 优先；关闭时允许人工意图接管。零值 pin 表示不锁定，执行层走原行为。
+func (r *SmartRouter) applyCandidatePin(ch *scheduler.ChannelInfo, e channelScoreEntry, profile *RequestProfile) {
 	if ch == nil {
 		return
 	}
 	ch.PinnedKeyIdentity = e.KeyIdentity
-	if profile != nil && profile.IntentEffortPin != nil && profile.IntentEffortPin.Set {
-		if pin := NormalizeEffortLevel(string(profile.IntentEffortPin.Effort)); pin != "" {
-			ch.PinnedEffort = string(pin)
-			return
+	ch.PinnedEffort = string(r.effectiveCandidateEffort(profile, e.Effort))
+}
+
+// effectiveCandidateEffort 与最终执行 pin 共用同一优先级，也用于 Advisor 的
+// effort 质量硬过滤，避免按一个档位过滤、按另一个档位发出。
+func (r *SmartRouter) effectiveCandidateEffort(profile *RequestProfile, rowEffort EffortLevel) EffortLevel {
+	respectClientThinking := true
+	if r != nil && r.configManager != nil {
+		respectClientThinking = r.configManager.GetAutopilotRouting().ReasoningEffort.RespectClientThinking
+	}
+	if respectClientThinking && profile != nil && profile.ClientEffortExplicit {
+		if pin := NormalizeEffortLevel(string(profile.ClientEffort)); pin != "" {
+			return pin
 		}
 	}
-	ch.PinnedEffort = string(e.Effort)
+	if profile != nil && profile.IntentEffortPin != nil && profile.IntentEffortPin.Set {
+		if pin := NormalizeEffortLevel(string(profile.IntentEffortPin.Effort)); pin != "" {
+			return pin
+		}
+	}
+	return NormalizeEffortLevel(string(rowEffort))
 }
 
 func (r *SmartRouter) executeFilter(
@@ -950,7 +965,7 @@ func (r *SmartRouter) executeFilter(
 			}
 		}()
 	}
-	sortScoredChannelEntries(scoredEntries)
+	nearTieSemanticPreference := sortScoredChannelEntries(scoredEntries, profile.Model)
 
 	// ── 人工意图匹配（设计 §4.6.4）──
 	// 在评分排序后、构建结果前执行。
@@ -1083,17 +1098,9 @@ func (r *SmartRouter) executeFilter(
 			LogicalChannelName:    e.LogicalChannelName,
 			TotalScore:            sc.Score,
 			DomainEvidence:        sc.DomainEvidence,
-			Scores: []CandidateScore{
-				{Dimension: "quality", Score: sc.QualityScore, Weight: weights.WQuality},
-				{Dimension: "stability", Score: sc.StabilityScore, Weight: weights.WStability},
-				{Dimension: "speed", Score: sc.SpeedScore, Weight: weights.WSpeed},
-				{Dimension: "cost", Score: sc.CostScore, Weight: weights.WCost},
-				{Dimension: "savings", Score: sc.SavingsScore, Weight: weights.WSavings},
-				{Dimension: "family", Score: sc.FamilyPrefScore, Weight: weights.WFamily},
-				{Dimension: "provider_quality", Score: sc.ProviderQualityScore, Weight: weights.WProviderQuality},
-				{Dimension: "domain", Score: sc.DomainStrengthScore, Weight: weights.WDomain},
-			},
-			Selected: true,
+			Scores:                candidateScoreBreakdown(sc, weights),
+			Penalty:               sc.Penalty,
+			Selected:              true,
 		}
 		// AFP 成本信息传递到 trace
 		if e.AFPCost != nil {
@@ -1116,7 +1123,7 @@ func (r *SmartRouter) executeFilter(
 		if !seenRouteKeys[e.Route.Key()] {
 			for _, ch := range channels {
 				if federatedRoute(ch, profile.ChannelKind).Key() == e.Route.Key() {
-					applyCandidatePin(&ch, e, profile)
+					r.applyCandidatePin(&ch, e, profile)
 					result = append(result, ch)
 					seenRouteKeys[e.Route.Key()] = true
 					break
@@ -1139,7 +1146,7 @@ func (r *SmartRouter) executeFilter(
 			// 过滤（medium 请求不能凭 max 档实测分进 premium）。
 			if advisorMinQualityTier != "" {
 				if advisorMinQualityReasons := MinQualityTierReasons(se.entry.ScoringCandidate.QualityTier, advisorMinQualityTier); len(advisorMinQualityReasons) > 0 &&
-					qualityTierRank(EffortAwareQualityTier(se.entry.ModelID, requestEffortOfProfile(profile), se.entry.ScoringCandidate.ModelFamily)) < qualityTierRank(advisorMinQualityTier) {
+					qualityTierRank(EffortAwareQualityTier(se.entry.ModelID, r.effectiveCandidateEffort(profile, se.entry.Effort), se.entry.ScoringCandidate.ModelFamily)) < qualityTierRank(advisorMinQualityTier) {
 					reasons = append(reasons, advisorMinQualityReasons...)
 				}
 			}
@@ -1157,7 +1164,7 @@ func (r *SmartRouter) executeFilter(
 				if !seenFilteredRouteKeys[se.entry.Route.Key()] {
 					for _, ch := range channels {
 						if federatedRoute(ch, profile.ChannelKind).Key() == se.entry.Route.Key() {
-							applyCandidatePin(&ch, se.entry, profile)
+							r.applyCandidatePin(&ch, se.entry, profile)
 							filteredResult = append(filteredResult, ch)
 							seenFilteredRouteKeys[se.entry.Route.Key()] = true
 							break
@@ -1222,6 +1229,9 @@ func (r *SmartRouter) executeFilter(
 	// 通过者，全部被过滤并 fail-open 时则恢复为完整候选数。
 	trace.CandidatesAfter = len(result)
 	trace.SortReasons = []string{"smart_routing_score"}
+	if nearTieSemanticPreference {
+		trace.SortReasons = append(trace.SortReasons, "near_tie_semantic_preference")
+	}
 	if matchedIntent != nil {
 		trace.SortReasons = append(trace.SortReasons, "intent_promote")
 		if matchedIntent.FallbackUsed {
@@ -1388,6 +1398,23 @@ type scoredChannelEntry struct {
 	scored ScoredCandidate
 }
 
+// candidateScoreBreakdown 保持 trace 的分项明细与 ScoreCandidate 的十项加权公式同源。
+// quota_headroom 不能省略：未知配额会按中性值 0.5 参与总分；Penalty 单独记录为总分扣减项。
+func candidateScoreBreakdown(sc ScoredCandidate, weights ScoringWeights) []CandidateScore {
+	return []CandidateScore{
+		{Dimension: "quality", Score: sc.QualityScore, Weight: weights.WQuality},
+		{Dimension: "stability", Score: sc.StabilityScore, Weight: weights.WStability},
+		{Dimension: "speed", Score: sc.SpeedScore, Weight: weights.WSpeed},
+		{Dimension: "cost", Score: sc.CostScore, Weight: weights.WCost},
+		{Dimension: "savings", Score: sc.SavingsScore, Weight: weights.WSavings},
+		{Dimension: "tier_match", Score: sc.TierMatchBonus, Weight: weights.WTierMatch},
+		{Dimension: "family", Score: sc.FamilyPrefScore, Weight: weights.WFamily},
+		{Dimension: "provider_quality", Score: sc.ProviderQualityScore, Weight: weights.WProviderQuality},
+		{Dimension: "domain", Score: sc.DomainStrengthScore, Weight: weights.WDomain},
+		{Dimension: "quota_headroom", Score: sc.QuotaHeadroomScore, Weight: weights.WQuotaHeadroom},
+	}
+}
+
 // scoreChannelEntry 统一真实路径与 dry-run 的候选评分顺序：
 // 域优势 → 模型×effort 质量档（观测 + 转正排序）→ 十项评分 → 未知证据质量折扣。
 func (r *SmartRouter) scoreChannelEntry(e *channelScoreEntry, ctx ScoringContext) ScoredCandidate {
@@ -1490,15 +1517,113 @@ func (r *SmartRouter) effortQualityTierActiveEnabled() bool {
 	return r.configManager.GetAutopilotRouting().ReasoningEffort.IsQualityTierActiveEnabled()
 }
 
+const (
+	// nearTieScoreMargin 避免小幅测量噪声让协议转换候选压过原生精确候选。
+	nearTieScoreMargin         = 0.35
+	nearTieRelativeScoreMargin = 0.03
+)
+
 // sortScoredChannelEntries 统一真实路径与 dry-run 的排序语义。
-// Score 为主序，OriginTier 只在同分时作为次序；稳定排序保留完全同分候选的输入顺序。
-func sortScoredChannelEntries(entries []scoredChannelEntry) {
+// 总分仍是第一排序依据；仅在近分组内依次偏好原生协议、精确请求模型、
+// 已知健康状态，避免把很小的分数差误当成明确的质量优势。
+// 返回值表示本次是否应用过近分语义偏好。
+func sortScoredChannelEntries(entries []scoredChannelEntry, requestedModel string) bool {
+	if len(entries) < 2 {
+		return false
+	}
+
+	// 先按原始分数排序，保证近分分组边界稳定，且大分差永远不受语义偏好影响。
 	sort.SliceStable(entries, func(i, j int) bool {
 		if entries[i].scored.Score != entries[j].scored.Score {
 			return entries[i].scored.Score > entries[j].scored.Score
 		}
 		return originTierRank(entries[i].entry.OriginTier) > originTierRank(entries[j].entry.OriginTier)
 	})
+
+	usedSemanticPreference := false
+	for start := 0; start < len(entries); {
+		end := start + 1
+		for end < len(entries) && nearTieScores(entries[start].scored.Score, entries[end].scored.Score) {
+			end++
+		}
+		if end-start > 1 {
+			before := append([]scoredChannelEntry(nil), entries[start:end]...)
+			sort.SliceStable(entries[start:end], func(i, j int) bool {
+				a := entries[start+i]
+				b := entries[start+j]
+				if preference := nearTieSemanticPreference(a.entry, b.entry, requestedModel); preference != 0 {
+					return preference > 0
+				}
+				return a.scored.Score > b.scored.Score
+			})
+			for i := range before {
+				if before[i].entry.ChannelUID != entries[start+i].entry.ChannelUID ||
+					before[i].entry.Route.Key() != entries[start+i].entry.Route.Key() ||
+					before[i].entry.CandidateKey != entries[start+i].entry.CandidateKey {
+					usedSemanticPreference = true
+					break
+				}
+			}
+		}
+		start = end
+	}
+	return usedSemanticPreference
+}
+
+func nearTieScores(a, b float64) bool {
+	diff := math.Abs(a - b)
+	if diff <= nearTieScoreMargin {
+		return true
+	}
+	maxScore := math.Max(math.Abs(a), math.Abs(b))
+	return maxScore > 0 && diff/maxScore <= nearTieRelativeScoreMargin
+}
+
+// nearTieSemanticPreference 返回 a 相对 b 的偏好：1=a 优先，-1=b 优先，0=无偏好。
+func nearTieSemanticPreference(a, b channelScoreEntry, requestedModel string) int {
+	aNative := strings.EqualFold(strings.TrimSpace(a.ProtocolFidelity), "native")
+	bNative := strings.EqualFold(strings.TrimSpace(b.ProtocolFidelity), "native")
+	if aNative != bNative {
+		if aNative {
+			return 1
+		}
+		return -1
+	}
+
+	requested := normalizeRoutingModelID(requestedModel)
+	if requested != "" {
+		aExact := normalizeRoutingModelID(a.ModelID) == requested && strings.TrimSpace(a.MappedModel) == ""
+		bExact := normalizeRoutingModelID(b.ModelID) == requested && strings.TrimSpace(b.MappedModel) == ""
+		if aExact != bExact {
+			if aExact {
+				return 1
+			}
+			return -1
+		}
+	}
+
+	aHealth := nearTieHealthRank(a.HealthState)
+	bHealth := nearTieHealthRank(b.HealthState)
+	if aHealth != bHealth {
+		if aHealth > bHealth {
+			return 1
+		}
+		return -1
+	}
+	return 0
+}
+
+func nearTieHealthRank(state HealthState) int {
+	switch state {
+	case HealthStateHealthy:
+		return 3
+	case HealthStateDegraded, HealthStateLimited:
+		return 1
+	case HealthStateUnknown:
+		return 0
+	default:
+		return -1
+	}
 }
 
 func resolvedCandidateModel(requestModel, mappedModel string) string {
@@ -1796,17 +1921,8 @@ func (r *SmartRouter) resolveChannelModels(
 		resolutions = append(resolutions, res)
 	}
 
-	if len(upstream.ModelMapping) > 0 {
-		for _, target := range upstream.ModelMapping {
-			addResolution(target, "explicit_mapping", "matched configured model mapping")
-		}
-	}
-	// 请求模型的 redirect 目标（无映射时为请求模型本身）。
-	if redirected, matched := config.RedirectModelWithMatch(requestModel, upstream); matched {
-		addResolution(redirected, "explicit_mapping", "matched configured model mapping")
-	} else if redirected != "" {
-		addResolution(redirected, "", "")
-	}
+	// 请求模型本身（显式 ModelMapping 已退役，候选枚举只含请求模型）。
+	addResolution(requestModel, "", "")
 
 	// fail-open：枚举为空但单数解析认为渠道 supported 时，回退到单模型行。
 	if len(resolutions) == 0 {
@@ -1875,7 +1991,7 @@ func (r *SmartRouter) buildChannelEntryForKey(
 	modelProvider := ""
 	var modelPricing *config.ModelPricing
 	if model != "" {
-		resolved := config.ResolveMappedUpstreamCapability(model, config.RedirectModel(model, upstream), upstream, upstreamModelCapabilities)
+		resolved := config.ResolveMappedUpstreamCapability(model, model, upstream, upstreamModelCapabilities)
 		actualModel = resolved.ActualModel
 		if resolved.Known {
 			capability := resolved.Capability
@@ -2020,7 +2136,9 @@ func (r *SmartRouter) buildChannelEntryForKey(
 		}
 	}
 	modelFamily := InferModelFamily(actualModel, modelProvider)
-	visionDisabled := upstream.NoVision || containsString(upstream.NoVisionModels, actualModel)
+	// 整渠道视觉禁用仍由渠道开关决定；按模型的禁用已随 NoVisionModels 退役，
+	// 由 CapabilityFloor 的画像 SupportsVision 硬约束在选模阶段接管。
+	visionDisabled := upstream.NoVision
 	if visionDisabled {
 		entry.SupportsVision = false
 	}

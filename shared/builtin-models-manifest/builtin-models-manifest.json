@@ -13,6 +13,7 @@
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
+        "claude-opus-5-5",
         "claude-sonnet-5",
         "claude-sonnet-4-6",
         "claude-sonnet-4-5",
@@ -54,6 +55,9 @@
       "serviceType": "messages",
       "planHint": "mimo_payg_anthropic",
       "modelIds": [
+        "mimo-v2.6-pro-ultraspeed",
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash",
         "mimo-v2.5-pro",
         "mimo-v2.5"
       ],
@@ -67,6 +71,9 @@
       "serviceType": "messages",
       "planHint": "mimo_token_plan_cn_anthropic",
       "modelIds": [
+        "mimo-v2.6-pro-ultraspeed",
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash",
         "mimo-v2.5-pro",
         "mimo-v2.5"
       ],
@@ -80,6 +87,9 @@
       "serviceType": "messages",
       "planHint": "mimo_token_plan_sgp_anthropic",
       "modelIds": [
+        "mimo-v2.6-pro-ultraspeed",
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash",
         "mimo-v2.5-pro",
         "mimo-v2.5"
       ],
@@ -93,6 +103,9 @@
       "serviceType": "messages",
       "planHint": "mimo_token_plan_ams_anthropic",
       "modelIds": [
+        "mimo-v2.6-pro-ultraspeed",
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash",
         "mimo-v2.5-pro",
         "mimo-v2.5"
       ],
@@ -106,6 +119,9 @@
       "serviceType": "openai",
       "planHint": "mimo_payg_openai",
       "modelIds": [
+        "mimo-v2.6-pro-ultraspeed",
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash",
         "mimo-v2.5-pro",
         "mimo-v2.5"
       ],
@@ -119,6 +135,9 @@
       "serviceType": "openai",
       "planHint": "mimo_token_plan_cn_openai",
       "modelIds": [
+        "mimo-v2.6-pro-ultraspeed",
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash",
         "mimo-v2.5-pro",
         "mimo-v2.5"
       ],
@@ -132,6 +151,9 @@
       "serviceType": "openai",
       "planHint": "mimo_token_plan_sgp_openai",
       "modelIds": [
+        "mimo-v2.6-pro-ultraspeed",
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash",
         "mimo-v2.5-pro",
         "mimo-v2.5"
       ],
@@ -145,6 +167,9 @@
       "serviceType": "openai",
       "planHint": "mimo_token_plan_ams_openai",
       "modelIds": [
+        "mimo-v2.6-pro-ultraspeed",
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash",
         "mimo-v2.5-pro",
         "mimo-v2.5"
       ],
@@ -187,8 +212,11 @@
         "glm-latest",
         "deepseek-v4-flash",
         "deepseek-v4-pro",
+        "deepseek-v4.1-flash",
         "kimi-k3",
-        "kimi-k2.7-code"
+        "kimi-k2.7-code",
+        "kimi-k2.8-preview",
+        "glm-5.3-flash"
       ],
       "excludeModelPatterns": [
         "(?:^|[-_/])(?:embedding|seedance|seedream|tts|asr|ocr)(?:[-_.]|$)"
@@ -206,7 +234,9 @@
         "glm-5.3",
         "deepseek-v4-flash",
         "deepseek-v4-pro",
-        "kimi-k2.7-code"
+        "kimi-k2.7-code",
+        "kimi-k2.8-preview",
+        "glm-5.3-flash"
       ],
       "excludeModelPatterns": [
         "(?:^|[-_/])(?:embedding|seedance|seedream|tts|asr|ocr)(?:[-_.]|$)"
@@ -227,8 +257,11 @@
         "glm-latest",
         "deepseek-v4-flash",
         "deepseek-v4-pro",
+        "deepseek-v4.1-flash",
         "kimi-k3",
-        "kimi-k2.7-code"
+        "kimi-k2.7-code",
+        "kimi-k2.8-preview",
+        "glm-5.3-flash"
       ],
       "excludeModelPatterns": [
         "(?:^|[-_/])(?:embedding|seedance|seedream|tts|asr|ocr)(?:[-_.]|$)"
@@ -246,7 +279,9 @@
         "glm-5.3",
         "deepseek-v4-flash",
         "deepseek-v4-pro",
-        "kimi-k2.7-code"
+        "kimi-k2.7-code",
+        "kimi-k2.8-preview",
+        "glm-5.3-flash"
       ],
       "excludeModelPatterns": [
         "(?:^|[-_/])(?:embedding|seedance|seedream|tts|asr|ocr)(?:[-_.]|$)"
@@ -267,8 +302,11 @@
         "glm-latest",
         "deepseek-v4-flash",
         "deepseek-v4-pro",
+        "deepseek-v4.1-flash",
         "kimi-k3",
-        "kimi-k2.7-code"
+        "kimi-k2.7-code",
+        "kimi-k2.8-preview",
+        "glm-5.3-flash"
       ],
       "excludeModelPatterns": [
         "(?:^|[-_/])(?:embedding|seedance|seedream|tts|asr|ocr)(?:[-_.]|$)"
@@ -286,7 +324,9 @@
         "glm-5.3",
         "deepseek-v4-flash",
         "deepseek-v4-pro",
-        "kimi-k2.7-code"
+        "kimi-k2.7-code",
+        "kimi-k2.8-preview",
+        "glm-5.3-flash"
       ],
       "excludeModelPatterns": [
         "(?:^|[-_/])(?:embedding|seedance|seedream|tts|asr|ocr)(?:[-_.]|$)"

@@ -56,8 +56,6 @@ func glmPreviewProfile() ModelProfile {
 func TestBuildPlanAutoManagedIgnoresStaleExplicitMapping(t *testing.T) {
 	cfg := modelPreviewConfig("shadow")
 	cfg.Upstream[0].SupportedModels = nil
-	cfg.Upstream[0].ModelMapping = map[string]string{"claude-sonnet-5": "legacy-manual-target"}
-	cfg.Upstream[0].ReasoningMapping = map[string]string{"claude-sonnet-5": "high"}
 	cfgManager, cleanup := createTestConfigManager(t, cfg)
 	defer cleanup()
 	store := newModelPreviewStore(t, glmPreviewProfile())
@@ -299,6 +297,22 @@ func TestResolveModelSupportAutoManagedEmptyModelsUsesProfilePolicy(t *testing.T
 	if supported || mapped != "" || source != scheduler.ModelSupportSourceAuthoritativeDeny || reason != "exact_model_required" {
 		t.Fatalf("exact-only support = %v mapped=%q source=%q reason=%q",
 			supported, mapped, source, reason)
+	}
+}
+
+func TestResolveModelSupportKillSwitchFallsBackToExplainModelSupport(t *testing.T) {
+	cfg := modelPreviewConfig("auto")
+	cfg.AutopilotRouting.KillSwitch = true
+	cfg.Upstream[0].SupportedModels = nil
+	cfgManager, cleanup := createTestConfigManager(t, cfg)
+	defer cleanup()
+	resolver := NewModelResolver(newModelPreviewStore(t, glmPreviewProfile()), cfgManager)
+	manager := &Manager{cfgManager: cfgManager, modelResolver: resolver}
+	upstream := cfgManager.GetConfig().Upstream[0]
+
+	supported, mapped, source, _ := manager.ResolveModelSupport("messages", &upstream, "claude-sonnet-5")
+	if !supported || mapped != "" || source != "explain" {
+		t.Fatalf("Kill Switch 下应回退 ExplainModelSupport，got supported=%v mapped=%q source=%q", supported, mapped, source)
 	}
 }
 

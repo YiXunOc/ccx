@@ -27,6 +27,18 @@ type ResponsesProvider struct {
 	SessionManager *session.SessionManager
 }
 
+// responsesStreamToolState 保存一个 Responses function_call 的独立流状态。
+// Responses 允许多个工具调用交错输出，不能用单个 currentTool 覆盖前一个调用。
+type responsesStreamToolState struct {
+	key     string
+	id      string
+	name    string
+	index   int
+	args    strings.Builder
+	started bool
+	closed  bool
+}
+
 // ConvertToProviderRequest 将请求转换为上游格式
 func (p *ResponsesProvider) ConvertToProviderRequest(
 	c *gin.Context,
@@ -147,28 +159,9 @@ func (p *ResponsesProvider) buildProviderRequestBody(c *gin.Context, requestPath
 		if upstream.IsStripImageGenerationToolEnabled() {
 			stripImageGenerationFromTools(reqMap)
 		}
-		if model, ok := reqMap["model"].(string); ok {
-			// 模型重定向：命中映射（实际换模型）时剔除 Codex 预算提醒，未命中不动
-			// （数字按客户端认知窗口核算，模型未变则准确，统一语义见 client_budget_reminders.go）
-			redirectedModel, _ := config.RedirectModelWithMatch(model, upstream)
-			reqMap["model"] = redirectedModel
-			if redirectedModel != model {
-				if stripped, changed := StripCodexBudgetRemindersFromResponsesInput(reqMap["input"]); changed {
-					reqMap["input"] = stripped
-				}
-			}
-			if effort := config.ResolveReasoningEffort(model, upstream); effort != "" {
-				config.ApplyReasoningParamStyle(reqMap, upstream.ReasoningParamStyle, effort)
-			} else if reasoning, hasReasoning := reqMap["reasoning"]; hasReasoning {
-				// 无 ReasoningMapping 配置时，按 ReasoningParamStyle 转换客户端原始 reasoning
-				switch upstream.ReasoningParamStyle {
-				case "thinking":
-					config.ApplyReasoningParamStyle(reqMap, upstream.ReasoningParamStyle, extractEffortFromReasoning(reasoning))
-				case "reasoning_effort":
-					config.ApplyReasoningParamStyle(reqMap, upstream.ReasoningParamStyle, extractEffortFromReasoning(reasoning))
-				}
-				// 默认样式保持原样透传（原始 reasoning 对象直接转发）
-			}
+		if reasoning, hasReasoning := reqMap["reasoning"]; hasReasoning {
+			// 按显式兼容配置或物理上游协议转换客户端原始 reasoning。
+			config.ApplyReasoningParamStyle(reqMap, config.EffectiveReasoningParamStyle(upstream), extractEffortFromReasoning(reasoning))
 		}
 		config.NormalizeReasoningObjectForUpstream(reqMap, upstream)
 		if upstream.TextVerbosity != "" {
@@ -212,8 +205,6 @@ func (p *ResponsesProvider) buildProviderRequestBody(c *gin.Context, requestPath
 			sess = &session.Session{}
 		}
 
-		originalModel := responsesReq.Model
-		responsesReq.Model = config.RedirectModel(responsesReq.Model, upstream)
 		// 跨协议转换必然改变模型语义，Codex 预算提醒数字失真，无条件剔除
 		// （统一语义见 client_budget_reminders.go）
 		if stripped, changed := StripCodexBudgetRemindersFromResponsesInput(responsesReq.Input); changed {
@@ -250,25 +241,25 @@ func (p *ResponsesProvider) buildProviderRequestBody(c *gin.Context, requestPath
 			}
 		}
 
+		// converter 可能返回结构体（Gemini）或 map。统一转成 map 后再应用物理协议参数，
+		// 避免仅 map 分支生效导致 reasoning 在部分跨协议路由中静默丢失。
+		convertedBytes, err := utils.MarshalJSONNoEscape(convertedReq)
+		if err != nil {
+			return nil, nil, fmt.Errorf("序列化转换后请求失败: %w", err)
+		}
+		var reqMap map[string]interface{}
+		if err := json.Unmarshal(convertedBytes, &reqMap); err != nil {
+			return nil, nil, fmt.Errorf("解析转换后请求失败: %w", err)
+		}
+		convertedReq = reqMap
+
 		// converter 路径：注入 reasoning/thinking 参数
-		if reqMap, ok := convertedReq.(map[string]interface{}); ok {
-			model := originalModel
-			if effort := config.ResolveReasoningEffort(model, upstream); effort != "" {
-				config.ApplyReasoningParamStyle(reqMap, upstream.ReasoningParamStyle, effort)
-			} else {
-				// 无 ReasoningMapping 配置时，透传客户端原始 reasoning 并按 style 转换
-				var rawReq map[string]interface{}
-				if json.Unmarshal(bodyBytes, &rawReq) == nil {
-					if reasoning, hasReasoning := rawReq["reasoning"]; hasReasoning {
-						switch upstream.ReasoningParamStyle {
-						case "thinking":
-							config.ApplyReasoningParamStyle(reqMap, upstream.ReasoningParamStyle, extractEffortFromReasoning(reasoning))
-						case "reasoning_effort":
-							config.ApplyReasoningParamStyle(reqMap, upstream.ReasoningParamStyle, extractEffortFromReasoning(reasoning))
-						default:
-							reqMap["reasoning"] = reasoning
-						}
-					}
+		{
+			// 透传客户端原始 reasoning 并按 style 转换
+			var rawReq map[string]interface{}
+			if json.Unmarshal(bodyBytes, &rawReq) == nil {
+				if reasoning, hasReasoning := rawReq["reasoning"]; hasReasoning {
+					config.ApplyReasoningParamStyle(reqMap, config.EffectiveReasoningParamStyle(upstream), extractEffortFromReasoning(reasoning))
 				}
 			}
 			config.NormalizeReasoningObjectForUpstream(reqMap, upstream)
@@ -412,12 +403,9 @@ func (p *ResponsesProvider) buildResponsesRequestFromClaude(c *gin.Context, body
 	}
 
 	responsesReq := map[string]interface{}{
-		"model":  config.RedirectModel(claudeReq.Model, upstream),
+		"model":  claudeReq.Model,
 		"input":  input,
 		"stream": claudeReq.Stream,
-	}
-	if effort := config.ResolveReasoningEffort(claudeReq.Model, upstream); effort != "" {
-		config.ApplyReasoningParamStyle(responsesReq, upstream.ReasoningParamStyle, effort)
 	}
 	if instructions := extractResponsesInstructions(claudeReq.System); instructions != "" {
 		responsesReq["instructions"] = instructions
@@ -521,7 +509,7 @@ func (p *ResponsesProvider) buildRequestURL(upstream *config.UpstreamConfig, bod
 		if err := json.Unmarshal(bodyBytes, &responsesReq); err != nil {
 			return "", fmt.Errorf("解析 Responses 请求失败: %w", err)
 		}
-		model := config.RedirectModel(responsesReq.Model, upstream)
+		model := responsesReq.Model
 		action := "generateContent"
 		if responsesReq.Stream {
 			action = "streamGenerateContent?alt=sse"
@@ -716,9 +704,12 @@ func (p *ResponsesProvider) HandleStreamResponse(body io.ReadCloser) (<-chan str
 		blockIndex := 0 // 下一个可用的 content_block 索引（thinking/text/tool_use 共享）
 		textBlockIndex := -1
 		thinkingBlockIndex := -1
-		currentTool := map[string]string{}
-		var currentToolArgs strings.Builder
-		currentToolIndex := -1
+		toolStates := make(map[string]*responsesStreamToolState)
+		toolKeyByItemID := make(map[string]string)
+		toolKeyByOutputIndex := make(map[int]string)
+		toolStateOrder := make([]*responsesStreamToolState, 0)
+		pendingToolStates := make([]*responsesStreamToolState, 0)
+		toolSequence := 0
 		latestInputTokens := 0
 		latestOutputTokens := 0
 		latestCacheCreationTokens := 0
@@ -755,6 +746,269 @@ func (p *ResponsesProvider) HandleStreamResponse(body io.ReadCloser) (<-chan str
 			if textBlockStarted {
 				emitJSON("content_block_stop", map[string]interface{}{"index": textBlockIndex})
 				textBlockStarted = false
+			}
+		}
+
+		responseOutputIndex := func(data map[string]interface{}) (int, bool) {
+			value, ok := data["output_index"].(float64)
+			return int(value), ok
+		}
+
+		responseIdentityValues := func(data map[string]interface{}, item map[string]interface{}) []string {
+			values := []interface{}{data["item_id"], data["call_id"], item["id"], item["call_id"]}
+			identities := make([]string, 0, len(values))
+			seen := make(map[string]struct{}, len(values))
+			for _, value := range values {
+				id := toString(value)
+				if id == "" {
+					continue
+				}
+				if _, exists := seen[id]; exists {
+					continue
+				}
+				seen[id] = struct{}{}
+				identities = append(identities, id)
+			}
+			return identities
+		}
+
+		responseItemID := func(data map[string]interface{}, item map[string]interface{}) string {
+			identities := responseIdentityValues(data, item)
+			if len(identities) > 0 {
+				return identities[0]
+			}
+			return ""
+		}
+
+		responseToolName := func(data map[string]interface{}, item map[string]interface{}) string {
+			if name := toString(item["name"]); name != "" {
+				return name
+			}
+			return toString(data["name"])
+		}
+
+		registerToolStateAliases := func(state *responsesStreamToolState, data map[string]interface{}, item map[string]interface{}) {
+			if state == nil {
+				return
+			}
+			for _, identity := range responseIdentityValues(data, item) {
+				toolKeyByItemID[identity] = state.key
+			}
+			if outputIndex, ok := responseOutputIndex(data); ok {
+				toolKeyByOutputIndex[outputIndex] = state.key
+			}
+		}
+
+		lookupToolState := func(data map[string]interface{}, item map[string]interface{}) *responsesStreamToolState {
+			for _, identity := range responseIdentityValues(data, item) {
+				if key := toolKeyByItemID[identity]; key != "" {
+					return toolStates[key]
+				}
+			}
+			if outputIndex, ok := responseOutputIndex(data); ok {
+				if key := toolKeyByOutputIndex[outputIndex]; key != "" {
+					return toolStates[key]
+				}
+			}
+			return nil
+		}
+
+		latestOpenToolState := func() *responsesStreamToolState {
+			for i := len(toolStateOrder) - 1; i >= 0; i-- {
+				if state := toolStateOrder[i]; state != nil && !state.closed {
+					return state
+				}
+			}
+			return nil
+		}
+
+		onlyOpenToolState := func() *responsesStreamToolState {
+			var only *responsesStreamToolState
+			for _, state := range toolStateOrder {
+				if state == nil || state.closed {
+					continue
+				}
+				if only != nil {
+					return nil
+				}
+				only = state
+			}
+			return only
+		}
+
+		lookupToolStateHeuristic := func(data map[string]interface{}, item map[string]interface{}) *responsesStreamToolState {
+			if state := lookupToolState(data, item); state != nil {
+				return state
+			}
+			if state := onlyOpenToolState(); state != nil {
+				return state
+			}
+			if len(responseIdentityValues(data, item)) == 0 {
+				return latestOpenToolState()
+			}
+			return nil
+		}
+
+		claimPendingToolState := func() *responsesStreamToolState {
+			for i := 0; i < len(pendingToolStates); i++ {
+				state := pendingToolStates[i]
+				pendingToolStates = append(pendingToolStates[:i], pendingToolStates[i+1:]...)
+				if state == nil || state.closed {
+					i--
+					continue
+				}
+				return state
+			}
+			return nil
+		}
+
+		ensureToolBlockStarted := func(state *responsesStreamToolState) {
+			if state == nil || state.started {
+				return
+			}
+			if state.id == "" && state.name == "" {
+				return
+			}
+			if state.id == "" {
+				state.id = fallbackToolUseID(state.name)
+			}
+			if state.index < 0 {
+				state.index = blockIndex
+				blockIndex++
+			}
+			ensureMessageStart()
+			closeOpenContentBlocks()
+			emitJSON("content_block_start", map[string]interface{}{
+				"index": state.index,
+				"content_block": map[string]interface{}{
+					"type": "tool_use",
+					"id":   state.id,
+					"name": state.name,
+				},
+			})
+			state.started = true
+		}
+
+		updateToolStateMetadata := func(state *responsesStreamToolState, data map[string]interface{}, item map[string]interface{}) {
+			if state == nil {
+				return
+			}
+			if name := responseToolName(data, item); name != "" {
+				state.name = name
+			}
+			callID := toString(item["call_id"])
+			if callID == "" {
+				callID = toString(data["call_id"])
+			}
+			if callID != "" {
+				state.id = callID
+			} else if state.id == "" {
+				state.id = responseItemID(data, item)
+				if state.id == "" {
+					state.id = state.name
+				}
+			}
+			registerToolStateAliases(state, data, item)
+			ensureToolBlockStarted(state)
+		}
+
+		startToolState := func(data map[string]interface{}, item map[string]interface{}) *responsesStreamToolState {
+			if state := lookupToolState(data, item); state != nil {
+				updateToolStateMetadata(state, data, item)
+				return state
+			}
+			if state := claimPendingToolState(); state != nil {
+				updateToolStateMetadata(state, data, item)
+				return state
+			}
+
+			itemID := responseItemID(data, item)
+			outputIndex, hasOutputIndex := responseOutputIndex(data)
+			key := itemID
+			if key == "" && hasOutputIndex {
+				key = fmt.Sprintf("output_index:%d", outputIndex)
+			}
+			if key == "" {
+				key = fmt.Sprintf("sequence:%d", toolSequence)
+				toolSequence++
+			}
+			state := &responsesStreamToolState{
+				key:   key,
+				id:    toString(item["call_id"]),
+				name:  responseToolName(data, item),
+				index: -1,
+			}
+			if state.id == "" {
+				state.id = toString(data["call_id"])
+			}
+			if state.id == "" {
+				state.id = toString(item["id"])
+			}
+			if state.id == "" {
+				state.id = state.name
+			}
+			toolStates[key] = state
+			toolStateOrder = append(toolStateOrder, state)
+			registerToolStateAliases(state, data, item)
+			if len(responseIdentityValues(data, item)) == 0 {
+				pendingToolStates = append(pendingToolStates, state)
+			}
+			ensureToolBlockStarted(state)
+			return state
+		}
+
+		closeToolState := func(state *responsesStreamToolState, item map[string]interface{}) {
+			if state == nil || state.closed {
+				return
+			}
+			updateToolStateMetadata(state, nil, item)
+			if !state.started {
+				state.id = fallbackToolUseID(state.id)
+				ensureToolBlockStarted(state)
+			}
+			argsJSON := state.args.String()
+			if strings.TrimSpace(argsJSON) == "" {
+				argsJSON = toString(item["arguments"])
+			}
+			if strings.TrimSpace(argsJSON) == "" {
+				argsJSON = toString(item["input"])
+			}
+			if strings.TrimSpace(argsJSON) == "" {
+				argsJSON = "{}"
+			}
+			argsJSON = sanitizeClaudeToolArgsJSON(state.name, argsJSON)
+			emitJSON("content_block_delta", map[string]interface{}{
+				"index": state.index,
+				"delta": map[string]interface{}{"type": "input_json_delta", "partial_json": argsJSON},
+			})
+			emitJSON("content_block_stop", map[string]interface{}{"index": state.index})
+			state.closed = true
+			stopReason = "tool_use"
+		}
+
+		finalizeCompletedToolStates := func(response map[string]interface{}) {
+			output, _ := response["output"].([]interface{})
+			for _, rawItem := range output {
+				item, ok := rawItem.(map[string]interface{})
+				if !ok || toString(item["type"]) != "function_call" {
+					continue
+				}
+				state := lookupToolStateHeuristic(map[string]interface{}{"item_id": item["id"]}, item)
+				if state == nil {
+					state = startToolState(map[string]interface{}{}, item)
+				}
+				closeToolState(state, item)
+			}
+			pending := make([]*responsesStreamToolState, 0)
+			for _, state := range toolStateOrder {
+				if !state.closed {
+					pending = append(pending, state)
+				}
+			}
+			for _, state := range pending {
+				// 有些上游的 response.completed 只有 status/usage，没有 output 数组；
+				// 这里仍需闭合已累积的工具参数，避免下游收到孤立 content_block_start。
+				closeToolState(state, nil)
 			}
 		}
 
@@ -893,53 +1147,36 @@ func (p *ResponsesProvider) HandleStreamResponse(body io.ReadCloser) (<-chan str
 				if toString(item["type"]) != "function_call" {
 					continue
 				}
-				ensureMessageStart()
-				closeOpenContentBlocks()
-				currentTool = map[string]string{
-					"id":   toString(item["call_id"]),
-					"name": toString(item["name"]),
-				}
-				currentToolArgs.Reset()
-				if currentTool["id"] == "" {
-					currentTool["id"] = currentTool["name"]
-				}
-				currentToolIndex = blockIndex
-				blockIndex++
-				emitJSON("content_block_start", map[string]interface{}{
-					"index": currentToolIndex,
-					"content_block": map[string]interface{}{
-						"type": "tool_use",
-						"id":   currentTool["id"],
-						"name": currentTool["name"],
-					},
-				})
+				startToolState(data, item)
 			case "response.function_call_arguments.delta":
-				if currentTool["id"] == "" {
-					continue
+				state := lookupToolStateHeuristic(data, nil)
+				if state == nil {
+					state = startToolState(data, nil)
 				}
-				// 先聚合完整 arguments，再一次性发给下游（便于做 JSON 级别清洗）。
-				currentToolArgs.WriteString(toString(data["delta"]))
+				registerToolStateAliases(state, data, nil)
+				state.args.WriteString(toString(data["delta"]))
+			case "response.function_call_arguments.done":
+				item, _ := data["item"].(map[string]interface{})
+				state := lookupToolStateHeuristic(data, item)
+				if state == nil {
+					state = startToolState(data, item)
+				}
+				if args := toString(data["arguments"]); args != "" {
+					state.args.Reset()
+					state.args.WriteString(args)
+				}
+				updateToolStateMetadata(state, data, item)
+				if state.name != "" || state.id != "" {
+					closeToolState(state, item)
+				}
 			case "response.output_item.done":
 				item, _ := data["item"].(map[string]interface{})
-				if toString(item["type"]) == "function_call" && currentTool["id"] != "" {
-					argsJSON := currentToolArgs.String()
-					if strings.TrimSpace(argsJSON) == "" {
-						argsJSON = toString(item["arguments"])
+				if toString(item["type"]) == "function_call" {
+					state := lookupToolStateHeuristic(data, item)
+					if state == nil {
+						state = startToolState(data, item)
 					}
-					if strings.TrimSpace(argsJSON) == "" {
-						argsJSON = "{}"
-					}
-					argsJSON = sanitizeClaudeToolArgsJSON(currentTool["name"], argsJSON)
-
-					emitJSON("content_block_delta", map[string]interface{}{
-						"index": currentToolIndex,
-						"delta": map[string]interface{}{"type": "input_json_delta", "partial_json": argsJSON},
-					})
-					emitJSON("content_block_stop", map[string]interface{}{"index": currentToolIndex})
-					stopReason = "tool_use"
-					currentTool = map[string]string{}
-					currentToolArgs.Reset()
-					currentToolIndex = -1
+					closeToolState(state, item)
 				}
 			case "response.created", "response.in_progress":
 				// 上游自报模型名（厂商隐式重定向观测）：仅提取记录，不改变流转
@@ -986,6 +1223,7 @@ func (p *ResponsesProvider) HandleStreamResponse(body io.ReadCloser) (<-chan str
 					latestCacheTTL = v
 				}
 				status := toString(response["status"])
+				finalizeCompletedToolStates(response)
 				if status == "incomplete" || eventType == "response.incomplete" {
 					stopReason = "max_tokens"
 				}

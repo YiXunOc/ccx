@@ -19,28 +19,28 @@ func TestLookupBuiltinManifest_ExactHostMatch(t *testing.T) {
 			baseURL:     "https://api.anthropic.com",
 			serviceType: "messages",
 			wantFound:   true,
-			wantModels:  12,
+			wantModels:  13,
 		},
 		{
 			name:        "Anthropic API 带尾部斜杠",
 			baseURL:     "https://api.anthropic.com/",
 			serviceType: "messages",
 			wantFound:   true,
-			wantModels:  12,
+			wantModels:  13,
 		},
 		{
 			name:        "Anthropic API 带路径前缀",
 			baseURL:     "https://api.anthropic.com/v1",
 			serviceType: "messages",
 			wantFound:   true,
-			wantModels:  12,
+			wantModels:  13,
 		},
 		{
 			name:        "Anthropic API 带 # 标记",
 			baseURL:     "https://api.anthropic.com#",
 			serviceType: "messages",
 			wantFound:   true,
-			wantModels:  12,
+			wantModels:  13,
 		},
 	}
 
@@ -150,6 +150,7 @@ func TestLookupBuiltinManifest_ModelIDsContent(t *testing.T) {
 		"claude-fable-5",
 		"claude-fable-5-1",
 		"claude-mythos-5-1",
+		"claude-opus-5-5",
 		"claude-sonnet-5",
 		"claude-opus-4-8",
 		"claude-sonnet-4-6",
@@ -187,7 +188,7 @@ func TestLookupBuiltinManifest_MiMoAnthropicTokenPlan(t *testing.T) {
 	if manifest.PlanHint != "mimo_token_plan_cn_anthropic" {
 		t.Fatalf("planHint = %q, want mimo_token_plan_cn_anthropic", manifest.PlanHint)
 	}
-	expected := []string{"mimo-v2.5-pro", "mimo-v2.5"}
+	expected := []string{"mimo-v2.6-pro-ultraspeed", "mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.5-pro", "mimo-v2.5"}
 	if len(manifest.ModelIDs) != len(expected) {
 		t.Fatalf("ModelIDs len = %d, want %d", len(manifest.ModelIDs), len(expected))
 	}
@@ -331,7 +332,7 @@ func TestLookupBuiltinManifest_MiMoOpenAIChatTokenPlan(t *testing.T) {
 	if manifest.PlanHint != "mimo_token_plan_cn_openai" {
 		t.Fatalf("planHint = %q, want mimo_token_plan_cn_openai", manifest.PlanHint)
 	}
-	expected := []string{"mimo-v2.5-pro", "mimo-v2.5"}
+	expected := []string{"mimo-v2.6-pro-ultraspeed", "mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.5-pro", "mimo-v2.5"}
 	if len(manifest.ModelIDs) != len(expected) {
 		t.Fatalf("ModelIDs len = %d, want %d", len(manifest.ModelIDs), len(expected))
 	}

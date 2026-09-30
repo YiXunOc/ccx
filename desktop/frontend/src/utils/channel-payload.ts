@@ -52,19 +52,27 @@ export interface ChannelFormLike {
   description: string
   apiKeys: string[]
   apiKeyConfigs?: Channel['apiKeyConfigs']
-  modelMapping: Record<string, string>
   modelCapabilitiesText?: string
   modelCapabilityRows?: ModelCapabilityRow[]
   embeddingCapabilityRows?: EmbeddingCapabilityRow[]
   defaultContextWindowTokens?: string | number | null
   defaultMaxOutputTokens?: string | number | null
   allowUnknownContext?: boolean
-  reasoningMapping: Record<string, 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>
   reasoningParamStyle: 'reasoning' | 'reasoning_effort' | 'thinking'
   textVerbosity: 'low' | 'medium' | 'high' | ''
   fastMode: boolean
   customHeaders: Record<string, string>
   proxyUrl: string
+  proxyPreferDirect?: boolean
+  // 竞速参与开关（内部映射 racing.enabled；racingTouched=false 表示未触碰，保持后端缺省跟随全局）
+  racingEnabled?: boolean
+  racingTouched?: boolean
+  // 渠道级计费：0/空=不参与（充值倍率 + 充值币种/金额 + 渠道币种/到账金额）
+  costMultiplier?: string | number | null
+  channelPaymentCurrency?: string
+  channelPaymentAmount?: string | number | null
+  channelCreditCurrency?: string
+  channelCreditAmount?: string | number | null
   requestTimeoutMs?: string | number | null
   responseHeaderTimeoutMs?: string | number | null
   streamFirstContentTimeoutMs?: string | number | null
@@ -83,8 +91,6 @@ export interface ChannelFormLike {
   codexToolCompat: boolean
   stripCodexClientTools?: boolean
   noVision: boolean
-  noVisionModels: string[]
-  visionFallbackModel: string
   historicalImageTurnLimit?: string | number | null
 
 }
@@ -102,6 +108,13 @@ function normalizePricingValue(value: unknown): number | null | false {
   const parsed = Number(trimmed)
   if (!Number.isFinite(parsed) || parsed < 0) return false
   return parsed
+}
+
+// 渠道级计费数值：0/空=不参与。空/非法/负数归一为 0，使编辑时清空能显式重置为不参与。
+function normalizeChannelBillingAmount(value: string | number | null | undefined): number {
+  if (value === null || value === undefined || String(value).trim() === '') return 0
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
 }
 
 function hasPricingValue(row: ModelCapabilityRow): boolean {
@@ -492,7 +505,6 @@ export function buildChannelPayload(
     }
   }
   const advancedOptions = normalizeAdvancedChannelOptions(form.serviceType, {
-    reasoningMapping: form.reasoningMapping,
     reasoningParamStyle: form.reasoningParamStyle,
     textVerbosity: form.textVerbosity,
     fastMode: form.fastMode
@@ -526,16 +538,20 @@ export function buildChannelPayload(
     stripThoughtSignature: form.stripThoughtSignature,
     description: form.description.trim(),
     apiKeys: mergedApiKeys,
-    modelMapping: form.modelMapping,
     modelCapabilities: modelCapabilities || {},
     defaultCapability: {},
     allowUnknownContext: false,
-    reasoningMapping: advancedOptions.reasoningMapping,
     reasoningParamStyle: advancedOptions.reasoningParamStyle,
     textVerbosity: advancedOptions.textVerbosity,
     fastMode: advancedOptions.fastMode,
     customHeaders: form.customHeaders,
     proxyUrl: form.proxyUrl.trim(),
+    proxyPreferDirect: !!form.proxyPreferDirect,
+    costMultiplier: normalizeChannelBillingAmount(form.costMultiplier),
+    channelPaymentCurrency: (form.channelPaymentCurrency || '').trim(),
+    channelPaymentAmount: normalizeChannelBillingAmount(form.channelPaymentAmount),
+    channelCreditCurrency: (form.channelCreditCurrency || '').trim(),
+    channelCreditAmount: normalizeChannelBillingAmount(form.channelCreditAmount),
     routePrefix: form.routePrefix.trim(),
     supportedModels: form.supportedModels,
     autoBlacklistBalance: form.autoBlacklistBalance,
@@ -545,10 +561,6 @@ export function buildChannelPayload(
     codexToolCompat: form.codexToolCompat,
     stripCodexClientTools: form.codexToolCompat,
     noVision: form.noVision,
-    noVisionModels: form.noVisionModels,
-    visionFallbackModel: typeof form.visionFallbackModel === 'object' && form.visionFallbackModel !== null
-      ? (form.visionFallbackModel as unknown as { value: string }).value || ''
-      : form.visionFallbackModel || '',
   }
 
   if (options.channelType === 'vectors') {
@@ -565,6 +577,11 @@ export function buildChannelPayload(
 
   if (form.authHeader) {
     channelData.authHeader = form.authHeader
+  }
+
+  // 竞速参与开关：未触碰时保持缺省（跟随全局/默认值），触碰后按开关值显式写入
+  if (form.racingTouched) {
+    channelData.racing = { enabled: form.racingEnabled !== false }
   }
 
   // 历史图片轮次限制：始终发送（含 0），使编辑场景能把渠道级限制清回不裁剪。

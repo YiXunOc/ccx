@@ -61,8 +61,6 @@ type CreateRequestBodyProtocol struct {
 	APIKeyConfigs     []config.APIKeyConfig `json:"apiKeyConfigs"`
 	BaseURLs          []string              `json:"baseUrls"`
 	BaseURL           string                `json:"baseUrl"`
-	ModelMapping      map[string]string     `json:"modelMapping"`
-	ReasoningMapping  map[string]string     `json:"reasoningMapping"`
 	Priority          int                   `json:"priority"`
 	Enabled           *bool                 `json:"enabled"`
 	Status            string                `json:"status"`
@@ -100,8 +98,6 @@ type UpdateRequestBodyProtocol struct {
 	APIKeyConfigs     []config.APIKeyConfig `json:"apiKeyConfigs"`
 	BaseURLs          []string              `json:"baseUrls"`
 	BaseURL           string                `json:"baseUrl"`
-	ModelMapping      map[string]string     `json:"modelMapping"`
-	ReasoningMapping  map[string]string     `json:"reasoningMapping"`
 	Priority          int                   `json:"priority"`
 	Enabled           *bool                 `json:"enabled"`
 	Status            string                `json:"status"`
@@ -411,8 +407,6 @@ func (h *Handler) Create(c *gin.Context) {
 			APIKeyConfigs:     p.APIKeyConfigs,
 			BaseURLs:          p.BaseURLs,
 			BaseURL:           p.BaseURL,
-			ModelMapping:      p.ModelMapping,
-			ReasoningMapping:  p.ReasoningMapping,
 			Priority:          p.Priority,
 			Enabled:           p.Enabled,
 			Status:            p.Status,
@@ -468,8 +462,6 @@ func (h *Handler) Update(c *gin.Context) {
 			APIKeyConfigs:     p.APIKeyConfigs,
 			BaseURLs:          p.BaseURLs,
 			BaseURL:           p.BaseURL,
-			ModelMapping:      p.ModelMapping,
-			ReasoningMapping:  p.ReasoningMapping,
 			Priority:          p.Priority,
 			Enabled:           p.Enabled,
 			Status:            p.Status,
