@@ -6,6 +6,7 @@ import (
 
 	"github.com/BenedictKing/ccx/internal/config"
 	"github.com/BenedictKing/ccx/internal/metrics"
+	"github.com/BenedictKing/ccx/internal/routingref"
 	"github.com/BenedictKing/ccx/internal/session"
 	"github.com/BenedictKing/ccx/internal/types"
 	"github.com/BenedictKing/ccx/internal/warmup"
@@ -41,8 +42,14 @@ func (s *ChannelScheduler) SetTraceAffinity(userID string, channelIndex int, kin
 }
 
 // SetTraceAffinityForRequirement 设置带上下文桶隔离的 Trace 亲和。
+// 路由身份必须带 ChannelUID：index 只是列表位置，渠道增删后会指向另一个渠道，
+// 只有 UID 能让「渠道删除 → RemoveByRoute(UID)」真正命中、也让读取侧按 UID 解析。
 func (s *ChannelScheduler) SetTraceAffinityForRequirement(userID string, channelIndex int, kind ChannelKind, requirement *ContextRequirement) {
-	s.SetTraceAffinityRouteForRequirement(userID, ChannelRouteRef{Kind: string(kind), Index: channelIndex}, kind, requirement)
+	route := ChannelRouteRef{Kind: string(kind), Index: channelIndex}
+	if uid := s.channelUIDByIndex(channelIndex, kind); uid != "" {
+		route.ChannelUID = uid
+	}
+	s.SetTraceAffinityRouteForRequirement(userID, route, kind, requirement)
 }
 
 func (s *ChannelScheduler) SetTraceAffinityRouteForRequirement(userID string, route ChannelRouteRef, kind ChannelKind, requirement *ContextRequirement) {
@@ -225,6 +232,20 @@ func (s *ChannelScheduler) DeleteChannelMetrics(upstream *config.UpstreamConfig,
 		return
 	}
 
+	// 渠道删除时同步清理指向它的会话亲和：亲和条目原本只能等 TTL（默认
+	// 30 分钟）过期，期间 sweep 路径（alpha 端点按亲和渠道名 pin）仍会
+	// 指向已删渠道。按物理 ChannelUID 清理，跨协议亲和一并移除。
+	if upstream.ChannelUID != "" && s.traceAffinity != nil {
+		s.traceAffinity.RemoveByRoute(routingref.RouteRef{ChannelUID: upstream.ChannelUID})
+	}
+
+	// 配额状态同样按 ChannelUID 清理：配额观测是纯内存态且原先没有删除路径，
+	// 已删渠道会永远留在 GET /api/quota/channels 输出里，运维会误判
+	// 「这渠道为什么还被压分」。放在同一个汇聚点，未来新调用点不会漏接。
+	if upstream.ChannelUID != "" && s.quotaManager != nil {
+		s.quotaManager.RemoveChannel(upstream.ChannelUID)
+	}
+
 	prefix := kindSchedulerLogPrefix(kind)
 
 	// 前置条件守卫：检查被删除渠道是否仍在配置中
@@ -263,6 +284,12 @@ func (s *ChannelScheduler) DeleteChannelMetrics(upstream *config.UpstreamConfig,
 	}
 
 	metricsManager := s.getMetricsManager(kind)
+
+	// 该协议未接指标管理器（精简装配或测试）时跳过指标清理，不能让它阻断
+	// 日志/亲和/配额这些同样挂在本清理汇聚点上的动作，更不能空指针崩溃。
+	if metricsManager == nil {
+		return
+	}
 
 	// 只删除独占的 MetricsKey
 	if len(exclusiveMetricsKeys) > 0 {

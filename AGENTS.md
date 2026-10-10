@@ -47,6 +47,7 @@
 - 管理入口统一位于 `/api/{type}/channels/*`。
 - 能力测试当前只适用于 `messages`、`chat`、`responses`、`gemini`；不要假设 `images` 或 `vectors` 具备 capability-test。
 - 渠道保活验证位于 `backend-go/internal/healthcheck/`：L1（带 key 拉模型列表）六类渠道通用，L2（最便宜模型的普通真实调用）仅 `messages`、`chat`、`responses`、`gemini`；配置为全局/渠道级 `healthCheck`，频率硬下限 30 分钟；管理端点 `GET /api/{type}/channels/:id/health` 与 `POST /api/{type}/channels/:id/health/check`。
+- 上游余额探测位于 `backend-go/internal/balanceprobe/`（探测器在 `internal/upstreamprobe/balance.go`）：用渠道 key 查上游剩余额度（auto/newapi_token/sub2api/newapi_billing），六类渠道通用；配置为全局/渠道级 `balanceCheck`，newapi 订阅托管渠道默认开启 auto，间隔硬下限 30 分钟；结果落 `key_health`（check_kind=balance）并聚合写配额真相 provider_api 级参与调度；管理端点 `GET /api/{type}/channels/:id/balance` 与 `POST /api/{type}/channels/:id/balance/check`。
 
 ## 测试规范
 - 新增/修改后端逻辑尽量补 `_test.go`，优先表驱动 + `httptest`。

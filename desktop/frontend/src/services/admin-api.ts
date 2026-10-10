@@ -326,6 +326,9 @@ export interface ChannelProtocolRoute {
   channelUid: string
   status: string
   apiKeys: string[]
+  // 该协议路由上的分组模型限制记录：聚合视图是各路由的并集，
+  // 展示与恢复都必须按路由粒度定位（否则只处理主路由那一份）。
+  disabledGroupModels?: DisabledGroupModel[]
 }
 
 export interface ChannelProtocolCapsule {
@@ -2164,6 +2167,12 @@ export interface ManifestDriftPayload {
   added?: string[]
   /** 移除模型 */
   removed?: string[]
+  /** 发现来源端点（回填上下文，可选） */
+  baseURL?: string
+  /** 清单来源（如 control_plane，可选） */
+  source?: string
+  /** 发现时间 RFC3339（可选） */
+  discoveredAt?: string
 }
 
 /** capability_drift 事件 payload */

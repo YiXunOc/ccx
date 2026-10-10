@@ -8,8 +8,10 @@ const modelPriorityPatterns: RegExp[] = [
   /opus-5/i,
   /opus-4[.-]8/i,
   /opus-4-7/i,
+  /sonnet-5[.-]5/i,
   /sonnet-5/i,
   /sonnet-4-7/i,
+  /haiku-5[.-]5/i,
   /haiku-4-7/i,
   /opus-4-6/i,
   /sonnet-4-6/i,
@@ -20,6 +22,7 @@ const modelPriorityPatterns: RegExp[] = [
 
   // OpenAI GPT 系列
   /gpt-6-astra/i,
+  /gpt-6\.1-sol/i,
   /gpt-6-sol/i,
   /gpt-6-luna/i,
   /gpt-6/i,

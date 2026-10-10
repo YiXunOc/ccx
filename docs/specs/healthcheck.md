@@ -16,6 +16,7 @@
 相关支撑包/文件（在 healthcheck 之外）：
 - `backend-go/internal/config/health_check.go` — 保活策略配置类型与解析 `ResolveHealthCheckPolicy`
 - `backend-go/internal/upstreamprobe/volcengine.go` — 火山 Plan 数据面共享探针（与 autopilot 共用）
+- `backend-go/internal/upstreamprobe/balance.go` — 上游余额探测器（balanceprobe 姊妹功能，见 §10）
 - `backend-go/internal/metrics/sqlite_store_key_health.go` — `key_health` 表持久化（`KeyHealthRecord`）
 - `backend-go/internal/metrics/model_circuit.go` — 模型级熔断追踪器 `ModelCircuitTracker`
 - `backend-go/main.go:104-176、1043-1048` — L1Fetcher 接线、火山探针分流、拉黑/喂熔断回调注入
@@ -30,6 +31,7 @@
 - `CheckKindL1 = "l1"`、`CheckKindL2 = "l2"`、`CheckKindL2ModelPrefix = "l2:"`
 - 状态：`StatusOK = "ok"`、`StatusAuthFailed = "auth_failed"`、`StatusError = "error"`
 - 到期判定只看 L1 记录（`groupL1Records` 只保留 `CheckKind==l1`）。
+- `key_health` 表另承载姊妹功能余额探测的 `check_kind="balance"` 记录（写入方是 `internal/balanceprobe`，见 §10；healthcheck 自身的到期判定与管理视图读全表时与其共存互不干扰）。
 
 ### 2.2 L1 探针（`check.go:checkKeyL1`, line 151）
 - 目的：带单个 key 拉取上游模型列表，验证账号/凭证可达性。六类渠道通用（`messages/chat/responses/gemini/images/vectors`）。
@@ -302,3 +304,19 @@ healthcheck 不直接依赖 provider 适配层，而是通过 `internal/upstream
 **待排期缺口**
 
 - **无分时段策略**：高峰/低谷未按时间窗口自动降/升预算。
+
+## 10. 姊妹功能：上游余额探测（balanceprobe）
+
+2026-10-03 起与保活验证并存的渠道级探测功能，**独立包** `backend-go/internal/balanceprobe/`（探测器在 `internal/upstreamprobe/balance.go`，协议无关）。分工：healthcheck 探测「渠道是否活着」，balanceprobe 探测「key 还剩多少钱」。
+
+| 维度 | healthcheck | balanceprobe |
+| --- | --- | --- |
+| 探测动作 | L1 拉模型列表 / L2 最便宜模型真实调用 | 轻量只读 GET 上游余额端点 |
+| 上游类型 | 按渠道协议 | `auto`/`newapi_token`（/api/usage/token/）/`sub2api`（/v1/usage）/`newapi_billing`（billing 端点对） |
+| 结果落库 | `key_health`（check_kind=l1/l2/l2:\<model\>） | 同表（check_kind=`balance`，detail 为 JSON：provider/scope/remaining/used/limit/originalUnit/usd/unlimited/rateWindows/error） |
+| 调度影响 | 401/403 拉黑、失败喂熔断 | 聚合 Σ 写 `quota.Manager` provider_api 级（accountUID=`probe:`+channelUID）参与评分/沉底；**只读不拉黑** |
+| 配置 | 全局/渠道级 `healthCheck` | 全局/渠道级 `balanceCheck`；newapi 订阅托管渠道（AutoManagedKind="new_api"）默认 auto 开启，间隔硬下限 30min（默认 6h） |
+| 管理端点 | `GET/POST /api/{type}/channels/:id/health(/check)` | `GET/POST /api/{type}/channels/:id/balance(/check)`（GET health 也会带出 balance 记录） |
+| 渠道适用 | L1 六类 / L2 四类 | 六类通用 |
+
+关键语义（详见 `quota-truth-scheduling.md` §7.1）：逐 key 探测但**渠道级聚合写入**——单 key 耗尽不误杀整渠道，全 key 耗尽才 exhausted；全部 unlimited 不写数值维度（中性分 fail-open）。auto 模式按 newapi_token → sub2api → newapi_billing 顺序以响应 schema 特征识别（防 HTML 错误页误判），识别成功后内存 memo 记忆 provider，重启后首轮全序列重建。newapi_billing 模式受上游站点展示单位/统计口径影响（scope=unknown）；客户端指纹拦截（AgentRouter 类）自动带 Claude Code 探针头重试。

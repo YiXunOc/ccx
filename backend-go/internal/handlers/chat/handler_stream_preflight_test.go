@@ -4,11 +4,15 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
+	"github.com/BenedictKing/ccx/internal/config"
 	"github.com/BenedictKing/ccx/internal/handlers/common"
+	"github.com/gin-gonic/gin"
 )
 
 type preflightResult struct {
@@ -204,5 +208,256 @@ func TestPreflightChatStream_FlushRemainder_NoByteDuplication(t *testing.T) {
 	got := string(result.preflight.buffered)
 	if got != want {
 		t.Fatalf("buffered 字节不一致（说明重复写入或丢字节）:\n  want=%q\n  got =%q", want, got)
+	}
+}
+
+// TestPreflightChatStream_StreamDataErrorTriggersBlacklist 流内错误对象中的认证
+// 错误应在预检阶段被识别为拉黑条件，进入统一 failover（此前会原样透传给客户端）。
+func TestPreflightChatStream_StreamDataErrorTriggersBlacklist(t *testing.T) {
+	writer, resultCh := newPreflightPipe(t, "openai")
+
+	writeSSELine(t, writer, `{"error":{"message":"Invalid API key provided","type":"invalid_api_key"}}`)
+
+	result := waitForPreflight(t, resultCh, 300*time.Millisecond)
+	var blErr *common.ErrBlacklistKey
+	if !errors.As(result.err, &blErr) {
+		t.Fatalf("expected ErrBlacklistKey, got %v", result.err)
+	}
+	if blErr.Reason != "authentication_error" {
+		t.Fatalf("reason = %q, want authentication_error", blErr.Reason)
+	}
+}
+
+// TestPreflightChatStream_StreamDataErrorNonBlacklistFailsOver 非拉黑类流内错误
+// 应按空响应语义进入 failover，而不是透传。
+func TestPreflightChatStream_StreamDataErrorNonBlacklistFailsOver(t *testing.T) {
+	writer, resultCh := newPreflightPipe(t, "openai")
+
+	writeSSELine(t, writer, `{"error":{"code":503,"message":"The model is overloaded"}}`)
+
+	result := waitForPreflight(t, resultCh, 300*time.Millisecond)
+	if !errors.Is(result.err, common.ErrEmptyStreamResponse) {
+		t.Fatalf("expected ErrEmptyStreamResponse, got %v", result.err)
+	}
+}
+
+// TestPreflightChatStream_EmptyStreamAtEOFTriggersFailover usage/role-only 流在
+// 流结束时仍未出现语义内容：按空响应进入 failover（对齐 messages/responses）。
+func TestPreflightChatStream_EmptyStreamAtEOFTriggersFailover(t *testing.T) {
+	writer, resultCh := newPreflightPipe(t, "openai")
+
+	writeSSELine(t, writer, `{"choices":[{"delta":{"role":"assistant"}}]}`)
+	writeSSELine(t, writer, `{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"total_tokens":3}}`)
+	writeSSELine(t, writer, `[DONE]`)
+	_ = writer.Close()
+
+	result := waitForPreflight(t, resultCh, 300*time.Millisecond)
+	if !errors.Is(result.err, common.ErrEmptyStreamResponse) {
+		t.Fatalf("expected ErrEmptyStreamResponse, got %v", result.err)
+	}
+}
+
+func TestHandleStreamSuccess_RefusalOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	refusal := `data: {"choices":[{"index":0,"delta":{"content":null,"refusal":"I cannot help with that request."}}]}` + "\n\n"
+	tests := []struct {
+		name      string
+		sse       string
+		wantEmpty bool
+	}{
+		{name: "refusal at EOF", sse: refusal},
+		{
+			name: "refusal with DONE",
+			sse: refusal + `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n" +
+				"data: [DONE]\n\n",
+		},
+		{
+			name:      "empty refusal",
+			sse:       `data: {"choices":[{"delta":{"content":null,"refusal":""}}]}` + "\n\n",
+			wantEmpty: true,
+		},
+		{
+			name:      "blank refusal",
+			sse:       `data: {"choices":[{"delta":{"content":null,"refusal":" \t\n"}}]}` + "\n\n",
+			wantEmpty: true,
+		},
+		{
+			name:      "null refusal",
+			sse:       `data: {"choices":[{"delta":{"content":null,"refusal":null}}]}` + "\n\n",
+			wantEmpty: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5","stream":true}`))
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(tt.sse)),
+			}
+			t.Cleanup(func() { _ = resp.Body.Close() })
+
+			_, err := handleStreamSuccess(c, resp, "openai", &config.EnvConfig{LogLevel: "error"}, time.Now(), "gpt-5", common.StreamPreflightTimeouts{
+				FirstContentTimeoutMs: 1000,
+				InactivityTimeoutMs:   1000,
+			})
+			if tt.wantEmpty {
+				if !errors.Is(err, common.ErrEmptyStreamResponse) {
+					t.Fatalf("expected empty stream error, got %v", err)
+				}
+				if c.Writer.Written() || w.Body.Len() != 0 {
+					t.Fatal("empty refusal must not commit a client response")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("refusal must pass preflight, got %v", err)
+			}
+			if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "text/event-stream" {
+				t.Fatalf("expected SSE success, got status=%d headers=%v", w.Code, w.Header())
+			}
+			if got := w.Body.String(); got != tt.sse {
+				t.Fatalf("refusal stream changed: got %q, want %q", got, tt.sse)
+			}
+		})
+	}
+}
+
+// TestHandleStreamSuccess_PassthroughUnterminatedTail 透传流以未终结 data 行收尾时只补齐
+// SSE 终止符、不重发尾行正文（重发会被客户端 SSE 解析器拼到同一行，产生尾部重复输出）。
+// 覆盖尾行整体落在 preflight 预读缓冲与透传阶段跨 chunk 拼装两种送达方式。
+func TestHandleStreamSuccess_PassthroughUnterminatedTail(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	content := `data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}` + "\n\n"
+	finish := `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n"
+	doneNoNewline := `data: [DONE]`
+	finishNoNewline := `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`
+	truncated := `data: {"choices":[{"index":0,"delta":{"content":"hi"}}`
+
+	tests := []struct {
+		name string
+		body io.Reader
+		want string
+	}{
+		{
+			name: "DONE tail entirely in preflight buffer",
+			body: strings.NewReader(content + finish + doneNoNewline),
+			want: content + finish + doneNoNewline + "\n\n",
+		},
+		{
+			name: "JSON tail entirely in preflight buffer",
+			body: strings.NewReader(content + finish + finishNoNewline),
+			want: content + finish + finishNoNewline + "\n\n",
+		},
+		{
+			name: "DONE tail across one-byte chunks",
+			body: iotest.OneByteReader(strings.NewReader(content + finish + doneNoNewline)),
+			want: content + finish + doneNoNewline + "\n\n",
+		},
+		{
+			name: "JSON tail across one-byte chunks",
+			body: iotest.OneByteReader(strings.NewReader(content + finish + finishNoNewline)),
+			want: content + finish + finishNoNewline + "\n\n",
+		},
+		{
+			// 截断的 JSON 尾行不是完整事件：不补终止符，也不重发正文。
+			name: "truncated JSON tail gets no terminator",
+			body: strings.NewReader(content + truncated),
+			want: content + truncated,
+		},
+		{
+			// 上游以单换行收尾（`data: X\n`，没有空行）：必须再补一个空行，
+			// 否则严格 SSE 解析器不会派发最后一帧（finish/usage/[DONE]）。
+			name: "single newline tail gets the missing blank line",
+			body: strings.NewReader(content + finishNoNewline + "\n"),
+			want: content + finishNoNewline + "\n" + "\n",
+		},
+		{
+			name: "single newline DONE tail across one-byte chunks",
+			body: iotest.OneByteReader(strings.NewReader(content + doneNoNewline + "\n")),
+			want: content + doneNoNewline + "\n" + "\n",
+		},
+		{
+			// 已经以空行收尾的流不得再多补空行（避免把正常流写出多余的空白事件）。
+			name: "already terminated tail stays unchanged",
+			body: strings.NewReader(content + finish),
+			want: content + finish,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5","stream":true}`))
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(tt.body),
+			}
+			t.Cleanup(func() { _ = resp.Body.Close() })
+
+			_, err := handleStreamSuccess(c, resp, "openai", &config.EnvConfig{LogLevel: "error"}, time.Now(), "gpt-5", common.StreamPreflightTimeouts{
+				FirstContentTimeoutMs: 1000,
+				InactivityTimeoutMs:   1000,
+			})
+			if err != nil {
+				t.Fatalf("stream failed: %v", err)
+			}
+			if got := w.Body.String(); got != tt.want {
+				t.Fatalf("client output mismatch:\ngot:  %q\nwant: %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPreflightChatStream_ContentStreamStillPasses 正常内容流不受错误检测影响。
+func TestPreflightChatStream_ContentStreamStillPasses(t *testing.T) {
+	writer, resultCh := newPreflightPipe(t, "openai")
+
+	writeSSELine(t, writer, `{"choices":[{"delta":{"content":"hello world this is fine"}}]}`)
+	time.Sleep(20 * time.Millisecond)
+	writeSSELine(t, writer, `{"choices":[{"delta":{"content":"more content"}}]}`)
+
+	result := waitForPreflight(t, resultCh, 300*time.Millisecond)
+	assertNoFirstContentTimeout(t, result)
+}
+
+// TestHandleStreamSuccess_PreflightSizeCapPassesThrough 记录预读上限出口的**刻意**行为：
+// 达到 1MB 预读上限且未识别到已知语义内容时保守透传，不与 EOF 路径同判空。
+// HasOpenAIChatSemanticContent 只建模文本/思考/拒答/工具调用/音频，未建模的形态若被
+// 判失败会从"能正常透传"变成 failover；上限只约束预读，不扩大判空范围。
+func TestHandleStreamSuccess_PreflightSizeCapPassesThrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// 无语义内容的合法 chunk（delta 为空对象），重复到超过 1MB 上限
+	line := `data: {"choices":[{"index":0,"delta":{}}]}` + "\n\n"
+	body := strings.Repeat(line, (1024*1024/len(line))+64)
+	if len(body) <= 1024*1024 {
+		t.Fatalf("测试体必须超过预读上限，got %d", len(body))
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5","stream":true}`))
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	_, err := handleStreamSuccess(c, resp, "openai", &config.EnvConfig{LogLevel: "error"}, time.Now(), "gpt-5", common.StreamPreflightTimeouts{
+		FirstContentTimeoutMs: 5000,
+		InactivityTimeoutMs:   5000,
+	})
+	if err != nil {
+		t.Fatalf("超过预读上限的无语义内容流必须保守透传，got err = %v", err)
+	}
+	if got := w.Body.String(); got != body {
+		t.Fatalf("超限流应逐字节透传: got %d bytes, want %d bytes", len(got), len(body))
 	}
 }

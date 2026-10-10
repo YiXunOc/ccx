@@ -400,7 +400,14 @@ func buildRequestCostContext(cfgManager *config.ConfigManager, upstream *config.
 	}
 
 	// 列表成本（标价）：渠道计价币种为 CNY 等非 USD 时按全局硬编码汇率折 USD，作为基准。
-	resolved := config.ResolveUpstreamCapability(model, upstream, nil)
+	// 解析口径与调度侧一致（渠道覆盖 → 全局配置 → 内置注册表），并把标价快照固化进
+	// 成本上下文：finalize 回写 token 后按它重算，避免指标记录落入仅内置注册表的口径。
+	var globalCaps map[string]config.UpstreamModelCapability
+	if cfgManager != nil {
+		globalCaps = cfgManager.UpstreamModelCapabilitiesSnapshot()
+	}
+	resolved := config.ResolveUpstreamCapability(model, upstream, globalCaps)
+	ctx.ListPricing = resolved.Capability.Pricing
 	ctx.ListCostUSD = metrics.CalculateTokenCostUSDWithPricing(resolved.Capability.Pricing, 0, 0, 0, 0)
 
 	// 构建全局汇率图（用于充值/渠道币种到 USD 的折算）。
@@ -691,7 +698,7 @@ func TryUpstreamWithAllKeys(
 			// 客户端/上游 subagent 可能发送超过模型上限的 max_tokens（如 Claude Code 默认 64000），
 			// 而部分平台（火山方舟 kimi 系列硬限 32768）会直接 400。此处静默下调到模型上限，
 			// 使请求成功而非被调度过滤为"无可用渠道"。
-			if cap := config.ResolveUpstreamCapability(capabilityRequestModel, upstream, cfgManager.GetConfig().UpstreamModelCapabilities); cap.Capability.MaxOutputTokens > 0 {
+			if cap := config.ResolveUpstreamCapability(capabilityRequestModel, upstream, cfgManager.UpstreamModelCapabilitiesSnapshot()); cap.Capability.MaxOutputTokens > 0 {
 				if clamped, changed := clampMaxTokensInBody(attemptBody, kind, cap.Capability.MaxOutputTokens); changed {
 					attemptBody = clamped
 					RequestLogf(c, "[%s-Clamp] max_tokens 超过模型 %q 上限 %d，已下调", apiType, cap.ActualModel, cap.Capability.MaxOutputTokens)
@@ -950,7 +957,7 @@ func TryUpstreamWithAllKeys(
 			// 例如 Kimi K3/K2.7-code/K2.6 的 temperature/top_p/n 等为固定值，传入即 400。
 			// 约束数据随 model-registry 走 presetstore 刷新链路，运营者更新 JSON 即可生效，
 			// 不需要重新编译发版。
-			if paramCap := config.ResolveUpstreamCapability(attemptModel, upstream, cfgManager.GetConfig().UpstreamModelCapabilities); paramCap.Capability.ParamConstraints != nil {
+			if paramCap := config.ResolveUpstreamCapability(attemptModel, upstream, cfgManager.UpstreamModelCapabilitiesSnapshot()); paramCap.Capability.ParamConstraints != nil {
 				if stripped, applied := ApplyKnownParamConstraints(attemptBody, paramCap.Capability.ParamConstraints); len(applied) > 0 {
 					attemptBody = stripped
 					RestoreRequestBody(c, attemptBody)
@@ -1435,7 +1442,7 @@ func TryUpstreamWithAllKeys(
 						// 上游明确声明该模型或其 Codex 图片工具不受支持：限制该 Key 对这个实际模型的路由。
 						// 仅限制 (Key, 模型) 组合（持久化+定时恢复），保留 failover 换渠道，不连累该 Key 其他模型。
 						summary := errorBodySummaryForLog(apiType, resp.StatusCode, respBodyBytes)
-						if err := cfgManager.DisableKeyModel(executionAPIType, executionIndex, apiKey, actualAttemptModel, restrictionReason, summary); err != nil {
+						if err := cfgManager.DisableKeyModel(executionAPIType, executionIndex, apiKey, actualAttemptModel, restrictionReason, summary, ""); err != nil {
 							RequestLogf(c, "[%s-KeyModel] 限制 (Key,模型) 组合失败: %v", apiType, err)
 						}
 					}
@@ -1827,7 +1834,9 @@ func TryUpstreamWithAllKeys(
 					channelScheduler.UpdateConversationStatus(kind, streamingUserID, "active")
 				}
 				lastError = err
-				// 区分客户端错误和渠道故障
+				// 区分客户端错误和渠道故障；errors.As 匹配 rejected，防止未来
+				// provider 闭包包装后静默落入「真实渠道故障」分支被逐 Key 重放。
+				var rejected *UpstreamRequestRejectedError
 				if isClientSideError(err) {
 					// 客户端取消/断开：计入总请求数但不计入失败
 					metricsManager.RecordRequestFinalizeClientCancel(currentBaseURL, apiKey, metricsServiceType, requestID)
@@ -1835,6 +1844,19 @@ func TryUpstreamWithAllKeys(
 					RequestLogf(c, "[%s-Cancel] 请求已取消，停止渠道 failover", apiType)
 					// 完成日志记录（客户端取消）
 					CompleteLog(channelLogStore, metricsKey, logRequestID, http.StatusOK, false, "client canceled", isRetryAttempt)
+				} else if errors.As(err, &rejected) {
+					// 上游以流内错误对象明确拒绝本次请求（invalid_request / 上下文超长等
+					// 请求侧确定性错误）：与 HTTP 4xx 的「非 failover 错误」分支同一语义，
+					// 问题出在请求本身而非渠道-模型健康度。不逐 Key/渠道重放，也不做渠道级
+					// 惩罚（不标记 Key/URL 失败、不计模型级熔断），直接返回真实错误。
+					metricsManager.RecordRequestFinalizeFailureWithClass(currentBaseURL, apiKey, metricsServiceType, requestID, metrics.FailureClassNonRetryable)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, metricsServiceType, executionKind)
+					CompleteLog(channelLogStore, metricsKey, logRequestID, http.StatusBadRequest, false, rejected.Error(), isRetryAttempt)
+					RequestLogf(c, "[%s-RequestRejected] 上游以流内错误拒绝请求 (Key: %s): %s", apiType, utils.MaskAPIKey(apiKey), rejected.Error())
+					// 预检阶段 SSE 头未写：先按客户端协议写出错误体再返回，兑现
+					// handled=true 的「已向客户端写回响应」契约，避免终态错误空 200。
+					RespondUpstreamRequestRejected(c, apiType, rejected)
+					return true, "", 0, nil, usage, err
 				} else if errors.Is(err, ErrEmptyStreamResponse) || errors.Is(err, ErrInvalidResponseBody) || errors.Is(err, ErrEmptyNonStreamResponse) || errors.Is(err, ErrStreamFirstContentTimeout) || errors.Is(err, ErrStreamStalled) {
 					// 空响应（流式 / 非流式）或无效响应体（如 HTML）或流式首字超时/断流：Header 未发送，可安全 failover
 					retryKey := currentBaseURL + "|" + apiKey
@@ -1880,7 +1902,7 @@ func TryUpstreamWithAllKeys(
 						// 余额/配额类：降级为 (Key,模型) 组合级限制，覆盖全部模型时才升级整 Key 拉黑。
 						balanceRestricted = true
 						if HandleBalanceClassKeyFailure(cfgManager, upstream, executionAPIType, executionIndex,
-							apiKey, restrictModel, blErr.Reason, blErr.Message, "") {
+							apiKey, restrictModel, blErr.Reason, blErr.Message, blErr.RecoverAt) {
 							RequestLogf(c, "[%s-Blacklist] SSE 流内余额/配额受限已覆盖全部模型，升级整 Key 拉黑 (Key: %s)",
 								apiType, utils.MaskAPIKey(apiKey))
 						}
@@ -2734,7 +2756,9 @@ func rewriteOutboundEffort(body []byte, target *autopilot.ResolvedRouteTarget, u
 		return body, false
 	}
 	cap := config.ResolveUpstreamCapability(target.Model, upstream, nil)
-	if cap.Known && cap.Capability.ThinkingMode == "adaptive_only" {
+	if cap.Known && config.ThinkingModeRejectsManualControl(cap.Capability.ThinkingMode) {
+		// adaptive_only / adaptive_always_on 由上游自行决定思考深度，不接受手动
+		// enabled/disabled：注入 thinking 参数会与上游策略冲突。
 		return body, false
 	}
 	style := effortInjectionStyle(kind, upstream)
@@ -2745,7 +2769,11 @@ func rewriteOutboundEffort(body []byte, target *autopilot.ResolvedRouteTarget, u
 	if err := json.Unmarshal(body, &reqMap); err != nil {
 		return body, false
 	}
-	config.ApplyReasoningParamStyle(reqMap, style, string(target.Effort))
+	thinkingMode := ""
+	if cap.Known {
+		thinkingMode = cap.Capability.ThinkingMode
+	}
+	config.ApplyReasoningParamStyleForModel(reqMap, style, string(target.Effort), thinkingMode)
 	config.NormalizeReasoningObjectForUpstream(reqMap, upstream)
 	effortBody, err := json.Marshal(reqMap)
 	if err != nil {

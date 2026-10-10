@@ -36,7 +36,9 @@ func handleStreamSuccess(
 		} else if errors.Is(err, common.ErrStreamStalled) {
 			common.RequestLogf(c, "[Chat-StreamStalled] 流式断流: 首字后 %dms 无活动，触发重试", timeouts.InactivityTimeoutMs)
 		}
-		return nil, err
+		// 预检阶段的任何非客户端错误 Header 均未写：统一归入 failover 家族，
+		// 避免裸传输错误/上游错误终结整个 failover 链。
+		return nil, common.ClassifyPreflightStreamError(err)
 	}
 	resp.Body = common.NewChunkChannelReadCloser(chunkChan, bodyErrChan, resp.Body)
 
@@ -129,7 +131,7 @@ func preflightChatStream(resp *http.Response, upstreamType string, timeouts comm
 	}
 
 	// 启动 goroutine 读取 body chunk。preflight 放行后继续由同一个 channel 驱动正常流式转发，避免丢 chunk。
-	chunkChan, bodyErrChan := common.StartBodyChunkReader(resp.Body, 32*1024, 16)
+	chunkChan, bodyErrChan := common.StartBodyChunkReader(resp.Body, 32*1024, 16, common.RequestDone(resp))
 
 	// 阶段A：首个有效内容等待超时
 	var firstContentTimer *time.Timer
@@ -198,8 +200,13 @@ func preflightChatStream(resp *http.Response, upstreamType string, timeouts comm
 		select {
 		case chunk, chunkOk = <-chunkChan:
 			if !chunkOk {
-				// chunkChan 关闭：body 读取完成
+				// chunkChan 关闭：body 读取完成。
+				// 整个预检期间从未检测到语义内容（usage-only / role-only / 空流）：
+				// Header 未写，按空响应进入 failover（对齐 messages/responses 语义）。
 				clearRemainder()
+				if !hasFirstContent {
+					return result, chunkChan, bodyErrChan, common.ErrEmptyStreamResponse
+				}
 				return result, chunkChan, bodyErrChan, nil
 			}
 		case err := <-bodyErrChan:
@@ -234,6 +241,23 @@ func preflightChatStream(resp *http.Response, upstreamType string, timeouts comm
 			wasInPhaseB := hasFirstContent
 			wasPendingToolCall := hasPendingToolCall()
 			lineSet := []string{line}
+			// 流内错误事件检测：HTTP 200 但 data 里携带错误对象（中转站常见）。
+			// 拉黑类错误返回 ErrBlacklistKey；请求侧确定性错误（invalid_request /
+			// 上下文超长等）返回终态错误，不做逐 Key 重放；其余错误按空响应语义
+			// 进入 failover，对齐 messages/responses 的预检行为，不再原样透传给客户端。
+			if strings.HasPrefix(line, "data:") {
+				jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				if reason, msg, recoverAt, isErr := common.DetectStreamDataError(jsonData); isErr {
+					clearRemainder()
+					if reason != "" {
+						return result, chunkChan, bodyErrChan, &common.ErrBlacklistKey{Reason: reason, Message: msg, RecoverAt: recoverAt}
+					}
+					if rejected := common.RequestSideStreamError(jsonData); rejected != nil {
+						return result, chunkChan, bodyErrChan, rejected
+					}
+					return result, chunkChan, bodyErrChan, fmt.Errorf("%w: %s", common.ErrEmptyStreamResponse, msg)
+				}
+			}
 			if malformed, name := detectMalformedChatStreamLines(lineSet, upstreamType, tracker, chatTracker); malformed {
 				result.malformedToolName = name
 				clearRemainder()
@@ -286,6 +310,11 @@ func preflightChatStream(resp *http.Response, upstreamType string, timeouts comm
 	}
 
 	clearRemainder()
+	// 预读达到 1MB 上限而退出：这里**刻意**保守放行，不与 EOF 路径同判空。
+	// HasOpenAIChatSemanticContent 只建模文本/思考/拒答/工具调用（含音频增量），
+	// 未建模的形态若在这里返回失败会被推进 failover，而它们此前能正常透传；
+	// 体积上限只约束预读，不扩大"判空"范围（与配额 unknown≠exhausted 同一条
+	// fail-open 纪律）。EOF 路径的空判定不受影响，见 TestPreflightChatStreamSizeCap。
 	return result, chunkChan, bodyErrChan, nil
 }
 

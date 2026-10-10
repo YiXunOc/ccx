@@ -122,3 +122,13 @@
     flex-direction: column;
   }
 }
+
+/* 上游余额探测结果行：key 掩码 + 余额 + 时间 */
+.balance-key-row {
+  padding: 2px 0;
+  gap: 8px;
+}
+
+.balance-key-mask {
+  min-width: 88px;
+}

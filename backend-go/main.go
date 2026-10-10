@@ -30,6 +30,7 @@ import (
 	channelsv2 "github.com/BenedictKing/ccx/internal/handlers/channels"
 	"github.com/BenedictKing/ccx/internal/handlers/chat"
 	"github.com/BenedictKing/ccx/internal/handlers/common"
+	"github.com/BenedictKing/ccx/internal/balanceprobe"
 	"github.com/BenedictKing/ccx/internal/handlers/copilot"
 	"github.com/BenedictKing/ccx/internal/handlers/gemini"
 	"github.com/BenedictKing/ccx/internal/handlers/images"
@@ -657,6 +658,7 @@ func main() {
 	var autopilotDB *sql.DB // Phase B.1: 暴露给 StateEventStore 复用
 	var autoDiscoveryRunner *autopilot.AutoDiscoveryRunner
 	var newApiSyncService *autopilot.NewApiSubscriptionSyncService
+	var quotaManager *quota.Manager // 配额真相管理器，暴露给管理路由做观测出口
 	{
 		autopilotStore, apErr := autopilot.NewProfileStore(paths.AutopilotDBPath)
 		if apErr != nil {
@@ -702,7 +704,7 @@ func main() {
 				autopilotManager.SetSmartRouter(smartRouter)
 
 				// 配额管理器：真相分级 + 懒重置饱和桶 + 响应头解析（§2 配额真相分级调度）
-				quotaManager := quota.NewManager()
+				quotaManager = quota.NewManager()
 				smartRouter.SetQuotaManager(quotaManager)
 
 				// configured 级生产接线（§7.3）：订阅画像的静态额度声明在配置变更
@@ -1191,6 +1193,21 @@ func main() {
 		log.Printf("[HealthCheck-Init] 指标持久化不可用，渠道保活验证未启动")
 	}
 
+	// 上游余额探测：周期/手动触发渠道 key 的上游余额查询（newapi_token/sub2api/newapi_billing），
+	// 明细落 key_health（check_kind=balance），聚合写配额真相 provider_api 级参与调度。
+	var balanceProbeManager *balanceprobe.Manager
+	if metricsStore != nil {
+		balanceProbeManager = balanceprobe.NewManager(
+			func() config.Config { return cfgManager.GetConfig() },
+			metricsStore,
+			quotaManager,
+			balanceprobe.Options{},
+		)
+		balanceProbeManager.Start()
+	} else {
+		log.Printf("[BalanceProbe-Init] 指标持久化不可用，上游余额探测未启动")
+	}
+
 	scheduledRecoveryStop := make(chan struct{})
 	go func() {
 		runScheduledRecovery := func(now time.Time, missedSlot time.Time) bool {
@@ -1368,6 +1385,10 @@ func main() {
 		apiGroup.GET("/presets", presetstore.Handler(presetstore.Default()))
 		apiGroup.GET("/presets/status", presetstore.StatusHandler(presetUpdater))
 
+		// 配额真相快照：全部渠道的来源分级/headroom/窗口重置时间/饱和状态。
+		// autopilot 关闭时 quotaManager 为 nil，返回空列表（fail-open）。
+		apiGroup.GET("/quota/channels", handlers.GetQuotaChannels(quotaManager))
+
 		apiGroup.POST("/channel-discovery", handlers.ChannelDiscoveryWithModelFetchers(cfgManager, discoveryModelFetchers))
 		// 快速探活：仅探一个真实模型以定 primaryKind，不做全量协议/能力探测。
 		apiGroup.POST("/channel-discovery-fast", handlers.ChannelDiscoveryFast(cfgManager))
@@ -1385,6 +1406,21 @@ func main() {
 			}
 			apiGroup.GET(base, healthCheckManager.ChannelHealthHandler(channelType))
 			apiGroup.POST(base+"/check", healthCheckManager.TriggerChannelCheckHandler(channelType))
+		}
+
+		// 上游余额探测管理 API（六类渠道）
+		registerChannelBalanceRoutes := func(channelType string) {
+			base := "/" + channelType + "/channels/:id/balance"
+			if balanceProbeManager == nil {
+				unavailable := func(c *gin.Context) {
+					c.JSON(http.StatusServiceUnavailable, gin.H{"error": "上游余额探测未启用（指标持久化不可用）"})
+				}
+				apiGroup.GET(base, unavailable)
+				apiGroup.POST(base+"/check", unavailable)
+				return
+			}
+			apiGroup.GET(base, balanceProbeManager.ChannelBalanceHandler(channelType))
+			apiGroup.POST(base+"/check", balanceProbeManager.TriggerChannelBalanceCheckHandler(channelType))
 		}
 
 		apiGroup.POST("/responses/channels/:id/copilot/diagnose", responses.DiagnoseCopilotChannel(cfgManager))
@@ -1421,6 +1457,7 @@ func main() {
 		apiGroup.GET("/messages/ping", messages.PingAllChannels(cfgManager))
 		apiGroup.POST("/messages/channels/:id/models", messages.GetChannelModels(cfgManager))
 		registerChannelHealthRoutes("messages")
+		registerChannelBalanceRoutes("messages")
 		apiGroup.GET("/messages/models/stats/history", handlers.GetModelStatsHistory(messagesMetricsManager))
 		apiGroup.GET("/messages/channels/:id/logs", handlers.GetChannelLogs(channelScheduler.GetChannelLogStore(scheduler.ChannelKindMessages), cfgManager, scheduler.ChannelKindMessages, channelScheduler.GetMessagesMetricsManager()))
 		apiGroup.GET("/messages/channels/:id/capability-snapshot", handlers.GetCapabilitySnapshot(cfgManager, "messages"))
@@ -1460,6 +1497,7 @@ func main() {
 		apiGroup.GET("/responses/ping", responses.PingAllChannels(cfgManager))
 		apiGroup.POST("/responses/channels/:id/models", responses.GetChannelModels(cfgManager))
 		registerChannelHealthRoutes("responses")
+		registerChannelBalanceRoutes("responses")
 		apiGroup.GET("/responses/models/stats/history", handlers.GetModelStatsHistory(responsesMetricsManager))
 		apiGroup.GET("/responses/channels/:id/logs", handlers.GetChannelLogs(channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses), cfgManager, scheduler.ChannelKindResponses, channelScheduler.GetResponsesMetricsManager()))
 		apiGroup.GET("/responses/channels/:id/capability-snapshot", handlers.GetCapabilitySnapshot(cfgManager, "responses"))
@@ -1499,6 +1537,7 @@ func main() {
 		apiGroup.GET("/gemini/ping", gemini.PingAllChannels(cfgManager))
 		apiGroup.POST("/gemini/channels/:id/models", gemini.GetChannelModels(cfgManager))
 		registerChannelHealthRoutes("gemini")
+		registerChannelBalanceRoutes("gemini")
 		apiGroup.GET("/gemini/models/stats/history", handlers.GetModelStatsHistory(geminiMetricsManager))
 		apiGroup.GET("/gemini/channels/:id/logs", handlers.GetChannelLogs(channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini), cfgManager, scheduler.ChannelKindGemini, channelScheduler.GetGeminiMetricsManager()))
 		apiGroup.GET("/gemini/channels/:id/capability-snapshot", handlers.GetCapabilitySnapshot(cfgManager, "gemini"))
@@ -1538,6 +1577,7 @@ func main() {
 		apiGroup.GET("/chat/ping", chat.PingAllChannels(cfgManager))
 		apiGroup.POST("/chat/channels/:id/models", chat.GetChannelModels(cfgManager))
 		registerChannelHealthRoutes("chat")
+		registerChannelBalanceRoutes("chat")
 		apiGroup.GET("/chat/models/stats/history", handlers.GetModelStatsHistory(chatMetricsManager))
 		apiGroup.GET("/chat/channels/:id/logs", handlers.GetChannelLogs(channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat), cfgManager, scheduler.ChannelKindChat, channelScheduler.GetChatMetricsManager()))
 		apiGroup.GET("/chat/channels/:id/capability-snapshot", handlers.GetCapabilitySnapshot(cfgManager, "chat"))
@@ -1578,6 +1618,7 @@ func main() {
 		apiGroup.GET("/images/ping", images.PingAllChannels(cfgManager))
 		apiGroup.POST("/images/channels/:id/models", images.GetChannelModels(cfgManager))
 		registerChannelHealthRoutes("images")
+		registerChannelBalanceRoutes("images")
 		apiGroup.GET("/images/models/stats/history", handlers.GetModelStatsHistory(imagesMetricsManager))
 		apiGroup.GET("/images/channels/:id/logs", handlers.GetChannelLogs(channelScheduler.GetChannelLogStore(scheduler.ChannelKindImages), cfgManager, scheduler.ChannelKindImages, channelScheduler.GetImagesMetricsManager()))
 
@@ -1611,6 +1652,7 @@ func main() {
 		apiGroup.GET("/vectors/ping", vectors.PingAllChannels(cfgManager))
 		apiGroup.POST("/vectors/channels/:id/models", vectors.GetChannelModels(cfgManager))
 		registerChannelHealthRoutes("vectors")
+		registerChannelBalanceRoutes("vectors")
 		apiGroup.GET("/vectors/models/stats/history", handlers.GetModelStatsHistory(vectorsMetricsManager))
 		apiGroup.GET("/vectors/channels/:id/logs", handlers.GetChannelLogs(channelScheduler.GetChannelLogStore(scheduler.ChannelKindVectors), cfgManager, scheduler.ChannelKindVectors, channelScheduler.GetVectorsMetricsManager()))
 

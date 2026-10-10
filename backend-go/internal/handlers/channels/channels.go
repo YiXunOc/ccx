@@ -218,6 +218,7 @@ type UpdateRequest struct {
 	ChannelCreditAmount           *float64                                  `json:"channelCreditAmount"`
 	MaxGroupMultiplier            *float64                                  `json:"maxGroupMultiplier"`
 	HistoricalImageTurnLimit      *int                                      `json:"historicalImageTurnLimit"`
+	BalanceCheck                  *config.ChannelBalanceCheckConfig         `json:"balanceCheck"`
 }
 
 // Update 更新渠道（按 ChannelUID 寻址，内部按 kind 路由）。
@@ -291,6 +292,7 @@ func (h *Handler) Update(c *gin.Context) {
 		ChannelCreditAmount:           req.ChannelCreditAmount,
 		MaxGroupMultiplier:            req.MaxGroupMultiplier,
 		HistoricalImageTurnLimit:      req.HistoricalImageTurnLimit,
+		BalanceCheck:                  req.BalanceCheck,
 	}
 
 	shouldResetMetrics, err := config.UpdateUpstreamByKind(h.cm, loc, updates)

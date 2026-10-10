@@ -545,6 +545,9 @@ func HasOpenAIChatSemanticContent(event string) bool {
 			if content, _ := delta["content"].(string); !IsEffectivelyEmptyStreamText(content) {
 				return true
 			}
+			if firstNonBlankString(delta, "refusal") {
+				return true
+			}
 			reasoning, _ := delta["reasoning_content"].(string)
 			if reasoning == "" {
 				reasoning, _ = delta["reasoning"].(string)
@@ -556,6 +559,12 @@ func HasOpenAIChatSemanticContent(event string) bool {
 				return true
 			}
 			if calls, ok := delta["tool_calls"].([]interface{}); ok && len(calls) > 0 {
+				return true
+			}
+			// 音频等多模态增量（如 {"audio":{"data":"<base64>","transcript":"..."}}）：
+			// 本检测器只建模文本/思考/工具调用，漏掉这类增量会把纯音频流判成空响应
+			// 并触发 failover。带非空对象即视为可交付内容。
+			if audio, ok := delta["audio"].(map[string]interface{}); ok && len(audio) > 0 {
 				return true
 			}
 		}
@@ -1346,7 +1355,9 @@ func HandleStreamResponse(
 	// 预检测：在发送 HTTP Header 之前缓冲事件并检查是否为空响应
 	preflight := PreflightStreamEvents(eventChan, errChan, timeouts, GetStreamTimeoutObserver(c))
 
-	// 流错误：排空 channel 后返回错误
+	// 流错误：排空 channel 后返回错误。
+	// provider 透传的裸上游错误（如 OpenAI 兼容上游的流内 error 对象）在此统一
+	// 归入 failover 家族，避免终结整个 failover 链（Header 未写，换 Key 安全）。
 	if preflight.HasError {
 		drainChannels(eventChan, errChan)
 		if errors.Is(preflight.Error, ErrStreamFirstContentTimeout) {
@@ -1354,7 +1365,7 @@ func HandleStreamResponse(
 		} else if errors.Is(preflight.Error, ErrStreamStalled) {
 			RequestLogf(c, "[Messages-StreamStalled] 流式断流: 首字后 %dms 无活动，触发重试", timeouts.InactivityTimeoutMs)
 		}
-		return nil, preflight.Error
+		return nil, ClassifyPreflightStreamError(preflight.Error)
 	}
 
 	// 空响应：Header 未发送，可安全重试
@@ -1367,7 +1378,7 @@ func HandleStreamResponse(
 		drainChannels(eventChan, errChan)
 		// 如果同时检测到拉黑条件，优先返回拉黑错误
 		if preflight.BlacklistReason != "" {
-			return nil, &ErrBlacklistKey{Reason: preflight.BlacklistReason, Message: preflight.BlacklistMessage}
+			return nil, &ErrBlacklistKey{Reason: preflight.BlacklistReason, Message: preflight.BlacklistMessage, RecoverAt: utils.ExtractQuotaRecoverAt(preflight.BlacklistMessage)}
 		}
 		return nil, streamPreflightEmptyError(preflight)
 	}
@@ -1375,7 +1386,7 @@ func HandleStreamResponse(
 	// 流中有拉黑错误但内容非空（如错误前有部分输出）：仍返回拉黑错误以触发 Key 拉黑
 	if preflight.BlacklistReason != "" {
 		drainChannels(eventChan, errChan)
-		return nil, &ErrBlacklistKey{Reason: preflight.BlacklistReason, Message: preflight.BlacklistMessage}
+		return nil, &ErrBlacklistKey{Reason: preflight.BlacklistReason, Message: preflight.BlacklistMessage, RecoverAt: utils.ExtractQuotaRecoverAt(preflight.BlacklistMessage)}
 	}
 
 	// 非空响应：正常流程

@@ -359,6 +359,17 @@ func isMiMoResponsesUpstream(upstream *UpstreamConfig) bool {
 
 // ApplyReasoningParamStyle 将统一的 reasoning effort 写成上游要求的参数形态。
 func ApplyReasoningParamStyle(req map[string]interface{}, style string, effort string) {
+	applyReasoningParamStyle(req, style, effort, "")
+}
+
+// ApplyReasoningParamStyleForModel 将统一 effort 写入指定模型的原生参数形态。
+// Claude adaptive 模型使用 thinking.type=adaptive 与 output_config.effort，
+// 其余模型保持既有协议写法。
+func ApplyReasoningParamStyleForModel(req map[string]interface{}, style string, effort string, thinkingMode string) {
+	applyReasoningParamStyle(req, style, effort, thinkingMode)
+}
+
+func applyReasoningParamStyle(req map[string]interface{}, style string, effort string, thinkingMode string) {
 	if req == nil {
 		return
 	}
@@ -372,11 +383,25 @@ func ApplyReasoningParamStyle(req map[string]interface{}, style string, effort s
 		}
 		if effort == "off" || effort == "none" || effort == "disabled" {
 			req["thinking"] = map[string]interface{}{"type": "disabled"}
+			delete(req, "output_config")
 			return
 		}
 		thinking, _ := req["thinking"].(map[string]interface{})
 		if thinking == nil {
 			thinking = make(map[string]interface{})
+		}
+		if strings.TrimSpace(thinkingMode) == "adaptive" {
+			thinking["type"] = "adaptive"
+			delete(thinking, "budget_tokens")
+			delete(thinking, "effort")
+			req["thinking"] = thinking
+			outputConfig, _ := req["output_config"].(map[string]interface{})
+			if outputConfig == nil {
+				outputConfig = make(map[string]interface{})
+			}
+			outputConfig["effort"] = effort
+			req["output_config"] = outputConfig
+			return
 		}
 		thinking["type"] = "enabled"
 		thinking["effort"] = effort
@@ -744,6 +769,7 @@ func (u *UpstreamConfig) Clone() *UpstreamConfig {
 		c := *u.Racing
 		cloned.Racing = &c
 	}
+	cloned.BalanceCheck = cloneChannelBalanceCheckConfig(u.BalanceCheck)
 
 	return &cloned
 }

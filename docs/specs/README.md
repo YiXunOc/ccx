@@ -10,7 +10,7 @@
 | [autopilot.md](./autopilot.md) | Autopilot 智能路由 | 模型画像、渠道选择、硬约束、失败学习、自适应并发、TTFB 拥塞 |
 | [logical-channel.md](./logical-channel.md) | 同站多协议合一 | 数据模型、归组逻辑、CRUD、Dashboard、删除原子性 |
 | [new-api-integration.md](./new-api-integration.md) | New-API 多账号集成 | 账号/Key/凭证模型、verify/provision、渠道纳入调度 |
-| [healthcheck.md](./healthcheck.md) | 火山 Plan 健康探针 | L1/L2 探针、动态频率、稀疏模型、恢复、凭证回填 |
+| [healthcheck.md](./healthcheck.md) | 火山 Plan 健康探针 | L1/L2 探针、动态频率、稀疏模型、恢复、凭证回填、余额探测姊妹功能（§10） |
 | [racing.md](./racing.md) | 竞速模式（影子请求） | 策略表、阈值注册表、五元组候选、提交闸门、败者治理、配置面 |
 | [channel-data-model-v2.md](./channel-data-model-v2.md) | 渠道粒度重构 | Channel→Key→Endpoint→Model、能力/凭证边界、new-api 分组共享、三步迁移 |
 | [public-key-routing.md](./public-key-routing.md) | 公开与临时 Key 优先消耗 | Key 级零成本、机会性消耗策略、FastDecay 回退、API/UI 与迁移 |
@@ -22,7 +22,7 @@
 | [guardrails.md](./guardrails.md) | Guardrails 最小集 | credential-masker 起步、优先级注册表、fail-open、统一日志脱敏入口（转发路径不改写） |
 | [request-compression.md](./request-compression.md) | 请求侧工具输出压缩 | Classifier 分类、Filter 表驱动、FidelityGate 保真门、膨胀回退、Plan 开关层级、遥测闭环 |
 | [omniroute-benchmark-upgrades.md](./omniroute-benchmark-upgrades.md) | 对标 OmniRoute 增强规划 | 配额真相分级调度、请求侧工具输出压缩、guardrails 最小集、路由预演升级、Tier-2/3 backlog 与不跟进决策 |
-| [quota-truth-scheduling.md](./quota-truth-scheduling.md) | 配额真相分级与按余量调度 | Truth 五级+来源优先级、懒重置饱和桶、SmartRouter quotaHeadroom 因子、scheduler 沉底排序、前端真相等级列 |
+| [quota-truth-scheduling.md](./quota-truth-scheduling.md) | 配额真相分级与按余量调度 | Truth 五级+来源优先级、懒重置饱和桶、SmartRouter quotaHeadroom 因子、scheduler 沉底排序、渠道 key 余额探测接入、前端真相等级列 |
 | [route-preview.md](./route-preview.md) | 路由预演升级 | 请求体直喂的零上游请求路由预演、SmartRouter + scheduler 两层对齐、前端 DiagnosePanel 升级 |
 | [implementation-gap-remediation-plan.md](./implementation-gap-remediation-plan.md) | Specs 实现缺口修复计划 | 上下文溢出、配额状态、Route Preview、配额展示与兼容缓存运维闭环 |
 

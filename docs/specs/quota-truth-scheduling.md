@@ -65,7 +65,12 @@ CCX 的调度系统已有质量、稳定性、速度、成本、场景域等多�
                         │  Subscription /      │  provider_api 级
                         │  Console Fetcher    │─────────────┐
                         └─────────────────────┘             │
-                                                              ▼
+                                                            │
+                        ┌─────────────────────┐             │
+                        │  balanceprobe       │  provider_api 级
+                        │  （渠道 key 余额探测 │─────────────┤
+                        │   聚合 Σ 写入）      │             │
+                        └─────────────────────┘             ▼
 ┌──────────────┐  response_headers  ┌──────────────────────────────────┐
 │  Upstream    │──────────────────▶│  quota.Manager                   │
 │  Response    │                    │  ┌─────────────────────────────┐ │
@@ -219,6 +224,13 @@ if s.quotaManager != nil && upstream.ChannelUID != "" {
 
 这是最高可信度来源，每个维度有 provider_api 数据时就不会被更低优先级来源覆盖。
 
+**渠道 key 余额探测（`internal/balanceprobe/`，2026-10-03 起）**：用渠道持有的推理 key 直接调上游余额接口（探测器 `internal/upstreamprobe/balance.go`，支持 auto/newapi_token/sub2api/newapi_billing 四种模式，auto 按响应 schema 特征识别并记忆 provider）。与订阅级 fetcher 的区别：
+
+- **粒度与聚合**：逐 key 探测、明细落 `key_health`（check_kind=`balance`），渠道级聚合 Σlimit/Σused/Σremaining 后调用 `UpdateChannelProviderAPI(channelUID, "probe:"+channelUID, ...)`——单 key 耗尽不误杀整渠道，全 key 耗尽才判 exhausted；全部 unlimited 时不写数值维度（中性分 fail-open）。
+- **单位**：newapi_token 返回原始 quota 点，写 `DimCredits`（credits）并按渠道级 `QuotaPerUnit`（默认 500000）换算写 `DimCurrency`（USD）；sub2api/billing 直接 USD。
+- **调度与配置**：独立 Manager（1min 扫描 + 2 worker，到期判定读 key_health，重启恢复）；全局/渠道级 `balanceCheck` 配置，newapi 订阅托管渠道（`AutoManagedKind="new_api"`）默认开启 auto，间隔硬下限 30min；管理端点 `GET/POST /api/{type}/channels/:id/balance(/check)`。探测只读不拉黑。
+- **已知口径边界**：newapi_billing 模式受上游站点 `DisplayTokenStatEnabled`/展示单位影响（scope 记 unknown，数字可能非 USD）；sub2api 订阅模式可能无 remaining（仍算识别成功，避免 auto 每轮全序列重探）。
+
 ### 7.2 response_headers 级
 
 响应头解析挂在 `ratelimit.SetUpstreamSignalCallback` 同一挂点（与速率发现器共享回调），调用 `UpdateChannelResponseHeaders()`。
@@ -306,6 +318,7 @@ cd backend-go && make test && go build ./...
 | `scheduler/select.go` | 沉底排序 | `quotaManager.IsChannelSaturated()` → quotaSunk 列表 |
 | `ratelimit/hints.go` | 共享观测管道 | `SetUpstreamSignalCallback` 同一挂点 |
 | `autopilot/subscription_balance_fetcher.go` | provider_api 数据源 | FetchBalance 结果 → `UpdateChannelProviderAPI()` |
+| `balanceprobe`（internal/balanceprobe + upstreamprobe/balance.go） | provider_api 数据源 | 渠道 key 余额探测聚合 → `UpdateChannelProviderAPI("probe:"+channelUID)`，明细落 key_health |
 | `config.MultiplierSource` | configured 数据源 | newapi multiplier 同步 → `UpdateChannelConfigured()` |
 | TTFB 拥挤度（未来） | 共享采集管道 | `ObservationCollector` 接口预留 |
 
