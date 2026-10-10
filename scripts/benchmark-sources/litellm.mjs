@@ -93,6 +93,7 @@ export const LITELLM_MODEL_MAP = {
   'claude-opus-5': 'claude-opus-5',
   // Claude Opus 5.5（2026-09-22 发布）：litellm slug 与 canonical 同名
   'claude-opus-5-5': 'claude-opus-5-5',
+  'claude-sonnet-5-5': 'claude-sonnet-5-5',
   'claude-sonnet-5': 'claude-sonnet-5',
   'claude-sonnet-4-6': 'claude-sonnet-4-6',
   'claude-haiku-4-5-20251001': 'claude-haiku-4-5',
@@ -104,11 +105,15 @@ export const LITELLM_MODEL_MAP = {
   'claude-fable-5-1': 'claude-fable-5-1',
   // GPT（pattern 用点号）
   'gpt-6-astra': 'gpt-6-astra',
-  'gpt-6': 'gpt-6-astra',
-  'astra': 'gpt-6-astra',
+  // 不登记 'gpt-6' / 'astra' 简写：litellm 数据侧 key 必须是真实存在的上游 slug
+  // （extractModelInfo 直接 data[name] 索引），不是别名；上游只提供 gpt-6-astra /
+  // gpt-6-sol / gpt-6-luna / gpt-6.1-sol。登记不存在的前瞻键只会每轮触发
+  // [MAPPED-KEY-MISSING] 噪声。别名式简写只在 deepswe/benchlm 等查表式映射中有意义。
   // GPT-6 Sol/Luna（2026-09-22 发布）：litellm slug 与 canonical 同名
   'gpt-6-sol': 'gpt-6-sol',
   'gpt-6-luna': 'gpt-6-luna',
+  // GPT-6.1 Sol（2026-09-29 发布）：litellm slug 保留点号
+  'gpt-6.1-sol': 'gpt-6.1-sol',
   'gpt-5.6-sol': 'gpt-5.6-sol',
   'gpt-5.6-terra': 'gpt-5.6-terra',
   'gpt-5.6-luna': 'gpt-5.6-luna',
@@ -133,7 +138,10 @@ export const LITELLM_MODEL_MAP = {
   'zai/glm-5.1': 'glm-5.1',
   'dashscope/qwen-coder': 'qwen3-coder',
   'dashscope/qwen-max': 'qwen3-max',
-  'moonshot/kimi-k2-thinking': 'kimi-k2-thinking',
+  // kimi-k2-thinking 上游裸 key 已改为 moonshot.kimi-k2-thinking（bedrock_converse，cacheRead=0 会污染缓存价），
+  // 改用 OpenRouter 托管 key：定价 0.6/2.5/0.15 与 registry 官方手工价完全一致，cacheRead 0.15 吻合；maxOutputTokens
+  // 上游 98304 < registry 262144，mergeLitellmData 有 !cap.maxOutputTokens 守卫不会降级。
+  'openrouter/moonshotai/kimi-k2-thinking': 'kimi-k2-thinking',
   // kimi-k2.7-code 的裸 key 已从上游移除，改用 Cloudflare 托管 key（定价与官方一致 0.95/4/0.19，ctx 256K）
   'cloudflare/@cf/moonshotai/kimi-k2.7-code': 'kimi-k2.7-code',
   // kimi-k3 在 litellm 仅有 Azure AI Foundry 托管价（高于官方直连），故意不映射：

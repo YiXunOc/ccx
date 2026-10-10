@@ -406,6 +406,9 @@ func applyUpstreamUpdateFields(upstream *UpstreamConfig, updates UpstreamUpdate)
 		racingUpdate := *updates.Racing
 		upstream.Racing = &racingUpdate
 	}
+	if updates.BalanceCheck != nil {
+		upstream.BalanceCheck = cloneChannelBalanceCheckConfig(updates.BalanceCheck)
+	}
 	if updates.InsecureSkipVerify != nil {
 		upstream.InsecureSkipVerify = *updates.InsecureSkipVerify
 	}

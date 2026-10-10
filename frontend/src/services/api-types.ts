@@ -226,6 +226,59 @@ export interface ModelPricingTier {
 
 export type ProtocolModelPreferences = Partial<Record<ChannelKind, string[]>>
 
+// 渠道级上游余额探测配置（对应后端 ChannelBalanceCheckConfig）
+export interface ChannelBalanceCheckConfig {
+  enabled?: boolean        // 渠道级开关（nil=继承全局/托管默认：newapi 托管渠道默认开）
+  provider?: string        // 上游类型：auto | newapi_token | sub2api | newapi_billing（空=auto）
+  intervalMinutes?: number // 探测间隔（分钟，0=继承全局默认 6h，下限 30）
+  quotaPerUnit?: number    // new-api quota 点→USD 换算比率（0=默认 500000）
+}
+
+// 余额探测端点类型选项（label 由 i18n 提供）
+export const BALANCE_PROVIDER_VALUES = ['auto', 'newapi_token', 'sub2api', 'newapi_billing'] as const
+
+// GET /api/{type}/channels/:id/balance 响应
+export interface ChannelBalanceView {
+  channelType: string
+  channelId: string
+  channelUid?: string
+  policy: {
+    enabled: boolean
+    intervalMinutes: number
+    provider: string
+    timeoutMs: number
+    quotaPerUnit: number
+  }
+  records: Array<{
+    keyMask: string
+    status: string
+    lastCheckAtMs: number
+    consecutiveFailures: number
+    detail: {
+      provider?: string
+      scope?: string
+      remaining?: number
+      used?: number
+      limit?: number
+      originalUnit?: string
+      usd?: number
+      unlimited?: boolean
+      error?: string
+    }
+    rateWindows?: Array<{ window: string; limit: number; used: number; remaining: number; resetAtMs?: number }>
+  }>
+  quotaValues: Array<{
+    dimension: string
+    limit?: number
+    used?: number
+    remaining?: number
+    unit?: string
+    source: string
+    resetAtMs?: number
+    observedAtMs?: number
+  }>
+}
+
 export interface Channel {
   name: string
   accountUid?: string                // 自动托管账号稳定身份，同一 provider 的多协议渠道共享
@@ -297,6 +350,7 @@ export interface Channel {
   latencyTestTime?: number   // 延迟测试时间戳（用于 5 分钟后自动清除显示）
   lowQuality?: boolean       // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
   racing?: { enabled?: boolean }  // 渠道级竞速参与开关（不参与=不做主触发也不做影子目标）
+  balanceCheck?: ChannelBalanceCheckConfig  // 渠道级上游余额探测配置（nil=继承全局与托管默认）
   injectDummyThoughtSignature?: boolean  // Gemini 特定：为 functionCall 注入 dummy thought_signature（兼容第三方 API）
   stripThoughtSignature?: boolean        // Gemini 特定：移除 thought_signature 字段（兼容旧版 Gemini API）
   passbackReasoningContent?: boolean     // Claude 协议特定：将 thinking 块转为 reasoning_content 回传（兼容 mimo 等上游）
@@ -352,6 +406,8 @@ export interface ChannelProtocolRoute {
   apiKeys?: string[]
   apiKeyConfigs?: APIKeyConfig[]
   disabledApiKeys?: DisabledKeyInfo[]
+  disabledKeyModels?: DisabledKeyModelInfo[]
+  disabledGroupModels?: DisabledGroupModelInfo[]
   supportedModels?: string[]
   modelInventoryKnown?: boolean
   discoveredModels?: string[]
@@ -2355,6 +2411,12 @@ export interface ManifestDriftPayload {
   added?: string[]
   /** 移除模型 */
   removed?: string[]
+  /** 发现来源端点（回填上下文，可选） */
+  baseURL?: string
+  /** 清单来源（如 control_plane，可选） */
+  source?: string
+  /** 发现时间 RFC3339（可选） */
+  discoveredAt?: string
 }
 
 /** capability_drift 事件 payload */

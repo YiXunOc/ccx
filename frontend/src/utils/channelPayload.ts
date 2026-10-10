@@ -75,6 +75,8 @@ export interface ChannelFormLike {
   fastMode: boolean
   customHeaders: Record<string, string>
   proxyUrl: string
+  racing?: { enabled?: boolean }
+  balanceCheck?: Channel['balanceCheck']
   costMultiplier?: string | number | null
   maxGroupMultiplier?: string | number | null
   channelPaymentCurrency?: string | null
@@ -583,6 +585,11 @@ export function buildChannelPayload(
 
   // 用户自定义标签（始终发送，空数组用于清空标签）
   channelData.tags = (form.tags || []).map(t => t.trim()).filter(Boolean)
+
+  // 渠道级上游余额探测配置：仅在表单携带时发送（未配置=继承全局/托管默认）
+  if (form.balanceCheck) {
+    channelData.balanceCheck = form.balanceCheck
+  }
 
   if (deduplicatedUrls.length > 1) {
     channelData.baseUrls = deduplicatedUrls

@@ -388,6 +388,178 @@ func isInsufficientBalanceCode(code string) bool {
 	return false
 }
 
+// streamErrorPayload 是从单条 SSE data JSON 中提取的上游错误载荷。
+type streamErrorPayload struct {
+	errType  string
+	errCode  string
+	errMsg   string
+	hasError bool
+}
+
+// parseStreamErrorPayload 解析单条 SSE data JSON 的错误形态（DetectStreamDataError
+// 与 RequestSideStreamError 的唯一解析入口）：
+//   - OpenAI/Gemini 风格：顶层 "error" 键（对象或字符串）
+//   - Claude 风格：顶层 type=="error"（详情在 error 对象或退化到 message 键）
+//   - Responses 风格：type=="response.failed"/"response.error"（详情在 response.error）
+func parseStreamErrorPayload(jsonData string) streamErrorPayload {
+	jsonData = strings.TrimSpace(jsonData)
+	if jsonData == "" || jsonData == "[DONE]" {
+		return streamErrorPayload{}
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+		return streamErrorPayload{}
+	}
+
+	eventType, _ := data["type"].(string)
+	var p streamErrorPayload
+
+	if errObj, ok := data["error"].(map[string]interface{}); ok {
+		p.errType, _ = errObj["type"].(string)
+		p.errMsg, _ = errObj["message"].(string)
+		if code, ok := errObj["code"].(string); ok {
+			p.errCode = code
+		} else if codeNum, ok := errObj["code"].(float64); ok {
+			p.errCode = fmt.Sprintf("%d", int(codeNum))
+		}
+		p.hasError = true
+	} else if errStr, ok := data["error"].(string); ok {
+		p.errMsg = errStr
+		p.hasError = true
+	} else if eventType == "error" {
+		// Claude 退化形态：type=="error" 且错误详情在顶层 message
+		if msg, ok := data["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			p.errMsg = msg
+			p.hasError = true
+		}
+	} else if eventType == "response.failed" || eventType == "response.error" {
+		if response, ok := data["response"].(map[string]interface{}); ok {
+			if errObj, ok := response["error"].(map[string]interface{}); ok {
+				p.errType, _ = errObj["type"].(string)
+				p.errMsg, _ = errObj["message"].(string)
+				p.errCode, _ = errObj["code"].(string)
+			}
+		}
+		p.hasError = true
+	}
+
+	return p
+}
+
+// DetectStreamDataError 检测单条 SSE data JSON 是否为错误事件，并复用拉黑分类词汇表。
+// 覆盖 chat/gemini 客户端路径的原始上游错误形态（这两个协议的预检测发生在
+// 协议转换之前，只能按原始 data 识别）。
+//
+// jsonData 为去掉 "data:" 前缀后的 JSON 文本；[DONE] 与普通内容 chunk 返回 isErr=false。
+// isErr=true 且 reason 非空表示应拉黑 Key（recoverAt 为上游文案中的恢复时间，可为空）；
+// isErr=true 且 reason 为空表示普通上游错误（Header 未写，可安全 failover）。
+func DetectStreamDataError(jsonData string) (reason string, message string, recoverAt string, isErr bool) {
+	p := parseStreamErrorPayload(jsonData)
+	if !p.hasError {
+		return "", "", "", false
+	}
+	errMsg := p.errMsg
+	if strings.TrimSpace(errMsg) == "" {
+		errMsg = "upstream returned an error event"
+	}
+
+	// 拉黑分类复用 DetectStreamBlacklistError 的词汇表，保持单一事实源。
+	// type 缺失时用 code 回填（与 responses 预检的 detectResponsesErrorBlacklist
+	// 及 ShouldBlacklistKey 的 code 兜底语义一致）。
+	payloadType := p.errType
+	if strings.TrimSpace(payloadType) == "" {
+		payloadType = p.errCode
+	}
+	payload, err := json.Marshal(map[string]interface{}{
+		"type": "error",
+		"error": map[string]interface{}{
+			"type":    payloadType,
+			"code":    p.errCode,
+			"message": errMsg,
+		},
+	})
+	if err == nil {
+		if r, m := DetectStreamBlacklistError("event: error\ndata: " + string(payload) + "\n\n"); r != "" {
+			return r, m, utils.ExtractQuotaRecoverAt(m), true
+		}
+	}
+	return "", truncateMsg(errMsg), "", true
+}
+
+// requestSideStreamErrorCodes 请求侧确定性错误的 type/code 词汇表。
+// 与 HTTP 4xx 的「非 failover 错误」分支（invalid_request / bad_request / 内容审核）
+// 同一语义：问题出在请求本身，换 Key、渠道、模型都不会让同一个畸形请求成功。
+//
+// 仅收录与渠道/模型无关的请求形态错误。像 model_not_found、unsupported_parameter、
+// 端点不兼容这类可能被其他渠道正常服务的错误必须继续 failover，不得进入本表。
+var requestSideStreamErrorCodes = map[string]struct{}{
+	"invalid_request_error":    {},
+	"invalid_request":          {},
+	"bad_request":              {},
+	"bad_request_error":        {},
+	"context_length_exceeded":  {},
+	"string_above_max_length":  {},
+	"request_too_large":        {},
+	"prompt_is_too_long":       {},
+	"content_policy_violation": {},
+	"content_filter_triggered": {},
+}
+
+// RequestSideStreamError 判定单条 SSE data JSON 是否为请求侧确定性错误。
+// 命中时返回带原始 type/code/message 的错误，调用方应把它当作终态返回，
+// 不再逐 Key/渠道重放。只按上游明确给出的 type / code 结构化字段判定，
+// 不做错误文案猜测，避免把渠道侧问题误判为终态。
+func RequestSideStreamError(jsonData string) *UpstreamRequestRejectedError {
+	p := parseStreamErrorPayload(jsonData)
+	if !p.hasError {
+		return nil
+	}
+	if !isRequestSideStreamErrorCode(p.errType) && !isRequestSideStreamErrorCode(p.errCode) {
+		return nil
+	}
+	errMsg := strings.TrimSpace(p.errMsg)
+	if errMsg == "" {
+		errMsg = "upstream rejected the request"
+	}
+	return &UpstreamRequestRejectedError{Type: p.errType, Code: p.errCode, Message: truncateMsg(errMsg)}
+}
+
+func isRequestSideStreamErrorCode(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return false
+	}
+	_, ok := requestSideStreamErrorCodes[normalized]
+	return ok
+}
+
+// ClassifyPreflightStreamError 将预检测阶段的流错误统一映射为 failover 家族错误。
+// 预检测完成前 Header 未写，任何非客户端、非哨兵错误（provider 裸包装的上游错误
+// 事件、传输层错误）都可以安全换 Key/渠道重试；统一归入 ErrEmptyStreamResponse
+// 语义，避免落入 failover 执行器的"真实渠道故障"分支直接终结整个 failover 链。
+func ClassifyPreflightStreamError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if isClientSideError(err) {
+		return err
+	}
+	var blErr *ErrBlacklistKey
+	var rejected *UpstreamRequestRejectedError
+	switch {
+	case errors.Is(err, ErrStreamFirstContentTimeout),
+		errors.Is(err, ErrStreamStalled),
+		errors.Is(err, ErrEmptyStreamResponse),
+		errors.Is(err, ErrInvalidResponseBody),
+		errors.Is(err, ErrEmptyNonStreamResponse),
+		errors.Is(err, ErrRacingSuperseded),
+		errors.As(err, &blErr),
+		errors.As(err, &rejected):
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrEmptyStreamResponse, err)
+}
+
 // truncateMsg 截断消息（最多200字符）
 func truncateMsg(msg string) string {
 	if len(msg) > 200 {

@@ -263,6 +263,13 @@ func BuiltinAgentModelProfiles() map[string]AgentModelProfile {
 			"GPT-6 Sol", 272000, 1050000, 128000, "tokens",
 			[]string{"none", "low", "medium", "high", "xhigh", "max"}, false,
 		),
+		// GPT-6.1 Sol（2026-09-29 发布）为独立次代模型（不归并进 gpt-6-sol）：
+		// 官方 effort 档去掉 none（low~max 五档）；工具调用仅限 Responses API，
+		// Chat Completions 不再支持 function calling；cached input 降为 input 的 5%。
+		"gpt-6.1-sol": builtinGPTAgentModelProfile(
+			"GPT-6.1 Sol", 272000, 1050000, 128000, "tokens",
+			[]string{"low", "medium", "high", "xhigh", "max"}, false,
+		),
 		"gpt-6-luna": builtinGPTAgentModelProfile(
 			"GPT-6 Luna", 272000, 1050000, 128000, "tokens",
 			[]string{"none", "low", "medium", "high", "xhigh", "max"}, false,
@@ -272,6 +279,19 @@ func BuiltinAgentModelProfiles() map[string]AgentModelProfile {
 			ContextWindowTokens: 200000,
 			MaxOutputTokens:     64000,
 			ReasoningEfforts:    []string{"extended"},
+		},
+		// Haiku 5.5 是独立模型（非 Haiku 4.5 别名），同时登记点号/连字符写法。
+		"claude-haiku-5-5*": {
+			DisplayName:         "Claude Haiku 5.5",
+			ContextWindowTokens: 1000000,
+			MaxOutputTokens:     128000,
+			ReasoningEfforts:    []string{"low", "medium", "high", "xhigh", "max"},
+		},
+		"claude-haiku-5.5*": {
+			DisplayName:         "Claude Haiku 5.5",
+			ContextWindowTokens: 1000000,
+			MaxOutputTokens:     128000,
+			ReasoningEfforts:    []string{"low", "medium", "high", "xhigh", "max"},
 		},
 		"claude-sonnet-4-5*": {
 			DisplayName:         "Claude Sonnet 4.5",
@@ -318,6 +338,19 @@ func BuiltinAgentModelProfiles() map[string]AgentModelProfile {
 		// Opus 5.5 是独立模型（非 Opus 5 别名）；pattern 更长，resolvePatternValue 长度降序保证优先命中。
 		"claude-opus-5-5*": {
 			DisplayName:         "Claude Opus 5.5",
+			ContextWindowTokens: 1000000,
+			MaxOutputTokens:     128000,
+			ReasoningEfforts:    []string{"low", "medium", "high", "xhigh", "max"},
+		},
+		// Sonnet 5.5 是独立模型（非 Sonnet 5 别名）；pattern 更长，resolvePatternValue 长度降序保证优先命中。
+		"claude-sonnet-5-5*": {
+			DisplayName:         "Claude Sonnet 5.5",
+			ContextWindowTokens: 1000000,
+			MaxOutputTokens:     128000,
+			ReasoningEfforts:    []string{"low", "medium", "high", "xhigh", "max"},
+		},
+		"claude-sonnet-5.5*": {
+			DisplayName:         "Claude Sonnet 5.5",
 			ContextWindowTokens: 1000000,
 			MaxOutputTokens:     128000,
 			ReasoningEfforts:    []string{"low", "medium", "high", "xhigh", "max"},
@@ -901,6 +934,18 @@ func resolveUpstreamCapabilityExact(requestModel, actualModel string, upstream *
 		return ResolvedUpstreamCapability{Capability: upstream.DefaultCapability, RequestModel: requestModel, ActualModel: actualModel, Source: "channel_default", Known: true}
 	}
 	return ResolvedUpstreamCapability{RequestModel: requestModel, ActualModel: actualModel}
+}
+
+// ThinkingModeRejectsManualControl 判定该 thinkingMode 是否不接受手动 enabled/disabled
+// 控制：adaptive_only / adaptive_always_on 由上游自行决定思考深度，注入 thinking 参数
+// 会与上游策略冲突（严格上游直接 400）。所有出站注入点必须共用本判定，避免两处漂移。
+func ThinkingModeRejectsManualControl(mode string) bool {
+	switch strings.TrimSpace(mode) {
+	case "adaptive_only", "adaptive_always_on":
+		return true
+	default:
+		return false
+	}
 }
 
 // digitBoundaryDotDash 分别匹配数字间的点号与连字符，用于生成命名变体。

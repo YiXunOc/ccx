@@ -299,6 +299,131 @@
                   @update:model-value="updateForm({ maxGroupMultiplier: $event })"
                 />
               </div>
+
+              <!-- 上游余额探测：用渠道 Key 查询上游剩余额度，结果进配额真相参与调度 -->
+              <div class="mt-6">
+                <div class="text-subtitle-2 font-weight-medium mb-1">{{ t('channelEditor.balance.title') }}</div>
+                <div class="text-caption text-medium-emphasis mb-3">{{ t('channelEditor.balance.hint') }}</div>
+                <div class="proxy-direct-row" :class="{ 'proxy-direct-row--on': balanceProbeEnabled }">
+                  <v-icon size="20" class="proxy-direct-row-icon">mdi-wallet-outline</v-icon>
+                  <div class="flex-grow-1">
+                    <div class="text-body-2 font-weight-medium">{{ t('channelEditor.balance.enabled.label') }}</div>
+                    <div class="text-caption text-medium-emphasis">{{ t('channelEditor.balance.enabled.hint') }}</div>
+                  </div>
+                  <v-switch
+                    :model-value="balanceProbeEnabled"
+                    color="primary"
+                    density="compact"
+                    hide-details
+                    class="proxy-direct-row-switch"
+                    @update:model-value="updateBalanceEnabled"
+                  />
+                </div>
+                <template v-if="balanceProbeEnabled">
+                  <v-row dense class="mt-1">
+                    <v-col cols="12" sm="6">
+                      <v-select
+                        :model-value="balanceProbeProvider"
+                        :items="balanceProviderItems"
+                        :label="t('channelEditor.balance.provider.label')"
+                        :hint="t('channelEditor.balance.provider.hint')"
+                        persistent-hint
+                        variant="outlined"
+                        density="comfortable"
+                        @update:model-value="updateBalanceProvider"
+                      />
+                    </v-col>
+                    <v-col cols="12" sm="6">
+                      <v-text-field
+                        :model-value="form.balanceCheck?.intervalMinutes ?? null"
+                        :label="t('channelEditor.balance.interval.label')"
+                        :hint="t('channelEditor.balance.interval.hint')"
+                        persistent-hint
+                        variant="outlined"
+                        density="comfortable"
+                        type="number"
+                        min="30"
+                        step="10"
+                        clearable
+                        @update:model-value="updateBalanceInterval"
+                      />
+                    </v-col>
+                  </v-row>
+                  <v-text-field
+                    v-if="balanceProbeProvider === 'newapi_token'"
+                    :model-value="form.balanceCheck?.quotaPerUnit ?? null"
+                    :label="t('channelEditor.balance.quotaPerUnit.label')"
+                    :hint="t('channelEditor.balance.quotaPerUnit.hint')"
+                    persistent-hint
+                    variant="outlined"
+                    density="comfortable"
+                    type="number"
+                    step="any"
+                    min="1"
+                    clearable
+                    @update:model-value="updateBalanceQuotaPerUnit"
+                  />
+                  <div v-if="balanceProbeProvider === 'newapi_billing'" class="text-caption text-medium-emphasis mt-1">
+                    {{ t('channelEditor.balance.billingCaveat') }}
+                  </div>
+
+                  <!-- 探测结果与手动刷新（仅编辑态：新建渠道保存后再探测） -->
+                  <div v-if="isEditing && props.channel" class="mt-4">
+                    <div class="d-flex align-center mb-1">
+                      <div class="text-caption text-medium-emphasis">{{ t('channelEditor.balance.lastResult') }}</div>
+                      <v-spacer />
+                      <v-tooltip content-class="ccx-tooltip" location="top">
+                        <template #activator="{ props: tooltipProps }">
+                          <v-btn
+                            v-bind="tooltipProps"
+                            icon
+                            size="small"
+                            variant="text"
+                            :loading="balanceChecking"
+                            :disabled="balanceLoading"
+                            @click="triggerBalanceProbe"
+                          >
+                            <v-icon size="18">mdi-refresh</v-icon>
+                          </v-btn>
+                        </template>
+                        {{ t('channelEditor.balance.refresh') }}
+                      </v-tooltip>
+                    </div>
+                    <div v-if="balanceLoading" class="text-caption text-medium-emphasis">{{ t('channelEditor.balance.loading') }}</div>
+                    <template v-else-if="balanceView">
+                      <div v-if="!balanceView.records.length" class="text-caption text-medium-emphasis">
+                        {{ t('channelEditor.balance.noRecords') }}
+                      </div>
+                      <div
+                        v-for="rec in balanceView.records"
+                        :key="rec.keyMask"
+                        class="d-flex align-center text-caption balance-key-row"
+                      >
+                        <span class="text-medium-emphasis balance-key-mask">{{ rec.keyMask }}</span>
+                        <span class="font-weight-medium">
+                          <template v-if="rec.detail.unlimited">{{ t('channelEditor.balance.unlimited') }}</template>
+                          <template v-else-if="rec.detail.remaining != null">
+                            {{ formatBalanceRemaining(rec.detail) }}
+                          </template>
+                          <template v-else>—</template>
+                        </span>
+                        <v-spacer />
+                        <span class="text-medium-emphasis">{{ formatBalanceTime(rec.lastCheckAtMs) }}</span>
+                      </div>
+                      <v-alert
+                        v-for="rec in balanceErrorRecords"
+                        :key="`err-${rec.keyMask}`"
+                        type="error"
+                        variant="tonal"
+                        density="compact"
+                        class="mt-1"
+                      >
+                        {{ rec.keyMask }}: {{ rec.detail.error }}
+                      </v-alert>
+                    </template>
+                  </div>
+                </template>
+              </div>
             </section>
           </v-form>
         </div>
@@ -338,7 +463,7 @@ import NewApiAccountPanel from './edit-channel/NewApiAccountPanel.vue'
 import { useEditChannelModal, type EditChannelModalEmits, type EditChannelModalProps } from '../composables/useEditChannelModal'
 import { useDialogHotkeys } from '../composables/useDialogHotkeys'
 import { ApiService } from '../services/api'
-import type { ManagedAccountChannel } from '../services/api-types'
+import { BALANCE_PROVIDER_VALUES, type Channel, type ChannelBalanceView, type ManagedAccountChannel } from '../services/api-types'
 import { buildNativeProtocolModelRoutes, loadLegacyManagedModelAvailability } from '../utils/channelModelAvailability'
 import { getManagedProviderWebsiteLinks } from '../utils/channelWebsite'
 import { isManagedProviderChannel, isOfficialProviderChannel, managedProviderChannelName, providerDisplayName } from '../utils/providerDisplay'
@@ -534,6 +659,102 @@ useDialogHotkeys(
     confirm: () => { void handleSubmitWithBind() },
   },
 )
+
+// ── 上游余额探测 ──
+// 解析后开关：显式配置优先；未配置时按后端托管默认（new_api 托管渠道默认开启）。
+const balanceProbeEnabled = computed(() =>
+  form.balanceCheck?.enabled ?? props.channel?.autoManagedKind === 'new_api'
+)
+const balanceProbeProvider = computed(() => form.balanceCheck?.provider || 'auto')
+const balanceProviderItems = BALANCE_PROVIDER_VALUES.map(value => ({
+  title: t(`channelEditor.balance.providerOption.${value}`),
+  value,
+}))
+const balanceErrorRecords = computed(() =>
+  (balanceView.value?.records ?? []).filter(rec => rec.status !== 'ok' && rec.detail.error),
+)
+
+const patchBalanceCheck = (patch: Partial<NonNullable<Channel['balanceCheck']>>) => {
+  updateForm({ balanceCheck: { enabled: true, ...(form.balanceCheck || {}), ...patch } })
+}
+const updateBalanceEnabled = (value: unknown) => {
+  if (value === true) {
+    patchBalanceCheck({ enabled: true })
+  } else {
+    // 显式关闭：保留其余字段，保存后渠道不再探测
+    updateForm({ balanceCheck: { ...(form.balanceCheck || {}), enabled: false } })
+  }
+}
+const updateBalanceProvider = (value: unknown) => {
+  if (typeof value === 'string' && value) patchBalanceCheck({ provider: value })
+}
+const updateBalanceInterval = (value: string | number | null) => {
+  const parsed = Number(value)
+  patchBalanceCheck({ intervalMinutes: Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : undefined })
+}
+const updateBalanceQuotaPerUnit = (value: string | number | null) => {
+  const parsed = Number(value)
+  patchBalanceCheck({ quotaPerUnit: Number.isFinite(parsed) && parsed > 0 ? parsed : undefined })
+}
+
+const balanceApi = new ApiService()
+const balanceView = ref<ChannelBalanceView | null>(null)
+const balanceLoading = ref(false)
+const balanceChecking = ref(false)
+
+const loadBalanceView = async () => {
+  const channel = props.channel
+  if (!channel) return
+  balanceLoading.value = true
+  try {
+    balanceView.value = await balanceApi.getChannelBalance(props.channelType, channel.index)
+  } catch {
+    balanceView.value = null
+  } finally {
+    balanceLoading.value = false
+  }
+}
+
+const triggerBalanceProbe = async () => {
+  const channel = props.channel
+  if (!channel || balanceChecking.value) return
+  balanceChecking.value = true
+  try {
+    await balanceApi.triggerChannelBalanceCheck(props.channelType, channel.index)
+    // 202 异步：探测通常 1-3s 内完成，延迟两轮拉取结果
+    setTimeout(() => { void loadBalanceView() }, 2000)
+    setTimeout(() => { void loadBalanceView() }, 5000)
+  } catch {
+    // 触发失败静默：结果区会在下一轮打开时重新拉取
+  } finally {
+    setTimeout(() => { balanceChecking.value = false }, 1500)
+  }
+}
+
+watch(
+  [() => props.show, () => props.channel?.index],
+  ([show]) => {
+    if (show && props.channel) {
+      balanceView.value = null
+      void loadBalanceView()
+    }
+  },
+  { immediate: true },
+)
+
+const formatBalanceRemaining = (detail: NonNullable<ChannelBalanceView['records'][number]['detail']>): string => {
+  const remaining = detail.remaining ?? 0
+  if (detail.originalUnit === 'credits') {
+    const usd = detail.usd != null ? `$${detail.usd.toFixed(2)}` : ''
+    return usd ? `${remaining.toLocaleString()} (${usd})` : `${remaining.toLocaleString()}`
+  }
+  return `$${remaining.toFixed(2)}`
+}
+
+const formatBalanceTime = (ms: number): string => {
+  if (!ms) return ''
+  return new Date(ms).toLocaleString()
+}
 </script>
 
 <style scoped src="./edit-channel/edit-channel-modal.css"></style>

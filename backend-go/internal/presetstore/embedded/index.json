@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "dataVersion": "v3.0.0+20260928",
+  "dataVersion": "v3.0.0+20261008",
   "shards": [
     {
       "kind": "subscriptionPreset",
@@ -11,8 +11,8 @@
     {
       "kind": "modelRegistry",
       "url": "./model-registry.json",
-      "sha256": "105c45b19fbea28ece907c2437c20564df0bd1ac3e84090b00d4069d0ab5a86e",
-      "sizeBytes": 439775
+      "sha256": "8ce839e53c0c8aaf293215e1ba353df03a913e0bf2807121370f434865e9012a",
+      "sizeBytes": 477655
     },
     {
       "kind": "channelPresets",
@@ -23,8 +23,8 @@
     {
       "kind": "builtinManifest",
       "url": "./builtin-manifest.json",
-      "sha256": "97117713cdb09faf0d1ed74c8921dbce504c9311d1a6d51778e01c546add6609",
-      "sizeBytes": 9169
+      "sha256": "c76f39d74bdac2761c69063df39ab3279aed3eeaa820dd39b7214513e91f74c7",
+      "sizeBytes": 9226
     }
   ]
 }

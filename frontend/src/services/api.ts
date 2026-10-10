@@ -12,6 +12,7 @@ import type {
   CapabilityTestJobStartResponse,
   CapabilityTestResult,
   Channel,
+  ChannelBalanceView,
   ChannelDashboardResponse,
   LlmChannelDashboardResponse,
   ChannelDiscoveryRequest,
@@ -240,6 +241,16 @@ export class ApiService {
     await this.request(`/messages/channels/${channelId}/keys/${encodeURIComponent(apiKey)}`, {
       method: 'DELETE'
     })
+  }
+
+  /** 查询渠道上游余额探测状态（策略 + key 明细 + 配额真相维度值） */
+  async getChannelBalance(channelType: string, channelId: number): Promise<ChannelBalanceView> {
+    return this.request(`/${channelType}/channels/${channelId}/balance`)
+  }
+
+  /** 手动触发渠道余额探测（202 异步，结果通过 getChannelBalance 查询） */
+  async triggerChannelBalanceCheck(channelType: string, channelId: number): Promise<{ queued: boolean }> {
+    return this.request(`/${channelType}/channels/${channelId}/balance/check`, { method: 'POST' })
   }
 
   // ============== 统一渠道 API（Channel Data Model v2 / ChannelUID 寻址）==============

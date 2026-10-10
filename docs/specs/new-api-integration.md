@@ -80,6 +80,8 @@ key 明文只存在渠道配置，new-api 相关字段：`QuotaGroup`、`GroupMu
 ### 3.3 渠道 `config.UpstreamConfig`（`config.go:19`）
 new-api 渠道标记：`AutoManaged=true`、`AutoManagedKind="new_api"`（行 128，取值 `"" | "generic" | "new_api"`）、`OriginType="relay"`、`OriginTier="second"`。
 
+`BalanceCheck *ChannelBalanceCheckConfig`（`config/balance_check.go`，2026-10-03）：渠道级上游余额探测配置；`AutoManagedKind="new_api"` 且未显式配置时默认开启 auto（探测端点与聚合语义见 §4.6）。
+
 ### 3.4 映射关系
 ```
 SubscriptionProfile (subscriptionUid, provider=new_api, accessToken, accounts[])
@@ -141,6 +143,8 @@ UpstreamConfig (channelUid, autoManagedKind=new_api)
 ### 4.6 余额刷新路径
 `handleRefreshSubscription`（`handlers_subscription.go:376`）对 `provider=="new_api"` 走 `syncService.SyncNow`，其他 provider 走 `SubscriptionRefreshWorker`（`subscription_refresh_worker.go`）。注意 `IsAutoRefreshSupported`（`subscription_balance_fetcher.go`）白名单只含 openai/anthropic/google，**不含 new_api**（见第 6 节）。
 
+**渠道 key 级余额探测（2026-10-03 起，与订阅级互补）**：`internal/balanceprobe`（探测器 `upstreamprobe/balance.go`）用渠道持有的推理 key 直接调上游余额端点，不走 accessToken/`/api/user/self`。new-api 系首选 `newapi_token` 端点 `GET /api/usage/token/`（`TokenAuthReadOnly` 鉴权：Bearer key，宽松只验 key 存在；恒 key 级，返回原始 quota 点 `total_granted/total_used/total_available/unlimited_quota`）；`newapi_billing`（`/v1/dashboard/billing/subscription`+`/usage` 对）作兜底。newapi 订阅托管渠道（`AutoManagedKind="new_api"`）默认开启 auto 探测（间隔默认 6h、硬下限 30min，配置见 `config/balance_check.go`），点数按 `QuotaPerUnit`（默认 500000）换算 USD；聚合 Σ 写配额真相 provider_api 级（明细落 key_health check_kind=balance）。管理端点 `GET/POST /api/{type}/channels/:id/balance(/check)`；渠道编辑对话框「探测上游余额」卡片可手动指定类型/换算比率并查看 per-key 结果。详见 `healthcheck.md` §10 与 `quota-truth-scheduling.md` §7.1。
+
 ## 5. 前端编辑弹窗字段/校验/API 调用链路
 
 ### 5.1 弹窗接入位置
@@ -185,7 +189,7 @@ locale 键在 `frontend/src/locales/{zh-CN,en,id}.json`，前缀 `subscription.n
 
 4. ~~`link/unlink UI 缺失`~~ ✅ **已修复**：订阅中心已提供绑定/解绑入口，调用 `POST /api/subscriptions/:uid/link|unlink` 与前端 `api.linkSubscriptionChannel/unlinkSubscriptionChannel`。
 
-5. **`quota` 货币换算依赖手工汇率**：new-api `quota` 非 USD，effective 成本需 `ExchangeRateQuotes` + 订阅 `PaymentAmount/CreditAmount`（`smart_router.go:1356-1378`）齐备才生效；缺任一项则回退标价 USD 成本，new-api quota 无法参与真实成本排序（静默降级，无用户提示）。
+5. **`quota` 货币换算依赖手工汇率**：new-api `quota` 非 USD，effective 成本需 `ExchangeRateQuotes` + 订阅 `PaymentAmount/CreditAmount`（`smart_router.go:1356-1378`）齐备才生效；缺任一项则回退标价 USD 成本，new-api quota 无法参与真实成本排序（静默降级，无用户提示）。注意这与渠道 key 级余额探测（§4.6）的换算是两条独立链路：探测余额数字用渠道级 `BalanceCheck.QuotaPerUnit`（默认 500000，new-api 官方默认）直接换算，不依赖汇率图。
 
 6. **`NewApiAccountItem.usedQuota` 前端类型有、后端不填**：`api-types.ts:1446` 定义了 `usedQuota`，但后端 `handlers_subscription_accounts.go` 构造 `NewApiAccountItem` 时（行 184/244/391）从不设置该字段——per-account 已用额度不可见。
 

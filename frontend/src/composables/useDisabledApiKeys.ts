@@ -42,12 +42,14 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
   const keyModelKey = (apiKey: string, model: string) => `${apiKey}|${model}`
   const channelId = (channel: Channel) => channel.routeIndex ?? channel.index
 
+  // 统一视图下的协议路由明细（各路由的 Key 集合）。没有协议明细或 Key 不在任何
+  // 路由上时回退到渠道自身的 routeKind/routeIndex（与 restore* 的兜底规则一致）。
   const keyRoutes = (channel: Channel, apiKey: string): KeyRoute[] => {
     const routes = (channel.protocolRoutes ?? []).filter(route => route.apiKeys?.includes(apiKey))
     if (routes.length > 0) {
       return routes.map(route => ({ kind: route.kind, index: route.index }))
     }
-    return [{ kind: options.channelType.value, index: channelId(channel) }]
+    return [{ kind: channel.routeKind ?? options.channelType.value, index: channelId(channel) }]
   }
 
   const suspendKeyAtRoute = (route: KeyRoute, apiKey: string): Promise<void> => {
@@ -80,6 +82,17 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
       case 'gemini': return options.apiService.restoreGeminiApiKey(route.index, apiKey)
       case 'responses': return options.apiService.restoreResponsesApiKey(route.index, apiKey)
       default: return options.apiService.restoreApiKey(route.index, apiKey)
+    }
+  }
+
+  const restoreKeyModelAtRoute = (route: KeyRoute, apiKey: string, model: string): Promise<void> => {
+    switch (route.kind) {
+      case 'chat': return options.apiService.restoreChatKeyModel(route.index, apiKey, model)
+      case 'images': return options.apiService.restoreImagesKeyModel(route.index, apiKey, model)
+      case 'vectors': return options.apiService.restoreVectorsKeyModel(route.index, apiKey, model)
+      case 'gemini': return options.apiService.restoreGeminiKeyModel(route.index, apiKey, model)
+      case 'responses': return options.apiService.restoreResponsesKeyModel(route.index, apiKey, model)
+      default: return options.apiService.restoreKeyModel(route.index, apiKey, model)
     }
   }
 
@@ -230,26 +243,20 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
     if (!channel || restoringKeyModel.value) return
     restoringKeyModel.value = key
     try {
-      const id = channelId(channel)
-      switch (options.channelType.value) {
-        case 'chat':
-          await options.apiService.restoreChatKeyModel(id, apiKey, model)
-          break
-        case 'images':
-          await options.apiService.restoreImagesKeyModel(id, apiKey, model)
-          break
-        case 'vectors':
-          await options.apiService.restoreVectorsKeyModel(id, apiKey, model)
-          break
-        case 'gemini':
-          await options.apiService.restoreGeminiKeyModel(id, apiKey, model)
-          break
-        case 'responses':
-          await options.apiService.restoreResponsesKeyModel(id, apiKey, model)
-          break
-        default:
-          await options.apiService.restoreKeyModel(id, apiKey, model)
-      }
+      // 聚合记录来自各协议路由的并集，只恢复真正持有该 (Key, 模型) 限制的路由。
+      const normalizedModel = model.trim().toLowerCase()
+      const routes = (channel.protocolRoutes ?? []).filter(route =>
+        route.disabledKeyModels?.some(item => item.key === apiKey && item.model.trim().toLowerCase() === normalizedModel),
+      )
+      const targets: KeyRoute[] = routes.length > 0
+        ? routes
+        : [{ kind: channel.routeKind ?? options.channelType.value, index: channelId(channel) }]
+      const results = await Promise.allSettled(targets.map(route => restoreKeyModelAtRoute(route, apiKey, model)))
+      // 限制可能已过期或被前一次部分成功的操作移除，重试时按幂等成功处理。
+      const fatal = results.find((r): r is PromiseRejectedResult =>
+        r.status === 'rejected' && !(r.reason instanceof Error && r.reason.message.includes('不在限制列表中')),
+      )
+      if (fatal) throw fatal.reason
       localRestoredKeyModels.value = new Set([...localRestoredKeyModels.value, key])
     } catch (error) {
       options.emitError(error instanceof Error ? error.message : 'Restore failed')
@@ -258,18 +265,31 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
     }
   }
 
-  const disableGroupModel = async (apiKey: string, model: string) => {
-    const channel = options.channel.value
+  // 统一视图下 Key×分组模型限制按协议路由并集展示，禁用必须落到所有持有该 Key 的
+  // 路由上：后端 DisableGroupModel 按「渠道内 Key 所属配额组」落库，Key 不在该渠道
+  // 会直接报「API Key 不属于该渠道」，只打主路由会让其它协议继续放行该模型。
+  // 路由并集语义与 restoreDisabledGroupModel 一致（复用 keyRoutes）。
+  // channelSnapshot：flush 发生在弹窗关闭后，此时父组件可能已清空 editingChannel
+  // （保存成功 → closeEditChannelModal 同步置 null，而本 watch 异步触发）。
+  // 传入打开时的渠道快照保证 disable 请求仍携带正确的 routeKind/routeIndex。
+  const disableGroupModel = async (apiKey: string, model: string, channelSnapshot?: Channel | null) => {
+    const channel = channelSnapshot ?? options.channel.value
     const normalizedModel = model.trim()
     if (!channel || !normalizedModel || changingGroupModel.value) return
     changingGroupModel.value = keyModelKey(apiKey, normalizedModel)
     try {
-      const result = await options.apiService.disableGroupModel(
-        options.channelType.value,
-        channelId(channel),
-        apiKey,
-        normalizedModel,
+      // 按并集逐个路由提交：单条路由失败即整体失败（避免"部分协议仍放行"被当成成功）。
+      const targets = keyRoutes(channel, apiKey)
+      const settled = await Promise.allSettled(
+        targets.map(route => options.apiService.disableGroupModel(route.kind, route.index, apiKey, normalizedModel)),
       )
+      const fatal = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+      if (fatal) throw fatal.reason
+      const firstOk = settled.find(
+        (r): r is PromiseFulfilledResult<Awaited<ReturnType<ApiService['disableGroupModel']>>> => r.status === 'fulfilled',
+      )
+      if (!firstOk) return
+      const result = firstOk.value
       const record = { quotaGroup: result.quotaGroup, key: apiKey, model: result.model, disabledAt: new Date().toISOString() }
       const policyKey = groupModelPolicyKey(record)
       localDisabledGroupModels.value = [
@@ -304,11 +324,12 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
   }
 
   // 渠道主保存成功后调用：逐个提交暂存的排除并清空暂存（单个失败仅报错，不阻断其余）。
-  const flushStagedGroupModelDisables = async () => {
+  // channelSnapshot 见 disableGroupModel 的说明。
+  const flushStagedGroupModelDisables = async (channelSnapshot?: Channel | null) => {
     const staged = pendingGroupModelDisables.value
     pendingGroupModelDisables.value = []
     for (const item of staged) {
-      await disableGroupModel(item.key, item.model)
+      await disableGroupModel(item.key, item.model, channelSnapshot)
     }
   }
 
@@ -318,15 +339,23 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
     if (!channel || changingGroupModel.value) return
     changingGroupModel.value = key
     try {
-      const result = await options.apiService.restoreGroupModel(
-        options.channelType.value,
-        channelId(channel),
+      const routes = (channel.protocolRoutes ?? []).filter(route =>
+        route.disabledGroupModels?.some(item => groupModelPolicyKey(item) === key),
+      )
+      const targets: KeyRoute[] = routes.length > 0
+        ? routes
+        : [{ kind: channel.routeKind ?? options.channelType.value, index: channelId(channel) }]
+      const results = await Promise.allSettled(targets.map(route => options.apiService.restoreGroupModel(
+        route.kind,
+        route.index,
         record.model,
         { quotaGroup: record.quotaGroup?.trim() || undefined, apiKey: record.quotaGroup?.trim() ? undefined : record.key },
-      )
+      )))
+      const fatal = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+      if (fatal) throw fatal.reason
       localRestoredGroupModels.value = new Set([...localRestoredGroupModels.value, key])
       localDisabledGroupModels.value = localDisabledGroupModels.value.filter(item => groupModelPolicyKey(item) !== key)
-      return result
+      return results[0]?.status === 'fulfilled' ? results[0].value : undefined
     } catch (error) {
       options.emitError(error instanceof Error ? error.message : 'Restore failed')
     } finally {

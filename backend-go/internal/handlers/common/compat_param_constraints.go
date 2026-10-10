@@ -77,11 +77,18 @@ func ApplyKnownParamConstraints(body []byte, constraints *config.ModelParamConst
 	return updated, applied
 }
 
-// thinkingMatchesFixedValue 判断请求里的 thinking 是否已经等于约束要求的固定值，
-// 避免值本就正确时仍产生一次无意义改写。
+// thinkingMatchesFixedValue 判断请求里的 thinking 是否精确等于约束要求的固定值，
+// 避免 budget_tokens 等额外非法字段因必要键相同而被误判为已匹配。
 func thinkingMatchesFixedValue(thinking gjson.Result, fixed map[string]interface{}) bool {
+	if !thinking.IsObject() {
+		return false
+	}
+	actual := thinking.Map()
+	if len(actual) != len(fixed) {
+		return false
+	}
 	for k, v := range fixed {
-		if thinking.Get(k).String() != fmt.Sprint(v) {
+		if actual[k].String() != fmt.Sprint(v) {
 			return false
 		}
 	}

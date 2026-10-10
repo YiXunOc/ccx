@@ -171,6 +171,8 @@ type UpstreamConfig struct {
 	HealthCheck *ChannelHealthCheckConfig `json:"healthCheck,omitempty"`
 	// 渠道级竞速参与配置（可选，nil 时继承全局；关闭=既不做主触发也不做影子目标）
 	Racing *ChannelRacingConfig `json:"racing,omitempty"`
+	// 渠道级上游余额探测配置（可选，nil 时继承全局与托管类型默认；见 balance_check.go）
+	BalanceCheck *ChannelBalanceCheckConfig `json:"balanceCheck,omitempty"`
 	// LogicalChannelUID 是该物理渠道所属逻辑渠道的稳定身份。
 	// 六个物理数组仍是运行时存储；本字段是非权威指针，加载旧配置时由 ConfigManager
 	// 自动回填，逻辑渠道 CRUD 也使用它保持各协议物理路由同步。空值表示旧数据。
@@ -1315,6 +1317,8 @@ type UpstreamUpdate struct {
 	ConvertImageURLToB64JSON *bool                              `json:"convertImageUrlToB64Json"`
 	// 渠道级竞速参与配置（nil=继承全局）
 	Racing *ChannelRacingConfig `json:"racing"`
+	// 渠道级上游余额探测配置（nil=不修改）
+	BalanceCheck *ChannelBalanceCheckConfig `json:"balanceCheck"`
 	// 多渠道调度相关字段
 	Priority                *int       `json:"priority"`
 	Status                  *string    `json:"status"`
@@ -1443,6 +1447,9 @@ type Config struct {
 
 	// 渠道保活验证全局配置（可选，nil 使用默认值）
 	HealthCheck *GlobalHealthCheckConfig `json:"healthCheck,omitempty"`
+
+	// 上游余额探测全局配置（可选，nil 时 new_api 托管渠道默认开启、其余默认关闭）
+	BalanceCheck *GlobalBalanceCheckConfig `json:"balanceCheck,omitempty"`
 
 	// 竞速（影子请求）全局配置（可选，nil 默认关闭；行为参数由策略表自动推导）
 	Racing *GlobalRacingConfig `json:"racing,omitempty"`
@@ -1613,6 +1620,16 @@ func (cm *ConfigManager) GetConfig() Config {
 		cloned.CircuitBreaker = &cb
 	}
 
+	// 深拷贝 BalanceCheck 指针字段（含渠道级配置内嵌的 Enabled 指针）
+	if cm.config.BalanceCheck != nil {
+		g := *cm.config.BalanceCheck
+		if cm.config.BalanceCheck.Enabled != nil {
+			v := *cm.config.BalanceCheck.Enabled
+			g.Enabled = &v
+		}
+		cloned.BalanceCheck = &g
+	}
+
 	// 深拷贝 AutopilotRouting（map 字段需要独立分配）
 	cloned.AutopilotRouting = cm.config.AutopilotRouting.deepCopy()
 	applyAutopilotEnvOverrides(&cloned.AutopilotRouting)
@@ -1651,6 +1668,72 @@ func (cm *ConfigManager) GetUpstreamByIndex(apiType string, index int) *Upstream
 		return nil
 	}
 	return (*upstreams)[index].Clone()
+}
+
+// ChannelUIDByIndex 只读返回指定协议与索引的 ChannelUID（不克隆渠道）。
+// 供热路径在写入路由身份时补齐稳定身份用：index 会随渠道增删重排，UID 不会。
+func (cm *ConfigManager) ChannelUIDByIndex(apiType string, index int) string {
+	if cm == nil {
+		return ""
+	}
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	upstreams := cm.getUpstreamSliceLocked(apiType)
+	if upstreams == nil || index < 0 || index >= len(*upstreams) {
+		return ""
+	}
+	return (*upstreams)[index].ChannelUID
+}
+
+// GetUpstreamByUID 返回 ChannelUID 对应渠道的深拷贝（语义同 GetUpstreamByIndex）。
+// apiType 非空时限定在该协议内查找；为空时跨六类协议查找。未命中返回 nil。
+func (cm *ConfigManager) GetUpstreamByUID(apiType, uid string) *UpstreamConfig {
+	uid = strings.TrimSpace(uid)
+	if cm == nil || uid == "" {
+		return nil
+	}
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	if strings.TrimSpace(apiType) != "" {
+		upstreams := cm.getUpstreamSliceLocked(apiType)
+		if upstreams == nil {
+			return nil
+		}
+		for i := range *upstreams {
+			if (*upstreams)[i].ChannelUID == uid {
+				return (*upstreams)[i].Clone()
+			}
+		}
+		return nil
+	}
+	_, upstream, ok := cm.findUpstreamByUIDLocked(uid)
+	if !ok {
+		return nil
+	}
+	return upstream.Clone()
+}
+
+// UpstreamModelCapabilitiesSnapshot 返回全局上游模型能力表的深拷贝快照。
+// 语义等价于 GetConfig().UpstreamModelCapabilities，但只克隆这一张表（百来条小结构），
+// 不克隆六个 upstream 数组与 autopilot 配置——调度热路径每个 attempt 都要读它，
+// 整份 GetConfig() 深拷贝纯属浪费。
+func (cm *ConfigManager) UpstreamModelCapabilitiesSnapshot() map[string]UpstreamModelCapability {
+	if cm == nil {
+		return nil
+	}
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	if cm.config.UpstreamModelCapabilities == nil {
+		return nil
+	}
+	cloned := make(map[string]UpstreamModelCapability, len(cm.config.UpstreamModelCapabilities))
+	for key, capability := range cm.config.UpstreamModelCapabilities {
+		cloned[key] = cloneUpstreamModelCapability(capability)
+	}
+	return cloned
 }
 
 // GetNextAPIKey 获取下一个 API 密钥（纯 failover 模式）
@@ -2625,7 +2708,9 @@ func (cm *ConfigManager) RestoreDisabledKeys(apiType string, channelIndex int, k
 
 // DisableKeyModel 将 (apiKey, model) 组合加入限制列表（持久化，默认 1 小时后自动恢复）。
 // 仅限制该 Key 对该模型的路由，不影响该 Key 的其他模型，也不从 APIKeys 中移除。
-func (cm *ConfigManager) DisableKeyModel(apiType string, channelIndex int, apiKey, model, reason, message string) error {
+// recoverAt 为上游明确给出的恢复时间（RFC3339）；为空、无效或已过期时沿用 1 小时兜底，
+// 与 applyKeyBlacklistLocked 的 Key 级拉黑语义保持一致。
+func (cm *ConfigManager) DisableKeyModel(apiType string, channelIndex int, apiKey, model, reason, message, recoverAt string) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -2641,7 +2726,11 @@ func (cm *ConfigManager) DisableKeyModel(apiType string, channelIndex int, apiKe
 
 	upstream := &(*upstreams)[channelIndex]
 	now := time.Now()
-	recoverAt := now.Add(time.Hour).Format(time.RFC3339)
+	resolvedRecoverAt := now.Add(time.Hour).Format(time.RFC3339)
+	if explicit, err := time.Parse(time.RFC3339, strings.TrimSpace(recoverAt)); err == nil && explicit.After(now) {
+		resolvedRecoverAt = explicit.Format(time.RFC3339)
+	}
+	recoverAt = resolvedRecoverAt
 
 	// 去重：限制仍生效时不刷新、不写盘，避免并发失败造成热路径磁盘抖动。
 	if upstream.IsKeyModelDisabledNow(apiKey, model, now) {

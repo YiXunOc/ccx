@@ -132,7 +132,7 @@ func preflightGeminiStream(resp *http.Response, upstreamType string, timeouts co
 	}
 
 	// 启动 goroutine 读取 body chunk。preflight 放行后继续由同一个 channel 驱动正常流式转发，避免丢 chunk。
-	chunkChan, bodyErrChan = common.StartBodyChunkReader(resp.Body, 32*1024, 16)
+	chunkChan, bodyErrChan = common.StartBodyChunkReader(resp.Body, 32*1024, 16, common.RequestDone(resp))
 
 	// 阶段A：首个有效内容等待超时
 	var firstContentTimer *time.Timer
@@ -159,6 +159,11 @@ func preflightGeminiStream(resp *http.Response, upstreamType string, timeouts co
 			}
 			// Gemini 原生格式检测
 			if hasGeminiSemanticContent(jsonData) {
+				return true
+			}
+			// 思考类增量对 Gemini 客户端是可交付内容（转换后为 thought part），
+			// 计入语义内容，避免纯思考流在预检中被判空。
+			if hasGeminiDeliverableThinkingContent(jsonData, upstreamType) {
 				return true
 			}
 			// 转换后格式检测（Claude/OpenAI/Responses → Gemini）
@@ -193,9 +198,14 @@ func preflightGeminiStream(resp *http.Response, upstreamType string, timeouts co
 		select {
 		case chunk, chunkOk = <-chunkChan:
 			if !chunkOk {
-				// chunkChan 关闭：body 读取完成
+				// chunkChan 关闭：body 读取完成。
+				// 整个预检期间从未检测到语义内容（usage-only / 空流）：Header 未写，
+				// 按空响应进入 failover（对齐 messages/responses 语义）。
 				if remainder != "" {
 					allLines = append(allLines, remainder)
+				}
+				if !hasFirstContent {
+					return allLines, chunkChan, bodyErrChan, common.ErrEmptyStreamResponse
 				}
 				return allLines, chunkChan, bodyErrChan, nil
 			}
@@ -222,6 +232,26 @@ func preflightGeminiStream(resp *http.Response, upstreamType string, timeouts co
 		remainder = lines[len(lines)-1]
 		completeLines := lines[:len(lines)-1]
 		allLines = append(allLines, completeLines...)
+
+		// 流内错误事件检测：HTTP 200 但 data 里携带错误对象（中转站/原生错误形态）。
+		// 拉黑类错误返回 ErrBlacklistKey；请求侧确定性错误（invalid_request /
+		// 上下文超长等）返回终态错误，不做逐 Key 重放；其余错误按空响应语义
+		// 进入 failover，对齐 messages/responses 的预检行为，不再原样透传给客户端。
+		for _, line := range completeLines {
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if reason, msg, recoverAt, isErr := common.DetectStreamDataError(jsonData); isErr {
+				if reason != "" {
+					return nil, chunkChan, bodyErrChan, &common.ErrBlacklistKey{Reason: reason, Message: msg, RecoverAt: recoverAt}
+				}
+				if rejected := common.RequestSideStreamError(jsonData); rejected != nil {
+					return nil, chunkChan, bodyErrChan, rejected
+				}
+				return nil, chunkChan, bodyErrChan, fmt.Errorf("%w: %s", common.ErrEmptyStreamResponse, msg)
+			}
+		}
 
 		if hasSemanticContent(completeLines) {
 			if !hasFirstContent {
@@ -267,6 +297,65 @@ func preflightGeminiStream(resp *http.Response, upstreamType string, timeouts co
 			inactivityTimer.Reset(time.Duration(timeouts.InactivityTimeoutMs) * time.Millisecond)
 		}
 	}
+}
+
+// hasGeminiDeliverableThinkingContent 检测转换上游**确实会被转换器交付**的思考类增量。
+// Gemini 客户端可把思考交付为 thought part（含纯思考流），因此这类增量计入语义内容，
+// 避免思考流在预检空判定中被误判。
+//
+// 判定必须与三个转换器的实现严格一致：只有真正写出 thought part 的事件才算可交付，
+// 否则预检会放行并写出空 200，取代本应发生的 failover。
+//   - claude:    streamClaudeToGemini 只处理 content_block_delta.thinking_delta 且 thinking 非空
+//   - openai:    streamOpenAIToGemini 只处理 delta.reasoning_content / delta.reasoning 非空
+//   - responses: ConvertResponsesToGeminiStream 只处理 response.reasoning_summary_text.delta 且 text 非空
+//
+// 反例（转换器零输出，不得计入）：redacted_thinking 的 content_block_start（无正文）、
+// response.reasoning_summary_part.added/done、response.reasoning_summary_text.done、
+// response.reasoning_text.delta/done 等完成态或结构态事件。
+func hasGeminiDeliverableThinkingContent(jsonData string, upstreamType string) bool {
+	switch upstreamType {
+	case "claude":
+		var event struct {
+			Type  string `json:"type"`
+			Delta struct {
+				Type     string `json:"type"`
+				Thinking string `json:"thinking"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
+			return false
+		}
+		return event.Type == "content_block_delta" &&
+			event.Delta.Type == "thinking_delta" &&
+			event.Delta.Thinking != ""
+	case "openai":
+		var event struct {
+			Choices []struct {
+				Delta struct {
+					ReasoningContent string `json:"reasoning_content"`
+					Reasoning        string `json:"reasoning"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
+			return false
+		}
+		if len(event.Choices) == 0 {
+			return false
+		}
+		delta := event.Choices[0].Delta
+		return delta.ReasoningContent != "" || delta.Reasoning != ""
+	case "responses":
+		var event struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
+			return false
+		}
+		return event.Type == "response.reasoning_summary_text.delta" && event.Text != ""
+	}
+	return false
 }
 
 // hasGeminiSemanticContent 检测 Gemini 原生格式的语义内容
@@ -364,7 +453,9 @@ func handleStreamSuccess(
 		} else if errors.Is(err, common.ErrStreamStalled) {
 			common.RequestLogf(c, "[Gemini-StreamStalled] 流式断流: 首字后 %dms 无活动，触发重试", timeouts.InactivityTimeoutMs)
 		}
-		return nil, err
+		// 预检阶段的任何非客户端错误 Header 均未写：统一归入 failover 家族，
+		// 避免裸传输错误/上游错误终结整个 failover 链。
+		return nil, common.ClassifyPreflightStreamError(err)
 	}
 
 	// 检查是否为空响应
@@ -447,6 +538,9 @@ func streamGeminiToGemini(
 	progress *common.StreamProgressLogger,
 ) (*types.Usage, error) {
 	var totalUsage *types.Usage
+	// lastWasDataLine 记录上一次写出的是否是 data 行：上游以单换行收尾时，
+	// EOF 需要再补一个空行才算把最后一个事件派发给客户端。
+	lastWasDataLine := false
 	inactivityTimeout := time.Duration(timeouts.InactivityTimeoutMs) * time.Millisecond
 
 	for {
@@ -456,6 +550,14 @@ func streamGeminiToGemini(
 			return nil, common.ErrStreamPostCommitStalled
 		}
 		if eof {
+			if lastWasDataLine {
+				// 上游最后一个 data 行只有单个 "\n"（没有空行）：补空行完成事件派发，
+				// 否则严格 SSE 解析器会丢掉最后一帧（finish / usage / [DONE]）。
+				_, _ = fmt.Fprint(c.Writer, "\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
 			if err != nil {
 				progress.Finish("error")
 				return totalUsage, err
@@ -483,10 +585,13 @@ func streamGeminiToGemini(
 					}
 				}
 			}
+			lastWasDataLine = true
 			_, _ = fmt.Fprintf(c.Writer, "%s\n", line)
 		} else if line != "" {
+			lastWasDataLine = false
 			_, _ = fmt.Fprintf(c.Writer, "%s\n", line)
 		} else {
+			lastWasDataLine = false
 			_, _ = fmt.Fprintf(c.Writer, "\n")
 		}
 

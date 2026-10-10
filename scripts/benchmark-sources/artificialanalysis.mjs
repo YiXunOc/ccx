@@ -41,6 +41,8 @@ export const ARTIFICIAL_ANALYSIS_MODEL_MAP = {
   // GPT-6 Sol/Luna（2026-09-22 发布）：AA slug 与 canonical 同名
   'gpt-6-sol': 'gpt-6-sol',
   'gpt-6-luna': 'gpt-6-luna',
+  // GPT-6.1 Sol（2026-09-29 发布）：AA slug 点号转连字符
+  'gpt-6-1-sol': 'gpt-6.1-sol',
   'claude-opus-4-8': 'claude-opus-4-8',
   'claude-opus-4-7': 'claude-opus-4-7',
   'claude-opus-4-6': 'claude-opus-4-6',
@@ -49,8 +51,11 @@ export const ARTIFICIAL_ANALYSIS_MODEL_MAP = {
   'claude-opus-5': 'claude-opus-5',
   // Claude Opus 5.5（2026-09-22 发布）：AA slug 与 canonical 同名
   'claude-opus-5-5': 'claude-opus-5-5',
+  'claude-sonnet-5-5': 'claude-sonnet-5-5',
   'claude-sonnet-5': 'claude-sonnet-5',
   'claude-sonnet-4-6': 'claude-sonnet-4-6',
+  // Claude Haiku 5.5（2026-10-07 发布）：AA slug 与 canonical 同名
+  'claude-haiku-5-5': 'claude-haiku-5-5',
   'claude-haiku-4-5': 'claude-haiku-4.5',
   'claude-fable-5': 'claude-fable-5',
   'claude-fable-5-1': 'claude-fable-5-1',

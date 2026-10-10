@@ -127,6 +127,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     proxyUrl: '',
     proxyPreferDirect: false,
     racing: undefined as { enabled?: boolean } | undefined,
+    balanceCheck: undefined as Channel['balanceCheck'] | undefined,
     costMultiplier: null as string | number | null,
     maxGroupMultiplier: null as string | number | null,
     channelPaymentCurrency: '',
@@ -336,6 +337,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
       proxyUrl: form.proxyUrl.trim(),
       proxyPreferDirect: form.proxyPreferDirect,
       racing: form.racing,
+      balanceCheck: form.balanceCheck,
       remark: form.remark.trim(),
       costMultiplier: form.costMultiplier,
       maxGroupMultiplier: form.maxGroupMultiplier,
@@ -450,6 +452,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     form.proxyUrl = ''
     form.proxyPreferDirect = false
     form.racing = undefined
+    form.balanceCheck = undefined
     form.costMultiplier = null
     form.maxGroupMultiplier = null
     form.channelPaymentCurrency = ''
@@ -542,6 +545,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     form.proxyUrl = channel.proxyUrl || ''
     form.proxyPreferDirect = !!channel.proxyPreferDirect
     form.racing = channel.racing ? { ...channel.racing } : undefined
+    form.balanceCheck = channel.balanceCheck ? { ...channel.balanceCheck } : undefined
     form.costMultiplier = channel.costMultiplier ?? null
     form.maxGroupMultiplier = channel.maxGroupMultiplier ?? null
     form.channelPaymentCurrency = channel.channelPaymentCurrency ?? ''
@@ -633,6 +637,11 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
 
   // 提交状态
   const submitting = ref(false)
+  const suppressFlushOnClose = ref(false)
+  // 打开时的渠道快照：保存成功后父组件会立即清空 editingChannel（closeEditChannelModal），
+  // 而暂存排除的 flush 由下方 watch(show) 异步触发——届时 props.channel 已为 null，
+  // 不快照会让 flush 静默空转（暂存条目无声丢失、请求从未发出）。
+  const flushChannelSnapshot = ref<Channel | null>(null)
 
   const {
     targetModelOptions,
@@ -699,6 +708,18 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     resetForm()
   }
 
+  // 取消（已显式清空+抑制标记）与保存失败（弹窗保持打开）均不会误触发。
+  watch(
+    () => props.show,
+    visible => {
+      if (visible) return
+      if (!suppressFlushOnClose.value && pendingGroupModelDisables.value.length) {
+        void flushStagedGroupModelDisables(flushChannelSnapshot.value)
+      }
+      suppressFlushOnClose.value = false
+    },
+  )
+
   // 监听props变化
   watch(
     () => props.show,
@@ -706,6 +727,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
       if (newShow) {
         dialogMode.value = props.channel ? 'edit' : 'create'
         resetRestoredKeys()
+        flushChannelSnapshot.value = props.channel ?? null
 
         if (dialogMode.value === 'edit' && props.channel) {
           // 编辑模式：使用完整表单
@@ -735,6 +757,8 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
       if (action === 'load-edit-channel' && newChannel) {
         dialogMode.value = 'edit'
         loadChannelData(newChannel)
+        // 渠道热替换（如 refreshChannels 后）可能改变 routeIndex，同步刷新 flush 快照
+        flushChannelSnapshot.value = newChannel
         return
       }
 
@@ -838,3 +862,4 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     t,
   }
 }
+

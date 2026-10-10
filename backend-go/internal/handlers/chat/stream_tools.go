@@ -39,6 +39,9 @@ func streamPassthrough(
 	var totalUsage *types.Usage
 	buf := make([]byte, 32*1024)
 	var remainder string
+	// writtenTail 记录已写给客户端的最后两个字节，用于 EOF 时判断最后一条事件是否
+	// 已经有空行收尾（上游以 `data: X\n` 单换行结束时需要补一个空行才算派发）。
+	var writtenTail string
 	pending := prefetched
 	inactivityTimeout := time.Duration(timeouts.InactivityTimeoutMs) * time.Millisecond
 	lastActivity := time.Now()
@@ -106,11 +109,10 @@ func streamPassthrough(
 			if flusher != nil {
 				flusher.Flush()
 			}
+			writtenTail = lastBytes(data, 2)
 		}
 		if readErr != nil {
-			if remainder != "" {
-				flushCompletePassthroughRemainder(c, flusher, remainder)
-			}
+			flushCompletePassthroughRemainder(c, flusher, remainder, writtenTail)
 			break
 		}
 	}
@@ -119,19 +121,51 @@ func streamPassthrough(
 	return totalUsage, nil
 }
 
-func flushCompletePassthroughRemainder(c *gin.Context, flusher http.Flusher, remainder string) {
+// flushCompletePassthroughRemainder 在上游流结束时补齐最后一个 SSE 事件的终止空行。
+// 尾行正文已随原始 chunk 原样透传给客户端，这里只补终止符；若重发正文，
+// 客户端 SSE 解析器会把两份拼到同一行，产生尾部重复输出/JSON 损坏。
+//
+// writtenTail 是已写给客户端的最后两个字节（空串表示一个字节都没写过）：
+//   - remainder 是完整 data 行（上游没给行尾换行）→ 补 "\n\n"
+//   - remainder 为空但已有内容且未以空行收尾（上游只给了单个 "\n"）→ 补 "\n"
+//   - 已经以空行收尾，或从未写过内容 → 不补
+//
+// 对已经终结的事件再补空行是 no-op，不会引入重复内容。
+func flushCompletePassthroughRemainder(c *gin.Context, flusher http.Flusher, remainder string, writtenTail string) {
+	if writtenTail == "" {
+		// 从未写入任何内容：没有需要终结的事件
+		return
+	}
+
+	terminator := ""
 	trimmed := strings.TrimSpace(remainder)
-	if !strings.HasPrefix(trimmed, "data: ") {
+	if trimmed != "" {
+		if !strings.HasPrefix(trimmed, "data: ") {
+			return
+		}
+		jsonData := strings.TrimPrefix(trimmed, "data: ")
+		if jsonData != "[DONE]" && !json.Valid([]byte(jsonData)) {
+			return
+		}
+		terminator = "\n\n"
+	} else if strings.HasSuffix(writtenTail, "\n\n") {
 		return
+	} else {
+		terminator = "\n"
 	}
-	jsonData := strings.TrimPrefix(trimmed, "data: ")
-	if jsonData != "[DONE]" && !json.Valid([]byte(jsonData)) {
-		return
-	}
-	_, _ = fmt.Fprintf(c.Writer, "%s\n\n", trimmed)
+
+	_, _ = fmt.Fprint(c.Writer, terminator)
 	if flusher != nil {
 		flusher.Flush()
 	}
+}
+
+// lastBytes 返回 s 的末尾 n 个字节（s 不足 n 字节时原样返回）。
+func lastBytes(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }
 
 func readChunkWithTimeout(resp *http.Response, buf []byte, timeout time.Duration) (int, error, bool) {

@@ -125,6 +125,38 @@ func TestResolveAgentModelProfile_GPT6SolLunaBuiltins(t *testing.T) {
 	}
 }
 
+func TestResolveAgentModelProfile_GPT61SolBuiltin(t *testing.T) {
+	// GPT-6.1 Sol（2026-09-29 发布）是独立次代模型：官方 effort 档去掉 none
+	//（low~max 五档），工具调用仅限 Responses API；Priority Tier 同 Sol 保守关闭。
+	profile := ResolveAgentModelProfile("gpt-6.1-sol", nil)
+	if !profile.Known {
+		t.Fatal("expected built-in gpt-6.1-sol profile")
+	}
+	if profile.Profile.DisplayName != "GPT-6.1 Sol" {
+		t.Fatalf("DisplayName = %q, want GPT-6.1 Sol", profile.Profile.DisplayName)
+	}
+	if profile.Profile.ContextWindowTokens != 272000 || profile.Profile.MaxContextWindowTokens != 1050000 ||
+		profile.Profile.MaxOutputTokens != 128000 {
+		t.Fatalf("window profile = %d/%d/%d, want 272000/1050000/128000",
+			profile.Profile.ContextWindowTokens, profile.Profile.MaxContextWindowTokens, profile.Profile.MaxOutputTokens)
+	}
+	wantEfforts := []string{"low", "medium", "high", "xhigh", "max"}
+	if len(profile.Profile.ReasoningEfforts) != len(wantEfforts) {
+		t.Fatalf("ReasoningEfforts = %v, want exactly %v", profile.Profile.ReasoningEfforts, wantEfforts)
+	}
+	for _, effort := range wantEfforts {
+		if !containsString(profile.Profile.ReasoningEfforts, effort) {
+			t.Fatalf("ReasoningEfforts = %v, want %s", profile.Profile.ReasoningEfforts, effort)
+		}
+	}
+	if containsString(profile.Profile.ReasoningEfforts, "none") {
+		t.Fatalf("ReasoningEfforts = %v, gpt-6.1-sol 官方不再支持 none 档", profile.Profile.ReasoningEfforts)
+	}
+	if profile.Profile.SupportsPriorityTier {
+		t.Fatal("SupportsPriorityTier = true, 官方文档未列出 gpt-6.1-sol priority tier 支持")
+	}
+}
+
 func TestResolveAgentModelProfile_GPT55UsesLiteLLMMaximumContext(t *testing.T) {
 	profile := ResolveAgentModelProfile("gpt-5.5", nil)
 	if !profile.Known {
@@ -199,6 +231,36 @@ func TestResolveAgentModelProfile_ClaudeBuiltins(t *testing.T) {
 	}
 	if alias.Profile.ContextWindowTokens != 1000000 {
 		t.Fatalf("alias ContextWindowTokens = %d, want 1000000", alias.Profile.ContextWindowTokens)
+	}
+
+	sonnet55 := ResolveAgentModelProfile("claude-sonnet-5-5", nil)
+	if !sonnet55.Known {
+		t.Fatal("expected built-in claude-sonnet-5-5 profile")
+	}
+	if sonnet55.Profile.DisplayName != "Claude Sonnet 5.5" || sonnet55.Profile.ContextWindowTokens != 1000000 || sonnet55.Profile.MaxOutputTokens != 128000 {
+		t.Fatalf("sonnet55 profile = %+v, want Claude Sonnet 5.5 (1M/128K)", sonnet55.Profile)
+	}
+
+	sonnet55Dot := ResolveAgentModelProfile("claude-sonnet-5.5", nil)
+	if !sonnet55Dot.Known {
+		t.Fatal("expected built-in claude-sonnet-5.5 profile")
+	}
+	if sonnet55Dot.Profile.DisplayName != "Claude Sonnet 5.5" {
+		t.Fatalf("sonnet55Dot profile = %+v, want Claude Sonnet 5.5", sonnet55Dot.Profile)
+	}
+
+	for _, model := range []string{"claude-haiku-5-5", "claude-haiku-5.5"} {
+		haiku55 := ResolveAgentModelProfile(model, nil)
+		if !haiku55.Known {
+			t.Fatalf("expected built-in %s profile", model)
+		}
+		if haiku55.Profile.DisplayName != "Claude Haiku 5.5" || haiku55.Profile.ContextWindowTokens != 1_000_000 ||
+			haiku55.Profile.MaxOutputTokens != 128_000 || haiku55.Profile.SupportsPriorityTier {
+			t.Fatalf("haiku55 profile = %+v, want Claude Haiku 5.5 (1M/128K, no priority)", haiku55.Profile)
+		}
+		if !containsString(haiku55.Profile.ReasoningEfforts, "max") {
+			t.Fatalf("haiku55 ReasoningEfforts = %v, want max", haiku55.Profile.ReasoningEfforts)
+		}
 	}
 }
 
@@ -982,6 +1044,76 @@ func TestResolveUpstreamCapability_ClaudeOpus55Variants(t *testing.T) {
 	}
 }
 
+func TestResolveUpstreamCapability_ClaudeSonnet55Variants(t *testing.T) {
+	tests := []struct {
+		model       string
+		displayName string
+	}{
+		// Sonnet 5.5 是独立模型（非 Sonnet 5 别名）
+		{model: "claude-sonnet-5-5", displayName: "Claude Sonnet 5.5"},
+		{model: "claude-sonnet-5.5", displayName: "Claude Sonnet 5.5"},
+		{model: "claude-sonnet-5-5-20260928", displayName: "Claude Sonnet 5.5"},
+		{model: "anthropic/claude-sonnet-5-5", displayName: "Claude Sonnet 5.5"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			resolved := ResolveUpstreamCapability(tt.model, nil, nil)
+			if !resolved.Known || resolved.Source != "builtin" {
+				t.Fatalf("resolved = %+v, want builtin capability for %s", resolved, tt.model)
+			}
+			capability := resolved.Capability
+			if capability.DisplayName != tt.displayName || capability.ContextWindowTokens != 1_000_000 ||
+				capability.MaxOutputTokens != 128_000 || !capability.Capabilities["reasoning"] ||
+				!capability.Capabilities["vision"] || !capability.Capabilities["toolCalls"] {
+				t.Fatalf("capability = %+v for model %s", capability, tt.model)
+			}
+			if capability.ThinkingMode != "adaptive_always_on" {
+				t.Fatalf("ThinkingMode = %q, want adaptive_always_on", capability.ThinkingMode)
+			}
+		})
+	}
+}
+
+func TestResolveUpstreamCapability_ClaudeHaiku55Variants(t *testing.T) {
+	models := []string{
+		"claude-haiku-5-5",
+		"claude-haiku-5.5",
+		"claude-haiku-5-5-20261007",
+		"anthropic/claude-haiku-5-5",
+	}
+
+	for _, model := range models {
+		t.Run(model, func(t *testing.T) {
+			resolved := ResolveUpstreamCapability(model, nil, nil)
+			if !resolved.Known || resolved.Source != "builtin" {
+				t.Fatalf("resolved = %+v, want builtin capability for %s", resolved, model)
+			}
+			capability := resolved.Capability
+			if capability.DisplayName != "Claude Haiku 5.5" || capability.ContextWindowTokens != 1_000_000 ||
+				capability.MaxOutputTokens != 128_000 || capability.ThinkingMode != "adaptive" {
+				t.Fatalf("capability = %+v for model %s", capability, model)
+			}
+			wantEfforts := []string{"low", "medium", "high", "xhigh", "max"}
+			for _, effort := range wantEfforts {
+				if !containsString(capability.ReasoningEfforts, effort) {
+					t.Fatalf("ReasoningEfforts = %v, want %s", capability.ReasoningEfforts, effort)
+				}
+			}
+			if capability.Pricing == nil || len(capability.Pricing.Tiers) != 2 {
+				t.Fatalf("Pricing = %+v, want two tiers", capability.Pricing)
+			}
+			if capability.Pricing.Tiers[0].InputTokensUpTo != 100_000 || capability.Pricing.Tiers[1].InputTokensAbove != 100_000 {
+				t.Fatalf("Pricing tiers = %+v", capability.Pricing.Tiers)
+			}
+			if capability.ParamConstraints == nil || !containsString(capability.ParamConstraints.FixedParams, "top_k") ||
+				capability.ParamConstraints.ThinkingFixedValue["type"] != "adaptive" {
+				t.Fatalf("ParamConstraints = %+v", capability.ParamConstraints)
+			}
+		})
+	}
+}
+
 func TestResolveUpstreamCapability_GPT6SolLuna(t *testing.T) {
 	tests := []struct {
 		model       string
@@ -992,6 +1124,9 @@ func TestResolveUpstreamCapability_GPT6SolLuna(t *testing.T) {
 		{model: "openai/gpt-6-sol", displayName: "GPT-6 Sol"},
 		{model: "gpt-6-luna", displayName: "GPT-6 Luna"},
 		{model: "openai/gpt-6-luna", displayName: "GPT-6 Luna"},
+		// GPT-6.1 Sol 是独立次代模型，不归并进 gpt-6-sol
+		{model: "gpt-6.1-sol", displayName: "GPT-6.1 Sol"},
+		{model: "openai/gpt-6.1-sol", displayName: "GPT-6.1 Sol"},
 	}
 
 	for _, tt := range tests {

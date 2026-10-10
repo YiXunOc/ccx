@@ -64,6 +64,22 @@ func TestApplyKnownParamConstraints(t *testing.T) {
 			wantApplied: false,
 		},
 		{
+			name: "thinking 带额外非法键时精确替换",
+			constraints: &config.ModelParamConstraints{
+				ThinkingFixedValue: map[string]interface{}{"type": "adaptive"},
+			},
+			body:        `{"model":"claude-haiku-5-5","thinking":{"type":"adaptive","budget_tokens":4096}}`,
+			wantApplied: true,
+			check: func(t *testing.T, body []byte) {
+				if got := gjson.GetBytes(body, "thinking.type").String(); got != "adaptive" {
+					t.Errorf("thinking.type = %q, want adaptive", got)
+				}
+				if gjson.GetBytes(body, "thinking.budget_tokens").Exists() {
+					t.Error("thinking.budget_tokens 应已被剥离")
+				}
+			},
+		},
+		{
 			name:        "k3 未配置 tool_choice 约束不降级",
 			constraints: nil,
 			body:        `{"model":"kimi-k3","tool_choice":"required"}`,
