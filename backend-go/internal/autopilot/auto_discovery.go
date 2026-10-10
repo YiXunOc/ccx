@@ -115,12 +115,16 @@ type AutoDiscoveryRunner struct {
 	// 同一扫描周期内跨账号 key 对同站点同分组协议/模型探测只执行一次，其余复用结论。
 	// 周期边界与每次 runDiscovery/runDiscoveryLegacy 开始处 Reset 对齐。
 	capabilityProbeLedger *config.CapabilityProbeLedger
+
+	// debugEnabled 缓存调试日志开关（初始化时读取，避免循环内重复读环境变量）。
+	debugEnabled bool
 }
 
 // NewAutoDiscoveryRunner 创建发现执行器。
 // store 可为 nil（仅记录内存结果，不写持久化画像）。
 // hub 可为 nil（不发布 Phase 3A 画像变更事件，向后兼容旧调用点）。
 func NewAutoDiscoveryRunner(store *ProfileStore, hub *EventHub) *AutoDiscoveryRunner {
+	env := config.NewEnvConfig()
 	return &AutoDiscoveryRunner{
 		tasks:                 make(map[string]*DiscoveryTask),
 		store:                 store,
@@ -128,6 +132,7 @@ func NewAutoDiscoveryRunner(store *ProfileStore, hub *EventHub) *AutoDiscoveryRu
 		timeout:               10 * time.Second,
 		gcStop:                make(chan struct{}),
 		capabilityProbeLedger: config.NewCapabilityProbeLedger(),
+		debugEnabled:          env.IsDevelopment() && env.ShouldLog("debug"),
 	}
 }
 
@@ -459,6 +464,9 @@ func (r *AutoDiscoveryRunner) TriggerDiscovery(channelUID string, channel *confi
 //   - taskStore 持久化 running 记录失败 → (false, err)（503 语义，不启动 goroutine）
 //   - 成功 → (true, nil)
 func (r *AutoDiscoveryRunner) TriggerDiscoveryWithStatus(channelUID string, channel *config.UpstreamConfig, cfgManager *config.ConfigManager) (bool, error) {
+	if r.discoveryDebugEnabled() {
+		log.Printf("[AutoDiscovery-Debug] trigger channel=%s keys=%d baseURLs=%d", channelUID, discoveryKeyCount(channel), discoveryBaseURLCount(channel))
+	}
 	r.mu.Lock()
 	if existing, ok := r.tasks[channelUID]; ok && existing.Status == DiscoveryStatusRunning {
 		log.Printf("[AutoDiscovery-Trigger] 渠道 %s 发现任务已在运行中，拒绝重复触发", channelUID)
@@ -707,10 +715,13 @@ func (r *AutoDiscoveryRunner) discoverEndpoints(ctx context.Context, channel *co
 	if len(managers) > 0 {
 		cfgManager = managers[0]
 	}
-	for _, key := range keys {
+	for keyIndex, key := range keys {
 		keyBaseURLs := baseURLs
 		if bound := channel.BoundBaseURLForKey(key); bound != "" {
 			keyBaseURLs = []string{bound}
+		}
+		if r.discoveryDebugEnabled() {
+			log.Printf("[AutoDiscovery-Debug] endpoint-candidate channel=%s key_index=%d key=%s bound=%t urls=%d", channel.ChannelUID, keyIndex, discoveryKeyID(key), channel.BoundBaseURLForKey(key) != "", len(keyBaseURLs))
 		}
 		for _, baseURL := range keyBaseURLs {
 			select {
@@ -790,10 +801,13 @@ func (r *AutoDiscoveryRunner) discoverEndpointsWithCheckpoint(ctx context.Contex
 	}
 
 	var results []EndpointDiscoveryResult
-	for _, key := range keys {
+	for keyIndex, key := range keys {
 		keyBaseURLs := baseURLs
 		if bound := channel.BoundBaseURLForKey(key); bound != "" {
 			keyBaseURLs = []string{bound}
+		}
+		if r.discoveryDebugEnabled() {
+			log.Printf("[AutoDiscovery-Debug] endpoint-candidate channel=%s key_index=%d key=%s bound=%t urls=%d", channel.ChannelUID, keyIndex, discoveryKeyID(key), channel.BoundBaseURLForKey(key) != "", len(keyBaseURLs))
 		}
 		for _, baseURL := range keyBaseURLs {
 			select {
@@ -808,6 +822,9 @@ func (r *AutoDiscoveryRunner) discoverEndpointsWithCheckpoint(ctx context.Contex
 
 			// 已持久化且配置未变：用 checkpoint 重建结果，不重新探测，避免重复请求 /models。
 			if cp, ok := prevByUID[endpointUID]; ok {
+				if r.discoveryDebugEnabled() {
+					log.Printf("[AutoDiscovery-Debug] checkpoint-reuse channel=%s key=%s endpoint=%s protocol_ok=%t", channelUID, discoveryKeyID(key), endpointUID, cp.ProtocolOk)
+				}
 				results = append(results, EndpointDiscoveryResult{
 					KeyMask:                  utils.MaskAPIKey(key),
 					BaseURL:                  baseURL,
@@ -1121,12 +1138,21 @@ func (r *AutoDiscoveryRunner) probeEndpoint(ctx context.Context, client *http.Cl
 		}
 	}
 	useProbeHeaders := protocolForServiceType(channel.ServiceType) == "messages" || channel.LearnedClientFingerprint
+	if r.discoveryDebugEnabled() {
+		log.Printf("[AutoDiscovery-Debug] upstream-request channel=%s key=%s probe_headers=%t", channel.ChannelUID, discoveryKeyID(apiKey), useProbeHeaders)
+	}
 	statusCode, body, learnedFingerprint, err := utils.FetchUpstreamModels(ctx, client, modelsURL, applyAuth, channel.CustomHeaders, useProbeHeaders)
 	if err != nil {
+		if r.discoveryDebugEnabled() {
+			log.Printf("[AutoDiscovery-Debug] upstream-result channel=%s key=%s status=%d error_class=%T", channel.ChannelUID, discoveryKeyID(apiKey), statusCode, err)
+		}
 		result.ErrorMessage = fmt.Sprintf("请求失败: %v", err)
 		return result
 	}
 	result.usedClientFingerprint = learnedFingerprint
+	if r.discoveryDebugEnabled() {
+		log.Printf("[AutoDiscovery-Debug] upstream-result channel=%s key=%s status=%d fingerprint_retry_success=%t body_bytes=%d", channel.ChannelUID, discoveryKeyID(apiKey), statusCode, learnedFingerprint, len(body))
+	}
 
 	if statusCode != http.StatusOK {
 		if hasManifest && statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden {
@@ -1233,6 +1259,31 @@ func setModelDiscoveryMetadata(result *EndpointDiscoveryResult, source, message 
 	result.ModelDiscoverySource = source
 	result.ModelDiscoveryMessage = strings.TrimSpace(message)
 	result.ModelsDiscoveredAt = &now
+}
+
+// discoveryKeyID is a stable, non-reversible identifier for correlating a key across probes.
+func discoveryKeyID(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:6])
+}
+
+// discoveryDebugEnabled 由 runner 方法调用，访问缓存标志位。
+func (r *AutoDiscoveryRunner) discoveryDebugEnabled() bool {
+	return r.debugEnabled
+}
+
+func discoveryKeyCount(channel *config.UpstreamConfig) int {
+	if channel == nil {
+		return 0
+	}
+	return len(channel.APIKeys)
+}
+
+func discoveryBaseURLCount(channel *config.UpstreamConfig) int {
+	if channel == nil {
+		return 0
+	}
+	return len(channel.GetAllBaseURLs())
 }
 
 func logEndpointDiscovery(channelUID string, result EndpointDiscoveryResult) {
