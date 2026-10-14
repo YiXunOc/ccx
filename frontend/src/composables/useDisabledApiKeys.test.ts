@@ -42,6 +42,91 @@ const createOptions = (
 }
 
 describe('useDisabledApiKeys', () => {
+  it('部分模型失败仅保留失败项，重试不重复成功项', async () => {
+    let fail = true
+    const disableGroupModel = vi.fn(async (_kind, _index, _key, model) => {
+      if (model === 'bad' && fail) throw new Error('failed')
+      return { success: true, quotaGroup: '', model, affectedKeyCount: 1 }
+    })
+    const { state } = createOptions({ disableGroupModel })
+    state.stageGroupModelDisable(activeKey, 'good')
+    state.stageGroupModelDisable(activeKey, 'bad')
+    state.stageGroupModelDisable(activeKey, 'later')
+    await expect(state.flushStagedGroupModelDisables()).rejects.toThrow('partially failed')
+    expect(state.pendingGroupModelDisables.value).toEqual([{ key: activeKey, model: 'bad' }])
+    expect(state.visibleDisabledGroupModels.value.map(record => record.model)).toEqual(['good', 'later'])
+    fail = false
+    await state.flushStagedGroupModelDisables()
+    expect(disableGroupModel.mock.calls.map(call => call[3])).toEqual(['good', 'bad', 'later', 'bad'])
+    expect(state.pendingGroupModelDisables.value).toEqual([])
+  })
+
+  it('跨协议部分失败按首次路由快照重试，不重复已成功协议', async () => {
+    let fail = true
+    const disableGroupModel = vi.fn(async (kind, _index, _key, model) => {
+      if (kind === 'chat' && fail) throw new Error('chat failed')
+      return { success: true, quotaGroup: '', model, affectedKeyCount: 1 }
+    })
+    const { channel, state } = createOptions({ disableGroupModel })
+    channel.value!.protocolRoutes = [
+      { kind: 'messages', index: 3, name: '', serviceType: 'claude', apiKeys: [activeKey] },
+      { kind: 'chat', index: 7, name: '', serviceType: 'openai', apiKeys: [activeKey] },
+    ]
+    state.stageGroupModelDisable(activeKey, 'model-x')
+    await expect(state.flushStagedGroupModelDisables()).rejects.toThrow('partially failed')
+    expect(state.pendingGroupModelDisables.value).toHaveLength(1)
+    expect(state.visibleDisabledGroupModels.value).toEqual([])
+    channel.value!.protocolRoutes = []
+    channel.value!.index = 99
+    fail = false
+    await state.flushStagedGroupModelDisables()
+    expect(disableGroupModel.mock.calls.map(call => call.slice(0, 2))).toEqual([
+      ['messages', 3], ['chat', 7], ['chat', 7],
+    ])
+    expect(state.pendingGroupModelDisables.value).toEqual([])
+  })
+
+  it('所有模型的目标在提交开始时固定，后续渠道变化不改变路由', async () => {
+    let resolve!: () => void
+    const first = new Promise<void>(done => { resolve = done })
+    const disableGroupModel = vi.fn(async (_kind, _index, _key, model) => {
+      if (model === 'first') await first
+      return { success: true, quotaGroup: '', model, affectedKeyCount: 1 }
+    })
+    const { channel, state } = createOptions({ disableGroupModel })
+    state.stageGroupModelDisable(activeKey, 'first')
+    state.stageGroupModelDisable(activeKey, 'second')
+    const flush = state.flushStagedGroupModelDisables()
+    channel.value!.index = 99
+    resolve()
+    await flush
+    expect(disableGroupModel.mock.calls.map(call => call[1])).toEqual([3, 3])
+  })
+
+  it('未确认成功的响应保留为失败项', async () => {
+    const disableGroupModel = vi.fn().mockResolvedValue({ success: false, quotaGroup: '', model: 'model-x', affectedKeyCount: 0 })
+    const { state } = createOptions({ disableGroupModel })
+    state.stageGroupModelDisable(activeKey, 'model-x')
+    await expect(state.flushStagedGroupModelDisables()).rejects.toThrow('partially failed')
+    expect(state.pendingGroupModelDisables.value).toHaveLength(1)
+    expect(state.visibleDisabledGroupModels.value).toEqual([])
+  })
+
+  it('请求未完成前不清空队列，缺少目标时保留待保存项', async () => {
+    let resolve!: (value: { success: boolean; quotaGroup: string; model: string; affectedKeyCount: number }) => void
+    const disableGroupModel = vi.fn(() => new Promise<{ success: boolean; quotaGroup: string; model: string; affectedKeyCount: number }>(done => { resolve = done }))
+    const { channel, state } = createOptions({ disableGroupModel })
+    state.stageGroupModelDisable(activeKey, 'model-x')
+    const flush = state.flushStagedGroupModelDisables()
+    expect(state.pendingGroupModelDisables.value).toHaveLength(1)
+    resolve({ success: true, quotaGroup: '', model: 'model-x', affectedKeyCount: 1 })
+    await flush
+    state.stageGroupModelDisable(activeKey, 'model-y')
+    channel.value = null
+    await expect(state.flushStagedGroupModelDisables()).rejects.toThrow('target is unavailable')
+    expect(state.pendingGroupModelDisables.value).toHaveLength(1)
+  })
+
   it('restores the key and updates the visible blacklist immediately', async () => {
     const restoreApiKey = vi.fn().mockResolvedValue(undefined)
     const { form, state } = createOptions({ restoreApiKey })

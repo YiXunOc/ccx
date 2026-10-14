@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { mount } from '@vue/test-utils'
-import { defineComponent, nextTick } from 'vue'
+import { computed, defineComponent, nextTick } from 'vue'
+import { ApiService } from '../../services/api'
+import type { Channel, LlmChannelDashboardResponse } from '../../services/api-types'
+import { buildUnifiedChannelsData, type LlmChannelKind } from '../../utils/unifiedChannels'
+import { mergeChannelsWithLocalData } from '../../utils/channelMerge'
+import { useDisabledApiKeys } from '../../composables/useDisabledApiKeys'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ApiKeyManagementSection from './ApiKeyManagementSection.vue'
@@ -120,6 +125,48 @@ const mountSection = (props: Record<string, unknown> = {}) => mount(ApiKeyManage
 })
 
 describe('ApiKeyManagementSection', () => {
+  it('Dashboard物理规则经实际合并进入编辑Key标签，跨协议去重、Key隔离并重开', async () => {
+    const rule = (key: string, model: string, quotaGroup = '') => ({ key, model, quotaGroup, disabledAt: '2026-09-18T00:00:00Z' })
+    const physical = (index: number, rules: ReturnType<typeof rule>[]): Channel => ({
+      index, name: 'dashboard-channel', logicalChannelUid: 'logical-1', channelUid: 'ch-' + index,
+      serviceType: 'openai', baseUrl: 'https://example.invalid', apiKeys: ['sk-1', 'sk-2', 'sk-3', 'sk-4'],
+      apiKeyConfigs: ['sk-1', 'sk-2', 'sk-3', 'sk-4'].map((key, i) => ({ key, keyUid: 'uid-' + i, quotaGroup: i < 2 ? '' : 'coding' })),
+      disabledGroupModels: rules,
+    })
+    const stats = { multiChannelMode: true, activeChannelCount: 2, traceAffinityCount: 0, traceAffinityTTL: '0s', failureThreshold: 3, windowSize: 10 }
+    const dashboard: LlmChannelDashboardResponse = JSON.parse(JSON.stringify({ dashboards: {
+      messages: { channels: [physical(3, [rule('sk-1', 'model-a'), rule('sk-2', 'other-key'), rule('sk-3', 'group-a', 'coding')])], metrics: [], stats },
+      chat: { channels: [physical(7, [rule('sk-1', 'model-a'), rule('sk-1', 'model-b'), rule('sk-4', 'group-b', 'coding')])], metrics: [], stats },
+      responses: { channels: [], metrics: [], stats }, gemini: { channels: [], metrics: [], stats },
+    } }))
+    const loadEditor = () => {
+      const kinds: LlmChannelKind[] = ['messages', 'chat', 'responses', 'gemini']
+      const data = Object.fromEntries(kinds.map(kind => [kind, { channels: mergeChannelsWithLocalData(dashboard.dashboards[kind].channels, []), current: -1 }])) as Parameters<typeof buildUnifiedChannelsData>[0]
+      const logical = buildUnifiedChannelsData(data).channels[0]!
+      expect(logical.protocolRoutes).toHaveLength(2)
+      expect(logical.disabledGroupModels).toHaveLength(5)
+      const state = useDisabledApiKeys({ apiService: new ApiService(), channel: computed(() => logical), channelType: computed(() => 'messages'), form: { apiKeys: logical.apiKeys, apiKeyConfigs: logical.apiKeyConfigs }, emitError: vi.fn() })
+      return mountSection({ apiKeys: logical.apiKeys, apiKeyConfigs: logical.apiKeyConfigs, channelUid: logical.channelUid,
+        channelKind: logical.routeKind, disabledGroupModels: state.visibleDisabledGroupModels.value })
+    }
+    for (let opening = 0; opening < 2; opening++) {
+      const wrapper = loadEditor()
+      try {
+        for (const [key, expected, absent] of [
+          ['sk-1', ['model-a', 'model-b'], ['other-key', 'group-a', 'group-b']],
+          ['sk-2', ['other-key'], ['model-a', 'model-b', 'group-a']],
+          ['sk-3', ['group-a', 'group-b'], ['model-a', 'other-key']],
+          ['sk-4', ['group-a', 'group-b'], ['model-b', 'other-key']],
+        ] as const) {
+          await wrapper.find('[data-key-row="' + key + '"] [aria-label="channelCard.keyDetail"]').trigger('click')
+          await nextTick()
+          const detail = wrapper.find('[data-key-row="' + key + '"] .volcengine-key-detail')
+          for (const model of expected) expect(detail.text()).toContain(model)
+          for (const model of absent) expect(detail.text()).not.toContain(model)
+        }
+      } finally { wrapper.unmount() }
+    }
+  })
   beforeEach(() => {
     vi.clearAllMocks()
     apiMocks.patchKeyMultiplier.mockResolvedValue({

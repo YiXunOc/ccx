@@ -20,6 +20,7 @@ import { useChannelEditorFormDerived } from './useChannelEditorFormDerived'
 import { useChannelEditorHeaderState } from './useChannelEditorHeaderState'
 import { useDialogMenuWorkaround } from './useDialogMenuWorkaround'
 import { useDisabledApiKeys } from './useDisabledApiKeys'
+import type { ChannelSaveProgress } from './channelSaveTransaction'
 import { useEditChannelSectionNav } from './useEditChannelSectionNav'
 import { useTargetModelFetch } from './useTargetModelFetch'
 import { useEditChannelOptions } from '../utils/editChannelOptions'
@@ -39,7 +40,7 @@ export type EditChannelModalEmits = {
   'update:show': [value: boolean]
   save: [
     channel: Omit<Channel, 'index' | 'latency' | 'status'>,
-    options?: { isQuickAdd?: boolean },
+    options?: { isQuickAdd?: boolean; progress?: ChannelSaveProgress },
     onComplete?: () => void,
     flushStagedGroupModelDisables?: () => Promise<void>,
   ]
@@ -637,6 +638,8 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
 
   // 提交状态
   const submitting = ref(false)
+  let saveProgress: ChannelSaveProgress = {}
+  let saveTarget: Channel | null | undefined
 
   const {
     targetModelOptions,
@@ -684,9 +687,16 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
 
       const channelData = buildSubmitPayload()
 
-      emit('save', channelData, undefined, () => {
+      if (!saveTarget && props.channel) {
+        saveTarget = {
+          ...props.channel,
+          protocolRoutes: props.channel.protocolRoutes?.map(route => ({ ...route, apiKeys: [...(route.apiKeys ?? [])] })),
+        }
+      }
+      const target = saveTarget
+      emit('save', channelData, { progress: saveProgress }, () => {
         submitting.value = false
-      }, flushStagedGroupModelDisables)
+      }, () => flushStagedGroupModelDisables(target))
       saveStarted = true
     } finally {
       if (!saveStarted) {
@@ -708,6 +718,8 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     () => props.show,
     newShow => {
       if (newShow) {
+        saveProgress = {}
+        saveTarget = undefined
         dialogMode.value = props.channel ? 'edit' : 'create'
         resetRestoredKeys()
 

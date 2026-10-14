@@ -39,7 +39,7 @@ describe('runChannelSaveTransaction', () => {
       flush: async () => { throw new Error('persist failed') },
       close,
       refresh,
-    })).rejects.toThrow('persist failed')
+    })).rejects.toThrow('渠道已保存，但模型排除部分失败')
 
     expect(close).not.toHaveBeenCalled()
     expect(refresh).not.toHaveBeenCalled()

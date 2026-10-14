@@ -15,7 +15,7 @@ import { useDialogHotkeys } from './useDialogHotkeys'
 import { useToasts } from './useToasts'
 import { streamTimeoutPresets as sharedStreamPresets } from '../utils/streamTimeoutPresets'
 import { isAutoManagedAccountChannel } from '../utils/providerDisplay'
-import { runChannelSaveTransaction } from './channelSaveTransaction'
+import { ChannelExclusionSaveError, runChannelSaveTransaction, type ChannelSaveProgress } from './channelSaveTransaction'
 
 export function useAppController() {
 // 路由
@@ -140,24 +140,42 @@ export function useAppController() {
 
   const saveChannel = async (
     channel: Omit<Channel, 'index' | 'latency' | 'status'>,
-    options?: { isQuickAdd?: boolean; placement?: ChannelPlacement; skipVerify?: boolean },
+    options?: { isQuickAdd?: boolean; placement?: ChannelPlacement; skipVerify?: boolean; progress?: ChannelSaveProgress },
     onComplete?: () => void,
     flushStagedGroupModelDisables?: () => Promise<void>,
   ) => {
+    channel = JSON.parse(JSON.stringify(channel))
     try {
-      const editingChannel = dialogStore.editingChannel as Channel | null
-      const result = await runChannelSaveTransaction({
-        save: () => channelStore.saveChannel(
-          channel,
-          editingChannel ? getChannelRouteIndex(editingChannel) : null,
-          {
-            ...options,
-            channelType: getChannelRouteKind(editingChannel),
-            autoManaged: isAutoManagedAccountChannel(editingChannel),
-            accountUid: editingChannel?.accountUid,
-            originalChannel: editingChannel ?? undefined,
-          },
-        ),
+      const progress = options?.progress ?? {}
+      progress.target ??= {
+        channel: dialogStore.editingChannel ? JSON.parse(JSON.stringify(dialogStore.editingChannel)) : null,
+        kind: getChannelRouteKind(dialogStore.editingChannel),
+      }
+      const editingChannel = progress.target.channel
+      const result = await runChannelSaveTransaction<Awaited<ReturnType<typeof channelStore.saveChannel>>>({
+        progress,
+        payload: channel,
+        save: async previous => {
+          const channelId = editingChannel ? getChannelRouteIndex(editingChannel) : previous?.channelId ?? null
+          if (previous && channelId === null) {
+            throw new Error('渠道已创建，但未返回实际渠道 ID，无法安全保存后续编辑；编辑已保留，请关闭后重新打开该渠道。')
+          }
+          const saved = await channelStore.saveChannel(
+            channel,
+            channelId,
+            {
+              ...options,
+              channelType: progress.target!.kind,
+              autoManaged: isAutoManagedAccountChannel(editingChannel),
+              accountUid: editingChannel?.accountUid,
+              originalChannel: editingChannel ?? undefined,
+            },
+          )
+          if (editingChannel) {
+            progress.target!.channel = { ...editingChannel, ...JSON.parse(JSON.stringify(channel)) }
+          }
+          return saved
+        },
         onSaved: savedResult => {
           showToast(savedResult.message, 'success')
           if (savedResult.quickAddMessage) {
@@ -180,6 +198,10 @@ export function useAppController() {
 
       return result
     } catch (error) {
+      if (error instanceof ChannelExclusionSaveError) {
+        showToast(error.message, 'warning')
+        return undefined
+      }
       // 新增 Key 验证失败（如鉴权失败 401/403）：提供"仍要保存"兜底入口，确认后跳过验证重试。
       // onComplete 由外层 finally 统一执行，递归重试时不再透传，避免重复触发。
       if (

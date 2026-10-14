@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -17,6 +18,178 @@ import (
 	"github.com/BenedictKing/ccx/internal/warmup"
 	"github.com/gin-gonic/gin"
 )
+
+func TestGetChannelDashboard_LLMGroupModelPersistenceAndIdempotency(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	makeUpstreams := func(kind string) []config.UpstreamConfig {
+		return []config.UpstreamConfig{{
+			Name: kind + "-restricted", ServiceType: kind,
+			BaseURL: "https://dashboard-test.invalid",
+			APIKeys: []string{"sk-single-a", "sk-single-b", "sk-group-a", "sk-group-b"},
+			APIKeyConfigs: []config.APIKeyConfig{
+				{Key: "sk-single-a"}, {Key: "sk-single-b"},
+				{Key: "sk-group-a", QuotaGroup: "coding"},
+				{Key: "sk-group-b", QuotaGroup: "coding"},
+			},
+		}, {
+			Name: kind + "-unrestricted", ServiceType: kind,
+			BaseURL: "https://dashboard-empty.invalid", APIKeys: []string{"sk-empty"},
+		}}
+	}
+	cfg := config.Config{
+		Upstream: makeUpstreams("claude"), ChatUpstream: makeUpstreams("openai"),
+		ResponsesUpstream: makeUpstreams("responses"), GeminiUpstream: makeUpstreams("gemini"),
+	}
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configFile, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cm, err := config.NewConfigManager(configFile, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { errutil.IgnoreDeferred(cm.Close) })
+	kinds := []string{"messages", "chat", "responses", "gemini"}
+	upstreams := func(cfg config.Config, kind string) []config.UpstreamConfig {
+		switch kind {
+		case "chat":
+			return cfg.ChatUpstream
+		case "responses":
+			return cfg.ResponsesUpstream
+		case "gemini":
+			return cfg.GeminiUpstream
+		default:
+			return cfg.Upstream
+		}
+	}
+	wantByKind := make(map[string][]config.DisabledGroupModelInfo)
+	apiTypes := map[string]string{"messages": "Messages", "chat": "Chat", "responses": "Responses", "gemini": "Gemini"}
+	for _, kind := range kinds {
+		for _, rule := range []struct {
+			key, model, group string
+			affected          int
+		}{
+			{"sk-single-a", "model-shared", "", 1},
+			{"sk-single-b", "model-shared", "", 1},
+			{"sk-group-a", "model-group", "coding", 2},
+		} {
+			group, affected, err := cm.DisableGroupModel(apiTypes[kind], 0, rule.key, rule.model)
+			if err != nil || group != rule.group || affected != rule.affected {
+				t.Fatalf("%s disable: group=%q affected=%d err=%v", kind, group, affected, err)
+			}
+		}
+		before := upstreams(cm.GetConfig(), kind)[0].DisabledGroupModels
+		if len(before) != 3 {
+			t.Fatalf("%s rules=%+v, want three independent records", kind, before)
+		}
+		for i, rule := range before {
+			if _, err := time.Parse(time.RFC3339, rule.DisabledAt); err != nil {
+				t.Fatalf("%s rule %d disabledAt=%q: %v", kind, i, rule.DisabledAt, err)
+			}
+		}
+		want := []config.DisabledGroupModelInfo{
+			{Key: "sk-single-a", Model: "model-shared", DisabledAt: before[0].DisabledAt},
+			{Key: "sk-single-b", Model: "model-shared", DisabledAt: before[1].DisabledAt},
+			{QuotaGroup: "coding", Model: "model-group", DisabledAt: before[2].DisabledAt},
+		}
+		if !reflect.DeepEqual(before, want) {
+			t.Fatalf("%s rules=%+v, want %+v", kind, before, want)
+		}
+		fileBefore, err := os.ReadFile(configFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, repeat := range []struct {
+			key, model, group string
+			affected          int
+		}{
+			{" sk-single-a ", " MODEL-SHARED ", "", 1},
+			{"sk-single-b", "model-shared", "", 1},
+			{"sk-group-b", "MODEL-GROUP", "coding", 2},
+		} {
+			group, affected, err := cm.DisableGroupModel(apiTypes[kind], 0, repeat.key, repeat.model)
+			if err != nil || group != repeat.group || affected != repeat.affected {
+				t.Fatalf("%s repeat: group=%q affected=%d err=%v", kind, group, affected, err)
+			}
+		}
+		if got := upstreams(cm.GetConfig(), kind)[0].DisabledGroupModels; !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s duplicate changed records or timestamps: %+v", kind, got)
+		}
+		fileAfter, err := os.ReadFile(configFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(fileAfter) != string(fileBefore) {
+			t.Fatalf("%s duplicate changed persisted config", kind)
+		}
+		wantByKind[kind] = want
+	}
+	if err := cm.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A fresh manager proves the dashboard is reading persisted rules, not the writer's memory.
+	reloaded, err := config.NewConfigManager(configFile, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer errutil.IgnoreDeferred(reloaded.Close)
+	for _, kind := range kinds {
+		if got := upstreams(reloaded.GetConfig(), kind)[0].DisabledGroupModels; !reflect.DeepEqual(got, wantByKind[kind]) {
+			t.Fatalf("%s reloaded rules=%+v, want %+v", kind, got, wantByKind[kind])
+		}
+	}
+	messagesMetrics, responsesMetrics := metrics.NewMetricsManager(), metrics.NewMetricsManager()
+	geminiMetrics, chatMetrics := metrics.NewMetricsManager(), metrics.NewMetricsManager()
+	imagesMetrics := metrics.NewMetricsManager()
+	defer messagesMetrics.Stop()
+	defer responsesMetrics.Stop()
+	defer geminiMetrics.Stop()
+	defer chatMetrics.Stop()
+	defer imagesMetrics.Stop()
+	traceAffinity := session.NewTraceAffinityManager()
+	defer traceAffinity.Stop()
+	sch := scheduler.NewChannelScheduler(reloaded, messagesMetrics, responsesMetrics, geminiMetrics,
+		chatMetrics, imagesMetrics, traceAffinity, warmup.NewURLManager(30*time.Second, 3))
+	r := gin.New()
+	r.GET("/api/messages/channels/dashboard", GetChannelDashboard(reloaded, sch))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/messages/channels/dashboard?type=llm", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Dashboards map[string]struct {
+			Channels []map[string]json.RawMessage `json:"channels"`
+		} `json:"dashboards"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range kinds {
+		dashboard, exists := resp.Dashboards[kind]
+		if !exists || len(dashboard.Channels) != 2 {
+			t.Fatalf("%s dashboard missing or channel count=%d", kind, len(dashboard.Channels))
+		}
+		raw, exists := dashboard.Channels[0]["disabledGroupModels"]
+		wantJSON, err := json.Marshal(wantByKind[kind])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !exists || string(raw) != string(wantJSON) {
+			t.Fatalf("%s disabledGroupModels=%s (exists=%v), want %s", kind, raw, exists, wantJSON)
+		}
+		for _, field := range []string{"disabledKeyModels", "disabledGroupModels"} {
+			raw, exists := dashboard.Channels[1][field]
+			if !exists || string(raw) != "null" {
+				t.Fatalf("%s unrestricted %s=%s (exists=%v), want null", kind, field, raw, exists)
+			}
+		}
+	}
+}
 
 type fakePersistenceStore struct {
 	bucketsByMetricsKey map[string][]metrics.AggregatedBucket

@@ -1,6 +1,8 @@
 package common
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/BenedictKing/ccx/internal/config"
@@ -104,14 +106,65 @@ func TestBuildChannelViewExposesKeyModelRestrictionRecords(t *testing.T) {
 			{Key: "sk-a", Model: "model-x", DisabledAt: "2026-09-29T00:00:00Z"},
 		},
 		DisabledGroupModels: []config.DisabledGroupModelInfo{
+			{Key: "sk-a", Model: "model-x", DisabledAt: "2026-09-29T00:00:00Z"},
+			{Key: "sk-b", Model: "model-x", DisabledAt: "2026-09-30T00:00:00Z"},
 			{QuotaGroup: "coding", Model: "model-y", DisabledAt: "2026-09-29T00:00:00Z"},
 		},
 	}
 	view := BuildChannelView(up, 0)
-	if _, ok := view["disabledKeyModels"]; !ok {
-		t.Fatal("渠道视图应包含 disabledKeyModels（Key 级临时限制记录回读）")
+	for field, want := range map[string]any{
+		"disabledKeyModels":   up.DisabledKeyModels,
+		"disabledGroupModels": up.DisabledGroupModels,
+	} {
+		got, exists := view[field]
+		if !exists || !reflect.DeepEqual(got, want) {
+			t.Fatalf("view[%s] = %#v (exists=%v), want %#v", field, got, exists, want)
+		}
+		data, err := json.Marshal(view)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		wantJSON, err := json.Marshal(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(decoded[field]) != string(wantJSON) {
+			t.Fatalf("JSON[%s] = %s, want %s", field, decoded[field], wantJSON)
+		}
 	}
-	if _, ok := view["disabledGroupModels"]; !ok {
-		t.Fatal("渠道视图应包含 disabledGroupModels（分组排除记录回读）")
+}
+
+func TestBuildChannelView_ModelRestrictionEmptyContract(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		up   config.UpstreamConfig
+		want string
+	}{
+		{name: "nil", want: "null"},
+		{name: "empty", up: config.UpstreamConfig{
+			DisabledKeyModels:   []config.DisabledKeyModelInfo{},
+			DisabledGroupModels: []config.DisabledGroupModelInfo{},
+		}, want: "[]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(BuildChannelView(tc.up, 0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var view map[string]json.RawMessage
+			if err := json.Unmarshal(data, &view); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"disabledKeyModels", "disabledGroupModels"} {
+				got, exists := view[field]
+				if !exists || string(got) != tc.want {
+					t.Fatalf("JSON[%s] = %s (exists=%v), want %s", field, got, exists, tc.want)
+				}
+			}
+		})
 	}
 }

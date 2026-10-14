@@ -3,7 +3,7 @@ import { defineComponent, nextTick, type PropType } from 'vue'
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Channel } from '../services/api'
-import { runChannelSaveTransaction } from './channelSaveTransaction'
+import { runChannelSaveTransaction, type ChannelSaveProgress } from './channelSaveTransaction'
 import { useEditChannelModal } from './useEditChannelModal'
 
 const { disableGroupModel } = vi.hoisted(() => ({
@@ -102,6 +102,45 @@ describe('useEditChannelModal staged group model disables', () => {
     } finally {
       wrapper.unmount()
     }
+  })
+
+  it('真实排除失败不通知成功或关窗，重试不重复保存主渠道，重开隔离状态', async () => {
+    const { wrapper, state } = mountEditor()
+    try {
+      await wrapper.setProps({ show: true })
+      state.stageGroupModelDisable('test-key', 'model-x')
+      state.formRef.value = { validate: vi.fn().mockResolvedValue({ valid: true }) }
+      const save = vi.fn().mockResolvedValue({ success: true })
+      const close = vi.fn()
+      const onSaved = vi.fn()
+      const refresh = vi.fn().mockResolvedValue(undefined)
+      const submit = async () => {
+        await state.handleSubmit()
+        const events = wrapper.emitted('save')!
+        const event = events[events.length - 1]!
+        const progress = (event[1] as { progress: ChannelSaveProgress }).progress
+        const onComplete = event[2] as () => void
+        const flush = event[3] as () => Promise<void>
+        try { return await runChannelSaveTransaction({ save, progress, payload: event[0], flush, close, onSaved, refresh }) }
+        finally { onComplete() }
+      }
+      disableGroupModel.mockRejectedValueOnce(new Error('failed'))
+      await expect(submit()).rejects.toThrow('渠道已保存，但模型排除部分失败')
+      expect(state.pendingGroupModelDisables.value).toHaveLength(1)
+      expect(state.submitting.value).toBe(false)
+      expect(onSaved).not.toHaveBeenCalled()
+      expect(close).not.toHaveBeenCalled()
+      await submit()
+      expect(save).toHaveBeenCalledTimes(1)
+      expect(close).toHaveBeenCalledTimes(1)
+      expect(onSaved).toHaveBeenCalledTimes(1)
+      await wrapper.setProps({ show: false })
+      await wrapper.setProps({ show: true })
+      state.stageGroupModelDisable('test-key', 'model-x')
+      await submit()
+      expect(save).toHaveBeenCalledTimes(2)
+      expect(disableGroupModel).toHaveBeenCalledTimes(3)
+    } finally { wrapper.unmount() }
   })
 
   it('does not flush or close when saving fails', async () => {

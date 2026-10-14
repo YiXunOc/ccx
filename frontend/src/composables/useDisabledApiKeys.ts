@@ -35,6 +35,7 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
   const localRestoredGroupModels = ref(new Set<string>())
   // 分组模型排除暂存：行内面板暂存、渠道主保存成功后统一提交（flushStagedGroupModelDisables）。
   const pendingGroupModelDisables = ref<Array<{ key: string; model: string }>>([])
+  const pendingRoutes = new Map<string, { routes: KeyRoute[]; result?: Awaited<ReturnType<ApiService['disableGroupModel']>> }>()
   const suspendingKey = ref('')
   const localSuspendedKeys = ref(new Set<string>())
   const localResumedKeys = ref(new Set<string>())
@@ -180,6 +181,8 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
   })
 
   const resetRestoredKeys = () => {
+    pendingGroupModelDisables.value = []
+    pendingRoutes.clear()
     localRestoredKeys.value = new Set<string>()
     restoringKey.value = ''
     localRemovedKeys.value = new Set<string>()
@@ -317,18 +320,54 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
   }
 
   const unstageGroupModelDisable = (apiKey: string, model: string) => {
+    pendingRoutes.delete(JSON.stringify([apiKey, model]))
     pendingGroupModelDisables.value = pendingGroupModelDisables.value.filter(
       item => !(item.key === apiKey && item.model === model),
     )
   }
 
-  // 渠道主保存成功后调用：逐个提交暂存的排除并清空暂存（单个失败仅报错，不阻断其余）。
-  // channelSnapshot 见 disableGroupModel 的说明。
+  // 固定每项首次提交的路由，重试只提交尚未确认成功的路由。
   const flushStagedGroupModelDisables = async (channelSnapshot?: Channel | null) => {
-    const staged = pendingGroupModelDisables.value
-    pendingGroupModelDisables.value = []
+    const staged = [...pendingGroupModelDisables.value]
+    if (!staged.length) return
+    const channel = channelSnapshot ?? options.channel.value
+    if (!channel) throw new Error('Model exclusion target is unavailable')
+    if (changingGroupModel.value) throw new Error('Model exclusion is already in progress')
+    changingGroupModel.value = 'staged'
     for (const item of staged) {
-      await disableGroupModel(item.key, item.model, channelSnapshot)
+      const id = JSON.stringify([item.key, item.model])
+      if (!pendingRoutes.has(id)) pendingRoutes.set(id, { routes: keyRoutes(channel, item.key) })
+    }
+    const failures: unknown[] = []
+    try {
+      for (const item of staged) {
+        const id = JSON.stringify([item.key, item.model])
+        const progress = pendingRoutes.get(id)!
+        const targets = [...progress.routes]
+        const results = await Promise.allSettled(targets.map(route =>
+          options.apiService.disableGroupModel(route.kind, route.index, item.key, item.model).then(result => {
+            if (!result.success) throw new Error('Model exclusion was not confirmed')
+            return result
+          }),
+        ))
+        progress.routes = targets.filter((_, index) => results[index]?.status === 'rejected')
+        for (const result of results) {
+          if (result.status === 'fulfilled') progress.result = result.value
+          else failures.push(result.reason)
+        }
+        if (progress.routes.length || !progress.result) continue
+        const result = progress.result
+        const record = { quotaGroup: result.quotaGroup, key: item.key, model: result.model, disabledAt: new Date().toISOString() }
+        const policyKey = groupModelPolicyKey(record)
+        localDisabledGroupModels.value = [
+          ...localDisabledGroupModels.value.filter(record => groupModelPolicyKey(record) !== policyKey), record,
+        ]
+        localRestoredGroupModels.value.delete(policyKey)
+        unstageGroupModelDisable(item.key, item.model)
+      }
+      if (failures.length) throw Object.assign(new Error('Model exclusions partially failed; retry remaining exclusions'), { errors: failures })
+    } finally {
+      changingGroupModel.value = ''
     }
   }
 
