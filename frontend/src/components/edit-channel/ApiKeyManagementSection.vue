@@ -639,11 +639,25 @@
                   <div v-if="savedDisablesForEditingKey.length || pendingDisablesForEditingKey.length" class="d-flex flex-wrap ga-2 mt-2">
                     <v-chip
                       v-for="saved in savedDisablesForEditingKey"
-                      :key="'saved|' + saved.quotaGroup + '|' + saved.model"
+                      :key="'saved|' + groupModelPolicyKey(saved)"
+                      :model-value="true"
+                      @update:model-value="() => {}"
                       size="small"
                       color="secondary"
                       variant="tonal"
+                      closable
+                      :close-label="t('channelCard.restoreGroupModel')"
+                      :title="t('channelCard.restoreGroupModel')"
+                      :disabled="!!changingGroupModel"
+                      @click:close="!changingGroupModel && emit('restore-group-model', saved)"
                     >
+                      <v-progress-circular
+                        v-if="changingGroupModel === groupModelPolicyKey(saved)"
+                        indeterminate
+                        size="14"
+                        width="2"
+                        class="mr-1"
+                      />
                       {{ saved.model }}
                     </v-chip>
                     <v-chip
@@ -653,6 +667,8 @@
                       color="warning"
                       variant="tonal"
                       closable
+                      :close-label="t('app.actions.cancel')"
+                      :title="t('app.actions.cancel')"
                       @click:close="unstageGroupModelDisable(pending.key, pending.model)"
                     >
                       <v-icon start size="14">mdi-clock-outline</v-icon>
@@ -1855,7 +1871,12 @@ const submitGroupModelDisable = (model: unknown = groupModelForm.value.model) =>
   const row = groupModelEditing.value
   const trimmed = (model ?? '').toString().trim()
   if (!row || !trimmed) return
-  emit('stage-group-model-disable', row.key, trimmed)
+  const policyKey = groupModelPolicyKey({ quotaGroup: editingQuotaGroup.value, key: row.key, model: trimmed })
+  const duplicate = savedDisablesForEditingKey.value.some(record => groupModelPolicyKey(record) === policyKey)
+    || pendingDisablesForEditingKey.value.some(item => groupModelPolicyKey({
+      ...item, quotaGroup: editingQuotaGroup.value,
+    }) === policyKey)
+  if (!duplicate) emit('stage-group-model-disable', row.key, trimmed)
   groupModelForm.value = { model: '' }
 }
 
@@ -1867,14 +1888,19 @@ const unstageGroupModelDisable = (key: string, model: string) => {
 const savedDisablesForEditingKey = computed(() => {
   const row = groupModelEditing.value
   if (!row) return []
-  const quotaGroup = row.quotaGroup?.trim() || ''
+  const quotaGroup = editingQuotaGroup.value
   return visibleDisabledGroupModels.value.filter(record => quotaGroup
-    ? record.quotaGroup === quotaGroup
-    : !record.quotaGroup && record.key === row.key)
+    ? record.quotaGroup?.trim() === quotaGroup
+    : !record.quotaGroup?.trim() && record.key === row.key)
 })
-const pendingDisablesForEditingKey = computed(() =>
-  (props.pendingGroupModelDisables || []).filter(item => item.key === groupModelEditing.value?.key)
-)
+const pendingDisablesForEditingKey = computed(() => {
+  const row = groupModelEditing.value
+  if (!row) return []
+  const quotaGroup = editingQuotaGroup.value
+  return (props.pendingGroupModelDisables || []).filter(item => quotaGroup
+    ? props.apiKeyConfigs?.find(config => config.key === item.key)?.quotaGroup?.trim() === quotaGroup
+    : item.key === row.key)
+})
 
 const toggleCredentialKey = (key: string) => {
   expandedCredentialKey.value = expandedCredentialKey.value === key ? null : key

@@ -42,6 +42,51 @@ const createOptions = (
 }
 
 describe('useDisabledApiKeys', () => {
+  it('已保存策略按模型大小写空白与分组身份去重，恢复后可重新暂存', async () => {
+    const restoreGroupModel = vi.fn().mockResolvedValue({ success: true })
+    const { channel, state } = createOptions({ restoreGroupModel }, {
+      apiKeys: [activeKey, disabledKey, 'independent'],
+      apiKeyConfigs: [{ key: activeKey, quotaGroup: ' g1 ' }, { key: disabledKey, quotaGroup: 'g1' }],
+    })
+    const saved = { quotaGroup: ' g1 ', key: disabledKey, model: ' Model-X ', disabledAt: '' }
+    channel.value!.disabledGroupModels = [saved]
+    state.stageGroupModelDisable(activeKey, 'model-x')
+    state.stageGroupModelDisable(disabledKey, ' MODEL-X ')
+    expect(state.pendingGroupModelDisables.value).toEqual([])
+    state.stageGroupModelDisable('independent', 'model-x')
+    expect(state.pendingGroupModelDisables.value).toEqual([{ key: 'independent', model: 'model-x' }])
+    await state.restoreDisabledGroupModel(saved)
+    state.stageGroupModelDisable(activeKey, 'MODEL-X')
+    expect(state.pendingGroupModelDisables.value).toHaveLength(2)
+    expect(restoreGroupModel).toHaveBeenCalledWith('messages', 3, saved.model, { quotaGroup: 'g1', apiKey: undefined })
+  })
+
+  it('暂存同组策略去重，独立 Key 不互相阻断且撤销后可重加', () => {
+    const { state } = createOptions({}, {
+      apiKeys: [activeKey, disabledKey, 'a', 'b'],
+      apiKeyConfigs: [{ key: activeKey, quotaGroup: 'g1' }, { key: disabledKey, quotaGroup: ' g1 ' }],
+    })
+    state.stageGroupModelDisable(activeKey, ' Model-X ')
+    state.stageGroupModelDisable(disabledKey, 'model-x')
+    state.stageGroupModelDisable(activeKey, 'MODEL-X')
+    state.stageGroupModelDisable('a', 'model-x')
+    state.stageGroupModelDisable('a', ' MODEL-X ')
+    state.stageGroupModelDisable('b', 'model-x')
+    expect(state.pendingGroupModelDisables.value).toEqual([
+      { key: activeKey, model: 'Model-X' }, { key: 'a', model: 'model-x' }, { key: 'b', model: 'model-x' },
+    ])
+    state.unstageGroupModelDisable(activeKey, 'Model-X')
+    state.stageGroupModelDisable(disabledKey, 'model-x')
+    expect(state.pendingGroupModelDisables.value[state.pendingGroupModelDisables.value.length - 1]).toEqual({ key: disabledKey, model: 'model-x' })
+  })
+
+  it('已保存独立 Key 策略只阻断该 Key', () => {
+    const { channel, state } = createOptions({})
+    channel.value!.disabledGroupModels = [{ quotaGroup: ' ', key: activeKey, model: 'Model-X', disabledAt: '' }]
+    state.stageGroupModelDisable(activeKey, ' MODEL-X ')
+    state.stageGroupModelDisable(disabledKey, 'model-x')
+    expect(state.pendingGroupModelDisables.value).toEqual([{ key: disabledKey, model: 'model-x' }])
+  })
   it('部分模型失败仅保留失败项，重试不重复成功项', async () => {
     let fail = true
     const disableGroupModel = vi.fn(async (_kind, _index, _key, model) => {

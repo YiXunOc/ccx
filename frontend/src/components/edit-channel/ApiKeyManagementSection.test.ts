@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { mount } from '@vue/test-utils'
+// The bundled entry provides the real components without Node-incompatible CSS imports.
+import { createVuetify, components } from 'vuetify/dist/vuetify.js'
 import { computed, defineComponent, nextTick } from 'vue'
 import { ApiService } from '../../services/api'
 import type { Channel, LlmChannelDashboardResponse } from '../../services/api-types'
@@ -10,7 +12,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ApiKeyManagementSection from './ApiKeyManagementSection.vue'
 import { maskApiKey } from '../../utils/apiKeyMask'
+import { groupModelPolicyKey } from '../../utils/channelApiKeys'
 import type { APIKeyConfig } from '../../services/api-types'
+
+vi.hoisted(() => {
+  // jsdom does not expose CSS.supports required by Vuetify's browser feature checks.
+  vi.stubGlobal('CSS', { supports: () => false })
+})
 
 const apiMocks = vi.hoisted(() => ({
   patchKeyMultiplier: vi.fn(),
@@ -66,13 +74,19 @@ const listItemStub = defineComponent({
   emits: ['click'],
   template: '<div v-bind="$attrs" @click="$emit(\'click\')"><slot name="prepend" /><slot /><slot name="append" /></div>',
 })
+const { VChip } = components as unknown as { VChip: typeof import('vuetify/components/VChip').VChip }
+const chipStub = defineComponent({
+  props: ['closable', 'disabled', 'closeLabel'],
+  emits: ['click:close'],
+  template: '<div v-bind="$attrs"><slot /><button v-if="closable !== undefined && closable !== false" class="chip-close" :aria-label="closeLabel" :disabled="disabled" @click="$emit(\'click:close\')" type="button">x</button></div>',
+})
 const comboboxStub = defineComponent({
   props: ['modelValue', 'items', 'label'],
   emits: ['update:modelValue'],
   template: '<div><input class="combobox-stub-input" :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)" /></div>',
 })
 
-const mountSection = (props: Record<string, unknown> = {}) => mount(ApiKeyManagementSection, {
+const mountSection = (props: Record<string, unknown> = {}, realChips = false) => mount(ApiKeyManagementSection, {
   props: {
     apiKeys: ['sk-1'],
     disabledKeys: [],
@@ -86,13 +100,14 @@ const mountSection = (props: Record<string, unknown> = {}) => mount(ApiKeyManage
     ...props,
   },
   global: {
+    plugins: realChips ? [createVuetify({ components: { VChip } })] : [],
     stubs: {
       VCard: passthroughStub,
       VCardTitle: passthroughStub,
       VCardText: passthroughStub,
       VCardActions: passthroughStub,
       VIcon: passthroughStub,
-      VChip: passthroughStub,
+      VChip: realChips ? false : chipStub,
       VTooltip: defineComponent({
         // 渲染 activator slot（scope 提供 props 空对象），使 tooltip 内按钮可被定位
         template: '<div><slot name="activator" :props="{}" /><slot /></div>',
@@ -508,6 +523,87 @@ describe('ApiKeyManagementSection', () => {
 })
 
 describe('分组模型排除行内化', () => {
+  it('实际 VChip 关闭后保留已保存标签，直到父级恢复成功移除记录', async () => {
+    const saved = { quotaGroup: '', key: 'sk-1', model: 'model-x', disabledAt: '' }
+    const wrapper = mountSection({
+      channelUid: 'ch-1', channelKind: 'messages',
+      apiKeyConfigs: [{ key: 'sk-1', keyUid: 'uid-1' }],
+      disabledGroupModels: [saved],
+    }, true)
+    await wrapper.get('[aria-label="channelCard.keyDetail"]').trigger('click')
+    const chip = wrapper.findAllComponents(VChip).find(component => component.props('closable'))!
+    await chip.get('.v-chip__close').trigger('click')
+    expect(wrapper.emitted('restore-group-model')).toEqual([[saved]])
+    expect(chip.isVisible()).toBe(true)
+    await wrapper.setProps({ changingGroupModel: groupModelPolicyKey(saved) })
+    expect(chip.isVisible()).toBe(true)
+    // 接口失败仅清除忙碌标志，不移除策略记录。
+    await wrapper.setProps({ changingGroupModel: '' })
+    expect(chip.isVisible()).toBe(true)
+    expect(chip.find('.v-chip__close').exists()).toBe(true)
+    await wrapper.setProps({ disabledGroupModels: [] })
+    expect(wrapper.findAllComponents(VChip).filter(component => component.props('closable'))).toHaveLength(0)
+  })
+  it.each(['g1', ''])('已保存与暂存模型选择不重复发事件，恢复后可重加：%s', async group => {
+    const saved = { quotaGroup: group ? ' g1 ' : ' ', key: 'sk-1', model: ' Model-X ', disabledAt: '' }
+    const wrapper = mountSection({
+      apiKeys: ['sk-1', 'sk-2'],
+      channelUid: 'ch-1', channelKind: 'messages',
+      apiKeyConfigs: [{ key: 'sk-1', keyUid: 'uid-1', quotaGroup: group }, { key: 'sk-2', keyUid: 'uid-2', quotaGroup: group }],
+      disabledGroupModels: [saved],
+      pendingGroupModelDisables: [{ key: group ? 'sk-2' : 'sk-1', model: 'Pending-X' }],
+    })
+    await wrapper.get('[aria-label="channelCard.keyDetail"]').trigger('click')
+    const combo = wrapper.findComponent(comboboxStub)
+    combo.vm.$emit('update:modelValue', ' MODEL-X ')
+    combo.vm.$emit('update:modelValue', ' pending-x ')
+    await nextTick()
+    expect(wrapper.emitted('stage-group-model-disable')).toBeUndefined()
+    await wrapper.setProps({ disabledGroupModels: [], pendingGroupModelDisables: [] })
+    combo.vm.$emit('update:modelValue', 'model-x')
+    await nextTick()
+    expect(wrapper.emitted('stage-group-model-disable')).toEqual([['sk-1', 'model-x']])
+  })
+
+  it('独立 Key 不受其他 Key 已保存或暂存的同模型策略阻断', async () => {
+    const wrapper = mountSection({
+      apiKeys: ['sk-1', 'sk-2'],
+      channelUid: 'ch-1', channelKind: 'messages',
+      apiKeyConfigs: [{ key: 'sk-1', keyUid: 'uid-1' }, { key: 'sk-2', keyUid: 'uid-2' }],
+      disabledGroupModels: [{ quotaGroup: '', key: 'sk-2', model: 'model-x', disabledAt: '' }],
+      pendingGroupModelDisables: [{ key: 'sk-2', model: 'model-x' }],
+    })
+    await wrapper.get('[aria-label="channelCard.keyDetail"]').trigger('click')
+    wrapper.findComponent(comboboxStub).vm.$emit('update:modelValue', 'MODEL-X')
+    expect(wrapper.emitted('stage-group-model-disable')).toEqual([['sk-1', 'MODEL-X']])
+  })
+
+  it.each(['g1', ''])('已保存标签可关闭，发原始记录且忙碌时不可撤销：%s', async group => {
+    const saved = { quotaGroup: group, key: group ? 'sk-2' : 'sk-1', model: 'model-x', disabledAt: '' }
+    const wrapper = mountSection({
+      channelUid: 'ch-1', channelKind: 'messages',
+      apiKeyConfigs: [{ key: 'sk-1', keyUid: 'uid-1', quotaGroup: group }],
+      disabledGroupModels: [saved],
+    })
+    await wrapper.get('[aria-label="channelCard.keyDetail"]').trigger('click')
+    const chip = wrapper.findAllComponents(chipStub).find(component => component.props('closeLabel') === 'channelCard.restoreGroupModel')!
+    const close = chip.get('button.chip-close')
+    expect(close.attributes('aria-label')).toBe('channelCard.restoreGroupModel')
+    expect(close.attributes('disabled')).toBeUndefined()
+    expect(chip.attributes('title')).toBe('channelCard.restoreGroupModel')
+    await close.trigger('click')
+    expect(wrapper.emitted('restore-group-model')).toEqual([[saved]])
+    await wrapper.setProps({ changingGroupModel: groupModelPolicyKey(saved) })
+    expect(close.attributes()).toHaveProperty('disabled')
+    expect(chip.find('[indeterminate]').exists()).toBe(true)
+    await close.trigger('click')
+    chip.vm.$emit('click:close') // 即使收到关闭事件，忙碌守卫仍拦截。
+    await wrapper.setProps({ changingGroupModel: 'another-policy' })
+    expect(close.attributes()).toHaveProperty('disabled')
+    await close.trigger('click')
+    chip.vm.$emit('click:close')
+    expect(wrapper.emitted('restore-group-model')).toEqual([[saved]])
+  })
   it.each([
     { group: undefined, secondMultiplier: 0.12 },
     { group: '', secondMultiplier: 0.08 },

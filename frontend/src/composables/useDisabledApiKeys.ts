@@ -312,7 +312,13 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
   const stageGroupModelDisable = (apiKey: string, model: string) => {
     const normalizedModel = model.trim()
     if (!normalizedModel) return
-    if (pendingGroupModelDisables.value.some(item => item.key === apiKey && item.model === normalizedModel)) return
+    const quotaGroup = options.form.apiKeyConfigs?.find(config => config.key === apiKey)?.quotaGroup || ''
+    const policyKey = groupModelPolicyKey({ quotaGroup, key: apiKey, model: normalizedModel })
+    if (visibleDisabledGroupModels.value.some(record => groupModelPolicyKey(record) === policyKey)) return
+    if (pendingGroupModelDisables.value.some(item => groupModelPolicyKey({
+      ...item,
+      quotaGroup: options.form.apiKeyConfigs?.find(config => config.key === item.key)?.quotaGroup || '',
+    }) === policyKey)) return
     pendingGroupModelDisables.value = [
       ...pendingGroupModelDisables.value,
       { key: apiKey, model: normalizedModel },
