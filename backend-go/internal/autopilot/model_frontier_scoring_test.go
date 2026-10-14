@@ -403,6 +403,18 @@ func TestPickBenefitCappedFrontierPoint_DoesNotUpgradeOnEqualCost(t *testing.T) 
 	}
 }
 
+// 从完整候选选型路径验证：质量优势不足以购买十倍成本时仍选低成本簇。
+func TestSelectViaFrontierBalancedRejectsExcessivePremium(t *testing.T) {
+	ranked := []rankedModelCandidate{
+		makeFrontierCandidate("adequate", 2, 0.50, 60, 10),
+		makeFrontierCandidate("premium", 3, 0.70, 80, 100),
+	}
+	idx, _, ok := selectViaFrontier(ranked, CapabilityFloor{TaskClass: TaskClassWorker}, CostPrefBalanced)
+	if !ok || idx != 0 {
+		t.Fatalf("balanced frontier should reject excessive premium: idx=%d, ok=%t", idx, ok)
+	}
+}
+
 func TestCapClusterCostPremium(t *testing.T) {
 	t.Run("质量增益不值回溢价时回退", func(t *testing.T) {
 		clusters := []FrontierCluster{

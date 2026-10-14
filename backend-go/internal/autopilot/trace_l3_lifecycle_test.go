@@ -23,11 +23,17 @@ func newTempTraceStore(t *testing.T) (*TraceStore, string) {
 	if err != nil {
 		t.Fatalf("打开数据库失败: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("关闭数据库失败: %v", err)
+		}
+	})
 
 	store, err := NewTraceStoreWithDB(db)
 	if err != nil {
 		t.Fatalf("创建 TraceStore 失败: %v", err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	return store, dbPath
 }
 
@@ -43,6 +49,7 @@ func reopenTraceStore(t *testing.T, dbPath string) *TraceStore {
 	if err != nil {
 		t.Fatalf("重新创建 TraceStore 失败: %v", err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	return store
 }
 
@@ -425,6 +432,7 @@ func TestTraceStore_MigrationV5ToV6Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("打开数据库失败: %v", err)
 	}
+	t.Cleanup(func() { _ = db1.Close() })
 	store1, err := NewTraceStoreWithDB(db1)
 	if err != nil {
 		t.Fatalf("首次创建 TraceStore 失败: %v", err)
@@ -442,6 +450,7 @@ func TestTraceStore_MigrationV5ToV6Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("重复打开后创建 TraceStore 失败: %v", err)
 	}
+	t.Cleanup(func() { _ = store3.Close() })
 
 	// 验证 v6 列存在
 	hasCol, err := columnExists(db3, "autopilot_routing_traces", "details_json")
@@ -458,7 +467,6 @@ func TestTraceStore_MigrationV5ToV6Idempotent(t *testing.T) {
 	if !hasCol {
 		t.Error("autopilot_routing_windows.release_id 列应存在")
 	}
-	_ = store3
 }
 
 // TestTraceStore_TempFileCleanup 验证临时文件被正确清理。
@@ -470,6 +478,7 @@ func TestTraceStore_TempFileCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("打开数据库失败: %v", err)
 	}
+	t.Cleanup(func() { _ = db.Close() })
 	store, err := NewTraceStoreWithDB(db)
 	if err != nil {
 		t.Fatalf("创建 TraceStore 失败: %v", err)

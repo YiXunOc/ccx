@@ -124,6 +124,11 @@ func TestResponsesStreamCollectorHandlesMalformedEvents(t *testing.T) {
 func TestResponsesReasoningSQLitePersistenceSurvivesReset(t *testing.T) {
 	ResetForTest()
 	dbPath := filepath.Join(t.TempDir(), "thinking_cache.db")
+	t.Cleanup(func() {
+		if err := Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
 
 	if err := Configure(Config{DBPath: dbPath, TTL: time.Hour}); err != nil {
 		t.Fatalf("Configure() error = %v", err)

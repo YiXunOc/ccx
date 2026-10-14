@@ -269,9 +269,8 @@ export function useDisabledApiKeys(options: DisabledApiKeyOptions) {
   // 路由上：后端 DisableGroupModel 按「渠道内 Key 所属配额组」落库，Key 不在该渠道
   // 会直接报「API Key 不属于该渠道」，只打主路由会让其它协议继续放行该模型。
   // 路由并集语义与 restoreDisabledGroupModel 一致（复用 keyRoutes）。
-  // channelSnapshot：flush 发生在弹窗关闭后，此时父组件可能已清空 editingChannel
-  // （保存成功 → closeEditChannelModal 同步置 null，而本 watch 异步触发）。
-  // 传入打开时的渠道快照保证 disable 请求仍携带正确的 routeKind/routeIndex。
+  // channelSnapshot 供显式提交者传入目标渠道，避免提交期间外部替换当前编辑渠道。
+  // 常规保存事务在关闭弹窗前 flush，可直接使用当前 channel。
   const disableGroupModel = async (apiKey: string, model: string, channelSnapshot?: Channel | null) => {
     const channel = channelSnapshot ?? options.channel.value
     const normalizedModel = model.trim()
