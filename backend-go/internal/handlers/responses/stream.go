@@ -156,7 +156,7 @@ func handleStreamSuccess(
 				if preflightHasNonTextContent {
 					preflightEmpty = false
 				} else {
-					preflightEmpty = common.IsEffectivelyEmptyStreamText(preflightTextBuf.String())
+					preflightEmpty = common.IsEffectivelyEmptyStreamText(strings.TrimSpace(preflightTextBuf.String()))
 					if preflightEmpty && isCompactionV2UsageOnlyStream(isCompactionV2Stream, seenCompletedEvent, seenUsageOnlyEvent) {
 						preflightEmpty = false
 					}
@@ -235,6 +235,11 @@ func handleStreamSuccess(
 					preflightDone = true
 					break
 				}
+				if responsesStreamTerminalType(event) == "response.incomplete" {
+					preflightEmpty = !preflightHasNonTextContent && common.IsEffectivelyEmptyStreamText(strings.TrimSpace(preflightTextBuf.String()))
+					preflightDone = true
+					break
+				}
 				seenCompletedEvent = seenCompletedEvent || isResponsesCompletedEvent(event)
 				seenUsageOnlyEvent = seenUsageOnlyEvent || isResponsesUsageOnlyEvent(event)
 				if t, ok := firstUnknownResponsesEventType(event); ok {
@@ -263,7 +268,7 @@ func handleStreamSuccess(
 				extractResponsesDeliverableTextFromEvent(event, &preflightTextBuf)
 
 				// 检查是否有有效内容 delta 事件
-				if !common.IsEffectivelyEmptyStreamText(preflightTextBuf.String()) {
+				if !common.IsEffectivelyEmptyStreamText(strings.TrimSpace(preflightTextBuf.String())) {
 					if !hasFirstContent {
 						// 阶段A→阶段B：首次检测到有效文本内容
 						if streamObserver != nil {
@@ -337,7 +342,7 @@ func handleStreamSuccess(
 					// 伪工具调用标记同理：整体在预检完成的响应也要参与白名单负反馈观测。
 					common.MarkPseudoToolCallMarkerIfHit(c, preflightTextBuf.String())
 					// 检查是否有实际内容（文本或工具调用）
-					preflightEmpty = !preflightHasNonTextContent && common.IsEffectivelyEmptyStreamText(preflightTextBuf.String())
+					preflightEmpty = !preflightHasNonTextContent && common.IsEffectivelyEmptyStreamText(strings.TrimSpace(preflightTextBuf.String()))
 					// 如果有工具调用，不算空响应
 					if preflightEmpty && hasResponsesFunctionCall(event) {
 						preflightEmpty = false
@@ -435,6 +440,9 @@ func handleStreamSuccess(
 	clientGone := false
 	promptTokensTotal := 0
 	completedEventSent := false
+	terminalEventSent := false
+	upstreamCompletionEvidence := false
+	malformedToolCall := false
 	eventsSentCount := 0
 	progress := common.NewStreamProgressLogger("Responses", startTime, envCfg.ShouldLog("info"), common.RequestLogTag(c))
 
@@ -443,56 +451,17 @@ func handleStreamSuccess(
 	// 收集 reasoning encrypted_content 到 thinkingcache，供未来续接重放使用
 	reasoningCollector := thinkingcache.NewResponsesStreamCollector()
 
-	// processLine 处理单行数据（复用于缓冲行回放和后续读取），并返回转换后的 Responses 事件用于 watchdog 状态判断。
-	processLine := func(line string) []string {
-
-		if streamLoggingEnabled {
-			_, _ = logBuffer.WriteString(line + "\n")
-			if synthesizer != nil {
-				synthesizer.ProcessLine(line)
-			}
-		}
-
-		// 处理转换后的事件
-		var eventsToProcess []string
-
-		if needConvert {
-			var events []string
-			switch upstreamType {
-			case "claude":
-				events = converters.ConvertClaudeMessagesToResponses(
-					c.Request.Context(),
-					originalReq.Model,
-					originalRequestJSON,
-					nil,
-					[]byte(line),
-					&converterState,
-				)
-			case "gemini":
-				events = converters.ConvertGeminiStreamToResponses(
-					c.Request.Context(),
-					originalReq.Model,
-					originalRequestJSON,
-					nil,
-					[]byte(line),
-					&converterState,
-				)
-			default:
-				events = converters.ConvertOpenAIChatToResponses(
-					c.Request.Context(),
-					originalReq.Model,
-					originalRequestJSON,
-					nil,
-					[]byte(line),
-					&converterState,
-				)
-			}
-			eventsToProcess = events
-		} else {
-			eventsToProcess = []string{converters.NormalizeOpenRouterReasoningSSELine(line) + "\n"}
-		}
-
+	processEvents := func(eventsToProcess []string) []string {
 		for _, event := range eventsToProcess {
+			if terminalEventSent {
+				break
+			}
+			if malformedToolCall && (isResponsesCompletedEvent(event) || strings.TrimSpace(event) == "data: [DONE]") {
+				continue
+			}
+			if responsesStreamTerminalType(event) != "" {
+				terminalEventSent = true
+			}
 			// 收集 output items（含 reasoning encrypted_content）用于 session 回写
 			outputCollector.processEvent(event)
 			// 收集 reasoning encrypted_content 到 thinkingcache
@@ -567,6 +536,14 @@ func handleStreamSuccess(
 				}
 			}
 
+			if needConvert && responsesStreamTerminalType(event) == "response.incomplete" {
+				eventToSend = normalizeCompletedEventUsageToOpenAISemantics(eventToSend)
+			}
+
+			// A passthrough terminal ends processing before its upstream blank line.
+			if !needConvert && responsesStreamTerminalType(event) != "" {
+				eventToSend = strings.TrimRight(eventToSend, "\n") + "\n\n"
+			}
 			// 转发给客户端
 			if !clientGone {
 				_, err := c.Writer.Write([]byte(eventToSend))
@@ -588,6 +565,64 @@ func handleStreamSuccess(
 		return eventsToProcess
 	}
 
+	// processLine 处理单行数据（复用于缓冲行回放和后续读取），并返回转换后的 Responses 事件用于 watchdog 状态判断。
+	processLine := func(line string) []string {
+		if terminalEventSent {
+			return nil
+		}
+		if needConvert && responsesStreamHasCompletionEvidence(line, upstreamType) {
+			upstreamCompletionEvidence = true
+		}
+
+		if streamLoggingEnabled {
+			_, _ = logBuffer.WriteString(line + "\n")
+			if synthesizer != nil {
+				synthesizer.ProcessLine(line)
+			}
+		}
+
+		// 处理转换后的事件
+		var eventsToProcess []string
+
+		if needConvert {
+			var events []string
+			switch upstreamType {
+			case "claude":
+				events = converters.ConvertClaudeMessagesToResponses(
+					c.Request.Context(),
+					originalReq.Model,
+					originalRequestJSON,
+					nil,
+					[]byte(line),
+					&converterState,
+				)
+			case "gemini":
+				events = converters.ConvertGeminiStreamToResponses(
+					c.Request.Context(),
+					originalReq.Model,
+					originalRequestJSON,
+					nil,
+					[]byte(line),
+					&converterState,
+				)
+			default:
+				events = converters.ConvertOpenAIChatToResponses(
+					c.Request.Context(),
+					originalReq.Model,
+					originalRequestJSON,
+					nil,
+					[]byte(line),
+					&converterState,
+				)
+			}
+			eventsToProcess = events
+		} else {
+			eventsToProcess = []string{converters.NormalizeOpenRouterReasoningSSELine(line) + "\n"}
+		}
+
+		return processEvents(eventsToProcess)
+	}
+
 	postCommitToolTracker := common.NewStreamToolCallTracker()
 	// 安全分类格式标记扫描：post-commit 阶段逐 SSE 行检测 <severity（分片安全）。
 	severityScanner := &common.SeverityTagScanner{}
@@ -597,8 +632,11 @@ func handleStreamSuccess(
 		hadChange := false
 		wasPending := postCommitToolTracker.HasPendingToolCall()
 		for _, event := range events {
-			if malformed, name := postCommitToolTracker.ProcessResponsesEvent(event); malformed && envCfg.ShouldLog("info") {
-				common.RequestLogf(c, "[Responses-Stream-ToolCall] 检测到畸形工具调用: %s", name)
+			if malformed, name := postCommitToolTracker.ProcessResponsesEvent(event); malformed {
+				malformedToolCall = true
+				if envCfg.ShouldLog("info") {
+					common.RequestLogf(c, "[Responses-Stream-ToolCall] 检测到畸形工具调用: %s", name)
+				}
 			}
 		}
 		if postCommitToolTracker.HasPendingToolCall() != wasPending {
@@ -662,7 +700,7 @@ func handleStreamSuccess(
 		return timeouts.InactivityTimeoutMs
 	}
 
-	for {
+	for !terminalEventSent {
 		select {
 		case sl, ok := <-lineChan:
 			if !ok || !sl.ok {
@@ -730,10 +768,15 @@ func handleStreamSuccess(
 		}
 	}
 streamEnd:
-	progress.Finish("completed")
+	close(scanDone)
+	if completedEventSent {
+		progress.Finish("completed")
+	} else {
+		progress.Finish("incomplete")
+	}
 
-	// 兜底：如果上游未发送终止符（如 MiniMax 不发 [DONE]），补发 response.completed
-	if !completedEventSent && !clientGone {
+	// Missing wire terminators are recoverable only after protocol-level completion.
+	if !terminalEventSent && !completedEventSent && !clientGone && upstreamCompletionEvidence && scanner.Err() == nil && !malformedToolCall {
 		common.RequestLogf(c, "[Responses-Stream] 上游未发送终止符，补发 response.completed (upstreamType=%s)", upstreamType)
 
 		var fallbackEvents []string
@@ -756,41 +799,25 @@ streamEnd:
 			fallbackEvents = converters.SynthesizeResponsesCompleted(originalRequestJSON, &converterState, "responses", eventsSentCount)
 		}
 
-		for _, event := range fallbackEvents {
-			// 兜底事件也纳入收集，确保合成 completed 事件的 responseID 被捕获
-			outputCollector.processEvent(event)
-			eventToSend := event
-			if isResponsesCompletedEvent(event) {
-				completedEventSent = true
-				if !hasUsage {
-					var injectedInput, injectedOutput int
-					eventToSend, injectedInput, injectedOutput = injectResponsesUsageToCompletedEventWithLogTag(event, originalRequestJSON, outputTextBuffer.String(), envCfg, common.RequestLogTag(c))
-					collectedUsage.InputTokens = injectedInput
-					collectedUsage.OutputTokens = injectedOutput
-					collectedUsage.TotalTokens = calculateTotalTokensWithCache(
-						injectedInput,
-						injectedOutput,
-						collectedUsage.CacheReadInputTokens,
-						collectedUsage.CacheCreationInputTokens,
-						collectedUsage.CacheCreation5mInputTokens,
-						collectedUsage.CacheCreation1hInputTokens,
-					)
-				} else if needTokenPatch {
-					eventToSend = patchResponsesCompletedEventUsageWithLogTag(event, originalRequestJSON, outputTextBuffer.String(), &collectedUsage, envCfg, common.RequestLogTag(c))
-				}
-				// 改写 model 字段（仅 passthrough 场景，转换器已处理好转换场景）
-				if envCfg.RewriteResponseModel && !needConvert && originalReq != nil && originalReq.Model != "" {
-					eventToSend = patchResponsesCompletedEventModel(eventToSend, originalReq.Model, common.RequestLogTag(c))
-				}
-				// 转换路径 usage 归一官方 OpenAI 口径（input_tokens 含缓存）；
-				// 内部采集/指标沿用不含缓存口径，不受影响（#274）。
-				if needConvert {
-					eventToSend = normalizeCompletedEventUsageToOpenAISemantics(eventToSend)
-				}
-			}
-			if _, err := c.Writer.Write([]byte(eventToSend)); err == nil && flusher != nil {
-				flusher.Flush()
-			}
+		processEvents(fallbackEvents)
+	}
+
+	if !terminalEventSent && !completedEventSent && !clientGone && needConvert && upstreamType != "claude" && upstreamType != "gemini" {
+		reason := "upstream_eof"
+		if scanner.Err() != nil {
+			reason = "upstream_error"
+		}
+		processEvents(converters.FinalizeChatResponsesIncomplete(originalRequestJSON, &converterState, reason))
+	}
+
+	if !terminalEventSent && !completedEventSent && !clientGone {
+		reason := "upstream_eof"
+		if scanner.Err() != nil || malformedToolCall {
+			reason = "upstream_error"
+		}
+		incomplete := converters.SynthesizeResponsesIncomplete(eventsSentCount+1, outputCollector.responseID, reason)
+		if _, err := c.Writer.Write([]byte(incomplete)); err == nil && flusher != nil {
+			flusher.Flush()
 		}
 	}
 
@@ -849,6 +876,51 @@ streamEnd:
 		CacheCreation1hInputTokens: collectedUsage.CacheCreation1hInputTokens,
 		CacheTTL:                   collectedUsage.CacheTTL,
 	}, promptTokensTotal), nil
+}
+
+func responsesStreamTerminalType(event string) string {
+	for _, line := range strings.Split(event, "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var value map[string]interface{}
+		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &value) == nil {
+			kind := stringFromInterface(value["type"])
+			if isResponsesFoldTerminalType(kind) || kind == "error" {
+				return kind
+			}
+		}
+	}
+	return ""
+}
+
+func responsesStreamHasCompletionEvidence(line, upstreamType string) bool {
+	if !strings.HasPrefix(line, "data:") {
+		return false
+	}
+	var value map[string]interface{}
+	if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &value) != nil {
+		return false
+	}
+	switch upstreamType {
+	case "claude":
+		return value["type"] == "message_stop"
+	case "gemini":
+		candidates, _ := value["candidates"].([]interface{})
+		for _, candidate := range candidates {
+			if stringFromInterface(mapFromInterface(candidate)["finishReason"]) != "" {
+				return true
+			}
+		}
+	default:
+		choices, _ := value["choices"].([]interface{})
+		for _, choice := range choices {
+			if stringFromInterface(mapFromInterface(choice)["finish_reason"]) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // responsesStreamUsage 流式响应 usage 收集结构

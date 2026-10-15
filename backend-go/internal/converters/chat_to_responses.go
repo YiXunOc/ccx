@@ -13,18 +13,27 @@ import (
 
 // chatToResponsesState 流式转换状态
 type chatToResponsesState struct {
-	Seq           int
-	ResponseID    string
-	CreatedAt     int64
-	CurrentMsgID  string
-	CurrentFCID   string
-	InTextBlock   bool
-	InFuncBlock   bool
-	FuncArgsBuf   map[int]*strings.Builder // index -> args
-	FuncNames     map[int]string           // index -> function name
-	FuncCallIDs   map[int]string           // index -> call id
-	FuncItemAdded map[int]bool             // index -> whether output_item.added has been emitted
-	TextBuf       strings.Builder
+	Seq               int
+	ResponseID        string
+	CreatedAt         int64
+	CurrentMsgID      string
+	NextOutputIndex   int
+	MessageIndex      int
+	FuncOutputIndexes map[int]int
+	OutputItems       map[int]interface{}
+	CurrentFCID       string
+	InTextBlock       bool
+	InFuncBlock       bool
+	FuncArgsBuf       map[int]*strings.Builder // index -> args
+	FuncNames         map[int]string           // index -> function name
+	FuncCallIDs       map[int]string           // index -> call id
+	FuncItemAdded     map[int]bool             // index -> whether output_item.added has been emitted
+	FuncArgsSent      map[int]int
+	FuncItemDone      map[int]bool
+	FuncInvalid       map[int]bool
+	TerminalSent      bool
+	IncompleteReason  string
+	TextBuf           strings.Builder
 	// reasoning state
 	ReasoningActive    bool
 	ReasoningItemID    string
@@ -55,6 +64,21 @@ type chatToResponsesState struct {
 	CodexCtxInitialized    bool
 }
 
+func (st *chatToResponsesState) allocateOutputIndex() int {
+	index := st.NextOutputIndex
+	st.NextOutputIndex++
+	return index
+}
+
+// recordOutputItem keeps terminal output identical to the item already delivered.
+func (st *chatToResponsesState) recordOutputItem(event string) {
+	if st.OutputItems == nil {
+		st.OutputItems = make(map[int]interface{})
+	}
+	root := gjson.Parse(event)
+	st.OutputItems[int(root.Get("output_index").Int())] = root.Get("item").Value()
+}
+
 // isCustomProxy returns true if the tool call at the given index is a Codex custom tool proxy.
 func (st *chatToResponsesState) isCustomProxy(idx int) bool {
 	name := st.FuncNames[idx]
@@ -73,7 +97,7 @@ func (st *chatToResponsesState) isToolSearchProxy(idx int) bool {
 }
 
 func (st *chatToResponsesState) addToolCallItemIfNeeded(idx int, nextSeq func() int) []string {
-	if st.FuncItemAdded[idx] || st.FuncCallIDs[idx] == "" || st.FuncNames[idx] == "" {
+	if st.FuncItemAdded[idx] || !st.toolCallReady(idx) {
 		return nil
 	}
 
@@ -106,7 +130,33 @@ func (st *chatToResponsesState) addToolCallItemIfNeeded(idx int, nextSeq func() 
 	item, _ = sjson.Set(item, "output_index", outputIndex)
 	item, _ = sjson.Set(item, "item.call_id", callID)
 	st.FuncItemAdded[idx] = true
+	st.recordOutputItem(item)
 	return []string{emitResponsesEvent("response.output_item.added", item)}
+}
+
+func (st *chatToResponsesState) toolCallReady(idx int) bool {
+	return !st.FuncInvalid[idx] && strings.TrimSpace(st.FuncCallIDs[idx]) != "" && strings.TrimSpace(st.FuncNames[idx]) != ""
+}
+
+func (st *chatToResponsesState) flushToolArguments(idx int, nextSeq func() int) []string {
+	out := st.addToolCallItemIfNeeded(idx, nextSeq)
+	if !st.toolCallReady(idx) || st.FuncItemDone[idx] || st.isCustomProxy(idx) || st.isToolSearchProxy(idx) {
+		return out
+	}
+	args := st.FuncArgsBuf[idx].String()
+	if len(args) <= st.FuncArgsSent[idx] {
+		return out
+	}
+	msg := `{"type":"response.function_call_arguments.delta","sequence_number":0,"item_id":"","output_index":0,"delta":""}`
+	msg, _ = sjson.Set(msg, "sequence_number", nextSeq())
+	msg, _ = sjson.Set(msg, "item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
+	msg, _ = sjson.Set(msg, "output_index", st.customToolOutputIndex(idx))
+	msg, _ = sjson.Set(msg, "delta", args[st.FuncArgsSent[idx]:])
+	st.FuncArgsSent[idx] = len(args)
+	if item, ok := st.OutputItems[st.customToolOutputIndex(idx)].(map[string]interface{}); ok {
+		item["arguments"] = args
+	}
+	return append(out, emitResponsesEvent("response.function_call_arguments.delta", msg))
 }
 
 var chatDataTag = []byte("data:")
@@ -156,6 +206,9 @@ func ConvertOpenAIChatToResponses(ctx context.Context, modelName string, origina
 		}
 	}
 	st := (*param).(*chatToResponsesState)
+	if st.TerminalSent {
+		return nil
+	}
 
 	// 期望 `data: {..}` 格式
 	if !bytes.HasPrefix(rawJSON, chatDataTag) {
@@ -195,12 +248,19 @@ func ConvertOpenAIChatToResponses(ctx context.Context, modelName string, origina
 		st.CurrentFCID = ""
 		st.ReasoningItemID = ""
 		st.ReasoningIndex = 0
+		st.NextOutputIndex = 0
+		st.MessageIndex = 0
+		st.FuncOutputIndexes = make(map[int]int)
+		st.OutputItems = make(map[int]interface{})
 		st.ReasoningPartAdded = false
 		st.Think.Reset()
 		st.FuncArgsBuf = make(map[int]*strings.Builder)
 		st.FuncNames = make(map[int]string)
 		st.FuncCallIDs = make(map[int]string)
 		st.FuncItemAdded = make(map[int]bool)
+		st.FuncArgsSent = make(map[int]int)
+		st.FuncItemDone = make(map[int]bool)
+		st.FuncInvalid = make(map[int]bool)
 		st.InputTokens = 0
 		st.OutputTokens = 0
 		st.CachedTokens = 0
@@ -230,8 +290,8 @@ func ConvertOpenAIChatToResponses(ctx context.Context, modelName string, origina
 
 	// 解析 choices
 	choices := root.Get("choices")
-	if !choices.Exists() || !choices.IsArray() {
-		return out
+	if root.Get("error").Exists() {
+		st.IncompleteReason = "upstream_error"
 	}
 
 	for _, choice := range choices.Array() {
@@ -282,63 +342,38 @@ func ConvertOpenAIChatToResponses(ctx context.Context, modelName string, origina
 					st.FuncArgsBuf[idx] = &strings.Builder{}
 				}
 
-				// 处理 tool call ID
-				if tcID := tc.Get("id"); tcID.Exists() && tcID.String() != "" {
-					st.FuncCallIDs[idx] = tcID.String()
-					st.CurrentFCID = tcID.String()
-
-					// 开始新的 tool call item. The concrete item type is emitted
-					// after the function name is known.
-					st.InFuncBlock = true
-
-					// When codexToolCompat is disabled, emit function_call output_item.added
-					// immediately upon receiving tool_call.id, preserving the original event timing.
-					if !st.CodexToolCompatEnabled {
-						outputIndex := st.customToolOutputIndex(idx)
-						item := `{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"in_progress","arguments":"","call_id":"","name":""}}`
-						item, _ = sjson.Set(item, "sequence_number", nextSeq())
-						item, _ = sjson.Set(item, "output_index", outputIndex)
-						item, _ = sjson.Set(item, "item.id", fmt.Sprintf("fc_%s", tcID.String()))
-						item, _ = sjson.Set(item, "item.call_id", tcID.String())
-						st.FuncItemAdded[idx] = true
-						out = append(out, emitResponsesEvent("response.output_item.added", item))
+				st.InFuncBlock = true
+				if id := tc.Get("id").String(); id != "" {
+					if old := st.FuncCallIDs[idx]; old != "" && old != id {
+						st.FuncInvalid[idx] = true
+					}
+					for other, existing := range st.FuncCallIDs {
+						if other != idx && existing == id {
+							st.FuncInvalid[idx] = true
+						}
+					}
+					if st.FuncCallIDs[idx] == "" {
+						st.FuncCallIDs[idx] = id
 					}
 				}
-
-				// 处理 function
 				if function := tc.Get("function"); function.Exists() {
-					// 处理函数名
-					if name := function.Get("name"); name.Exists() && name.String() != "" {
-						st.FuncNames[idx] = name.String()
+					if name := function.Get("name").String(); name != "" {
+						if old := st.FuncNames[idx]; old != "" && old != name {
+							st.FuncInvalid[idx] = true
+						}
+						if st.FuncNames[idx] == "" {
+							st.FuncNames[idx] = name
+						}
 					}
-					out = append(out, st.addToolCallItemIfNeeded(idx, nextSeq)...)
-
-					// 处理参数
-					if args := function.Get("arguments"); args.Exists() && args.String() != "" {
-						st.FuncArgsBuf[idx].WriteString(args.String())
-						out = append(out, st.addToolCallItemIfNeeded(idx, nextSeq)...)
-
-						if st.isCustomProxy(idx) {
-							continue
+					if args := function.Get("arguments").String(); args != "" {
+						if st.FuncItemDone[idx] {
+							st.FuncInvalid[idx] = true
+						} else {
+							st.FuncArgsBuf[idx].WriteString(args)
 						}
-
-						// 计算 output_index
-						outputIndex := idx
-						if st.ReasoningPartAdded {
-							outputIndex += 1
-						}
-						if st.CurrentMsgID != "" {
-							outputIndex += 1
-						}
-
-						msg := `{"type":"response.function_call_arguments.delta","sequence_number":0,"item_id":"","output_index":0,"delta":""}`
-						msg, _ = sjson.Set(msg, "sequence_number", nextSeq())
-						msg, _ = sjson.Set(msg, "item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
-						msg, _ = sjson.Set(msg, "output_index", outputIndex)
-						msg, _ = sjson.Set(msg, "delta", args.String())
-						out = append(out, emitResponsesEvent("response.function_call_arguments.delta", msg))
 					}
 				}
+				out = append(out, st.flushToolArguments(idx, nextSeq)...)
 			}
 		}
 
@@ -442,6 +477,9 @@ func ConvertOpenAIChatToResponses(ctx context.Context, modelName string, origina
 		}
 	}
 
+	if st.IncompleteReason != "" {
+		out = append(out, st.generateCompletedEvents(originalRequestRawJSON)...)
+	}
 	return out
 }
 
@@ -455,9 +493,9 @@ func (st *chatToResponsesState) handleReasoningPart(reasoningText string, nextSe
 	// 开始 reasoning block
 	if !st.ReasoningActive {
 		st.ReasoningActive = true
-		st.ReasoningIndex = 0
+		st.ReasoningIndex = st.allocateOutputIndex()
 		st.ReasoningBuf.Reset()
-		st.ReasoningItemID = fmt.Sprintf("rs_%s_0", st.ResponseID)
+		st.ReasoningItemID = fmt.Sprintf("rs_%s_%d", st.ResponseID, st.ReasoningIndex)
 
 		// response.output_item.added for reasoning
 		item := `{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"reasoning","status":"in_progress","summary":[]}}`
@@ -501,11 +539,9 @@ func (st *chatToResponsesState) handleContentPart(contentText string, nextSeq fu
 	// 开始 text block
 	if !st.InTextBlock {
 		st.InTextBlock = true
-		// 计算 output_index：如果有 reasoning 则为 1，否则为 0
-		outputIndex := 0
-		if st.ReasoningPartAdded {
-			outputIndex = 1
-		}
+		st.MessageIndex = st.allocateOutputIndex()
+		st.TextBuf.Reset()
+		outputIndex := st.MessageIndex
 		st.CurrentMsgID = fmt.Sprintf("msg_%s_%d", st.ResponseID, outputIndex)
 
 		// response.output_item.added for message
@@ -525,10 +561,7 @@ func (st *chatToResponsesState) handleContentPart(contentText string, nextSeq fu
 
 	// 发送 text delta
 	st.TextBuf.WriteString(contentText)
-	outputIndex := 0
-	if st.ReasoningPartAdded {
-		outputIndex = 1
-	}
+	outputIndex := st.MessageIndex
 	msg := `{"type":"response.output_text.delta","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"delta":"","logprobs":[]}`
 	msg, _ = sjson.Set(msg, "sequence_number", nextSeq())
 	msg, _ = sjson.Set(msg, "item_id", st.CurrentMsgID)
@@ -582,6 +615,7 @@ func (st *chatToResponsesState) closeReasoningBlock(nextSeq func() int) []string
 	itemDone, _ = sjson.Set(itemDone, "output_index", st.ReasoningIndex)
 	itemDone, _ = sjson.Set(itemDone, "item.id", st.ReasoningItemID)
 	itemDone, _ = sjson.Set(itemDone, "item.summary", []interface{}{map[string]interface{}{"type": "summary_text", "text": full}})
+	st.recordOutputItem(itemDone)
 	out = append(out, emitResponsesEvent("response.output_item.done", itemDone))
 
 	st.ReasoningActive = false
@@ -595,10 +629,7 @@ func (st *chatToResponsesState) closeTextBlock(nextSeq func() int) []string {
 	}
 
 	var out []string
-	outputIndex := 0
-	if st.ReasoningPartAdded {
-		outputIndex = 1
-	}
+	outputIndex := st.MessageIndex
 
 	// response.output_text.done
 	done := `{"type":"response.output_text.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"text":"","logprobs":[]}`
@@ -622,6 +653,7 @@ func (st *chatToResponsesState) closeTextBlock(nextSeq func() int) []string {
 	final, _ = sjson.Set(final, "output_index", outputIndex)
 	final, _ = sjson.Set(final, "item.id", st.CurrentMsgID)
 	final, _ = sjson.Set(final, "item.content.0.text", st.TextBuf.String())
+	st.recordOutputItem(final)
 	out = append(out, emitResponsesEvent("response.output_item.done", final))
 
 	st.InTextBlock = false
@@ -651,6 +683,14 @@ func (st *chatToResponsesState) closeFuncBlocks(nextSeq func() int) []string {
 	}
 
 	for _, idx := range idxs {
+		if !st.toolCallReady(idx) || st.FuncItemDone[idx] {
+			continue
+		}
+		if st.FuncArgsBuf[idx].Len() == 0 {
+			st.FuncArgsBuf[idx].WriteString("{}")
+		}
+		out = append(out, st.flushToolArguments(idx, nextSeq)...)
+		st.FuncItemDone[idx] = true
 		args := "{}"
 		if buf := st.FuncArgsBuf[idx]; buf != nil && buf.Len() > 0 {
 			args = buf.String()
@@ -670,6 +710,7 @@ func (st *chatToResponsesState) closeFuncBlocks(nextSeq func() int) []string {
 			itemDone, _ = sjson.Set(itemDone, "item.id", itemID)
 			itemDone, _ = sjson.Set(itemDone, "item.call_id", callID)
 			itemDone, _ = sjson.SetRaw(itemDone, "item.arguments", toolSearchArgumentsRaw(args))
+			st.recordOutputItem(itemDone)
 			out = append(out, emitResponsesEvent("response.output_item.done", itemDone))
 			continue
 		}
@@ -702,6 +743,7 @@ func (st *chatToResponsesState) closeFuncBlocks(nextSeq func() int) []string {
 			itemDone, _ = sjson.Set(itemDone, "item.call_id", callID)
 			itemDone, _ = sjson.Set(itemDone, "item.name", originalName)
 			itemDone, _ = sjson.Set(itemDone, "item.input", customInput)
+			st.recordOutputItem(itemDone)
 			out = append(out, emitResponsesEvent("response.output_item.done", itemDone))
 			continue
 		}
@@ -726,6 +768,7 @@ func (st *chatToResponsesState) closeFuncBlocks(nextSeq func() int) []string {
 		if namespace != "" {
 			itemDone, _ = sjson.Set(itemDone, "item.namespace", namespace)
 		}
+		st.recordOutputItem(itemDone)
 		out = append(out, emitResponsesEvent("response.output_item.done", itemDone))
 	}
 
@@ -735,6 +778,10 @@ func (st *chatToResponsesState) closeFuncBlocks(nextSeq func() int) []string {
 
 // generateCompletedEvents 生成完成事件
 func (st *chatToResponsesState) generateCompletedEvents(originalRequestRawJSON []byte) []string {
+	if st.TerminalSent {
+		return nil
+	}
+	st.TerminalSent = true
 	var out []string
 	nextSeq := func() int { st.Seq++; return st.Seq }
 
@@ -748,7 +795,7 @@ func (st *chatToResponsesState) generateCompletedEvents(originalRequestRawJSON [
 	if st.InTextBlock {
 		out = append(out, st.closeTextBlock(nextSeq)...)
 	}
-	if st.InFuncBlock {
+	if st.InFuncBlock && st.IncompleteReason == "" {
 		out = append(out, st.closeFuncBlocks(nextSeq)...)
 	}
 
@@ -796,102 +843,21 @@ func (st *chatToResponsesState) generateCompletedEvents(originalRequestRawJSON [
 		}
 	}
 
-	// 构建 output 数组
+	// Only delivered item snapshots enter terminal output; pending tools retain their
+	// delivered identity/arguments without inventing completion events.
+	// Items remain ordered by their originally delivered slot.
 	var outputs []interface{}
-
-	// reasoning item（如果有）
-	if st.ReasoningBuf.Len() > 0 || st.ReasoningPartAdded {
-		r := map[string]interface{}{
-			"id":     st.ReasoningItemID,
-			"type":   "reasoning",
-			"status": "completed",
-			"summary": []interface{}{map[string]interface{}{
-				"type": "summary_text",
-				"text": st.ReasoningBuf.String(),
-			}},
-		}
-		outputs = append(outputs, r)
-	}
-
-	// message item（如果有文本）
-	if st.TextBuf.Len() > 0 || st.CurrentMsgID != "" {
-		m := map[string]interface{}{
-			"id":     st.CurrentMsgID,
-			"type":   "message",
-			"status": "completed",
-			"content": []interface{}{map[string]interface{}{
-				"type":        "output_text",
-				"annotations": []interface{}{},
-				"logprobs":    []interface{}{},
-				"text":        st.TextBuf.String(),
-			}},
-			"role": "assistant",
-		}
-		outputs = append(outputs, m)
-	}
-
-	// function_call items
-	if len(st.FuncArgsBuf) > 0 {
-		idxs := make([]int, 0, len(st.FuncArgsBuf))
-		for idx := range st.FuncArgsBuf {
-			idxs = append(idxs, idx)
-		}
-		for i := 0; i < len(idxs); i++ {
-			for j := i + 1; j < len(idxs); j++ {
-				if idxs[j] < idxs[i] {
-					idxs[i], idxs[j] = idxs[j], idxs[i]
+	for index := 0; index < st.NextOutputIndex; index++ {
+		if item, ok := st.OutputItems[index]; ok {
+			if snapshot, ok := item.(map[string]interface{}); ok && snapshot["status"] == "in_progress" {
+				snapshot["status"] = "incomplete"
+				if st.IncompleteReason == "" {
+					st.IncompleteReason = "upstream_error"
 				}
-			}
-		}
-		for _, idx := range idxs {
-			args := ""
-			if b := st.FuncArgsBuf[idx]; b != nil {
-				args = b.String()
-			}
-			if args == "" {
-				args = "{}"
-			}
-			callID := st.FuncCallIDs[idx]
-			name := st.FuncNames[idx]
-			if st.isToolSearchProxy(idx) {
-				item := map[string]interface{}{
-					"id":        fmt.Sprintf("ts_%s", callID),
-					"type":      "tool_search_call",
-					"status":    "completed",
-					"execution": "client",
-					"call_id":   callID,
-					"arguments": toolSearchArgumentsValue(args),
-				}
-				outputs = append(outputs, item)
-				continue
-			}
-			if st.isCustomProxy(idx) {
-				customInput := ReconstructCustomToolCallInput(st.CodexCtx, name, args)
-				originalName := st.CodexCtx.OriginalCustomToolName(name)
-				item := map[string]interface{}{
-					"id":      fmt.Sprintf("ctc_%s", callID),
-					"type":    "custom_tool_call",
-					"status":  "completed",
-					"call_id": callID,
-					"name":    originalName,
-					"input":   customInput,
-				}
-				outputs = append(outputs, item)
-				continue
-			}
-			displayName, namespace := st.CodexCtx.OpenAINameForFunctionTool(name)
-			item := map[string]interface{}{
-				"id":        fmt.Sprintf("fc_%s", callID),
-				"type":      "function_call",
-				"status":    "completed",
-				"arguments": args,
-				"call_id":   callID,
-				"name":      displayName,
-			}
-			if namespace != "" {
-				item["namespace"] = namespace
 			}
 			outputs = append(outputs, item)
+		} else {
+			st.IncompleteReason = "upstream_error"
 		}
 	}
 
@@ -962,8 +928,37 @@ func (st *chatToResponsesState) generateCompletedEvents(originalRequestRawJSON [
 		completed, _ = sjson.Set(completed, "response.usage.cache_ttl", st.CacheTTL)
 	}
 
-	out = append(out, emitResponsesEvent("response.completed", completed))
+	eventType := "response.completed"
+	reason := st.IncompleteReason
+	for idx := range st.FuncArgsBuf {
+		if !st.toolCallReady(idx) {
+			reason = "upstream_error"
+		}
+	}
+	if reason != "" {
+		eventType = "response.incomplete"
+		completed, _ = sjson.Set(completed, "type", eventType)
+		completed, _ = sjson.Set(completed, "response.status", "incomplete")
+		completed, _ = sjson.Set(completed, "response.incomplete_details.reason", reason)
+		if !st.UsageSeen {
+			completed, _ = sjson.Delete(completed, "response.usage")
+		}
+	}
+	out = append(out, emitResponsesEvent(eventType, completed))
 	return out
+}
+
+// FinalizeChatResponsesIncomplete preserves valid output and usage on abnormal transport termination.
+func FinalizeChatResponsesIncomplete(originalRequestRawJSON []byte, converterState *any, reason string) []string {
+	if converterState == nil || *converterState == nil {
+		return nil
+	}
+	st, ok := (*converterState).(*chatToResponsesState)
+	if !ok || st.TerminalSent {
+		return nil
+	}
+	st.IncompleteReason = reason
+	return st.generateCompletedEvents(originalRequestRawJSON)
 }
 
 // SynthesizeResponsesIncomplete 在流异常中断（如 post-commit stall、上游 EOF）时合成

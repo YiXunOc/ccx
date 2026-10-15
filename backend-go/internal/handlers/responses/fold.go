@@ -40,8 +40,12 @@ type responsesFoldResult struct {
 }
 
 type responsesFoldBufferedOutput struct {
-	item   map[string]interface{}
-	events []map[string]interface{}
+	item       map[string]interface{}
+	events     []map[string]interface{}
+	index      interface{}
+	live       bool
+	emitted    int
+	downstream int
 }
 
 func handleFoldedResponsesStreamSuccess(
@@ -189,7 +193,10 @@ func runResponsesFold(
 			outputIndexKey := responsesFoldOutputIndexKey(outputIndex)
 			if eventType == "response.output_item.added" {
 				item := mapFromInterface(frame.event["item"])
-				if item["type"] == "reasoning" {
+				if item["type"] == "reasoning" && bufferedByIndex[outputIndexKey] == nil {
+					entry := &responsesFoldBufferedOutput{item: item, index: outputIndex, live: true, downstream: dsOutputIndex, events: []map[string]interface{}{cloneStringInterfaceMap(frame.event)}, emitted: 1}
+					bufferedByIndex[outputIndexKey] = entry
+					bufferedOrder = append(bufferedOrder, entry)
 					outputKind[outputIndexKey] = "reasoning"
 					outputIndexToDownstream[outputIndexKey] = dsOutputIndex
 					frame.event["output_index"] = dsOutputIndex
@@ -200,22 +207,30 @@ func runResponsesFold(
 					}
 				} else {
 					outputKind[outputIndexKey] = "buffered"
-					entry := &responsesFoldBufferedOutput{item: item, events: []map[string]interface{}{frame.event}}
-					bufferedByIndex[outputIndexKey] = entry
-					bufferedOrder = append(bufferedOrder, entry)
+					entry := bufferedByIndex[outputIndexKey]
+					if entry == nil {
+						entry = &responsesFoldBufferedOutput{index: outputIndex}
+						bufferedByIndex[outputIndexKey] = entry
+						bufferedOrder = append(bufferedOrder, entry)
+					}
+					entry.item = item
+					entry.events = append(entry.events, frame.event)
+
 				}
 				continue
 			}
 
 			switch outputKind[outputIndexKey] {
 			case "reasoning":
+				entry := bufferedByIndex[outputIndexKey]
+				entry.events = append(entry.events, cloneStringInterfaceMap(frame.event))
+				entry.emitted++
 				if downstreamIndex, ok := outputIndexToDownstream[outputIndexKey]; ok && hasOutputIndex {
 					frame.event["output_index"] = downstreamIndex
 				}
 				if eventType == "response.output_item.done" {
 					item := mapFromInterface(frame.event["item"])
-					roundReasoning = append(roundReasoning, item)
-					finalOutput = append(finalOutput, item)
+					entry.item = item
 				}
 				if err := emit(stamp(frame.event)); err != nil {
 					_ = currentResp.Body.Close()
@@ -231,6 +246,19 @@ func runResponsesFold(
 					entry.item = mapFromInterface(frame.event["item"])
 				}
 			default:
+				if hasOutputIndex {
+					entry := bufferedByIndex[outputIndexKey]
+					if entry == nil {
+						entry = &responsesFoldBufferedOutput{index: outputIndex}
+						bufferedByIndex[outputIndexKey] = entry
+						bufferedOrder = append(bufferedOrder, entry)
+					}
+					entry.events = append(entry.events, frame.event)
+					if eventType == "response.output_item.done" {
+						entry.item = mapFromInterface(frame.event["item"])
+					}
+					continue
+				}
 				if err := emit(stamp(frame.event)); err != nil {
 					_ = currentResp.Body.Close()
 					return responsesFoldResult{BilledUsage: summedUsage}, err
@@ -245,6 +273,29 @@ func runResponsesFold(
 			firstUsage = usage
 		}
 
+		var reconcileErr error
+		bufferedOrder, reconcileErr = reconcileResponsesFoldOutput(bufferedOrder, terminal)
+		if reconcileErr != nil {
+			incomplete := responsesFoldTerminalEvent(nil, baseResponse, finalOutput, responsesFoldAgentUsage(firstUsage, summedUsage, usage, false), roundsInfo, summedUsage, "upstream_error", "upstream_error")
+			return responsesFoldResult{BilledUsage: summedUsage}, emit(stamp(incomplete))
+		}
+		for _, entry := range bufferedOrder {
+			if entry.item["type"] != "reasoning" {
+				continue
+			}
+			if !entry.live {
+				entry.downstream = dsOutputIndex
+				dsOutputIndex++
+			}
+			for _, event := range entry.events[entry.emitted:] {
+				event["output_index"] = entry.downstream
+				if err := emit(stamp(event)); err != nil {
+					return responsesFoldResult{BilledUsage: summedUsage}, err
+				}
+			}
+			roundReasoning = append(roundReasoning, entry.item)
+			finalOutput = append(finalOutput, entry.item)
+		}
 		reasoningTokens, hasReasoningTokens := responsesFoldReasoningTokens(usage)
 		n, hasTier := responsesFoldTierN(reasoningTokens, hasReasoningTokens)
 		roundInfo := map[string]interface{}{
@@ -265,7 +316,7 @@ func runResponsesFold(
 			lastReasoning := mapFromInterface(roundReasoning[len(roundReasoning)-1])
 			hasEncrypted = strings.TrimSpace(stringFromInterface(lastReasoning["encrypted_content"])) != ""
 		}
-		doContinue := terminal != nil && hasTier && responsesFoldInContinueWindow(n) && hasEncrypted && roundNo <= responsesFoldMaxContinue
+		doContinue := terminal != nil && terminal["type"] == "response.completed" && hasTier && responsesFoldInContinueWindow(n) && hasEncrypted && roundNo <= responsesFoldMaxContinue
 
 		stoppedReason := ""
 		if !doContinue && hasTier {
@@ -298,6 +349,9 @@ func runResponsesFold(
 		}
 
 		for _, entry := range bufferedOrder {
+			if entry.item["type"] == "reasoning" {
+				continue
+			}
 			remapFoldCodexEntry(codexCtx, entry)
 			for _, event := range entry.events {
 				if _, ok := event["output_index"]; ok {
@@ -324,6 +378,482 @@ func runResponsesFold(
 // （additional_tools 提升的逆变换）：custom 代理（functions__exec）→
 // custom_tool_call 事件序列；namespace function → 原始 name + namespace 字段。
 // fold 按 output_index 整项缓冲，轮末冲刷前 remap 完整 item，无需增量 delta 转换。
+// reconcileResponsesFoldOutput runs before continuation selection so encrypted reasoning
+// and terminal-only items participate in the same round as incremental output.
+func reconcileResponsesFoldOutput(entries []*responsesFoldBufferedOutput, terminal map[string]interface{}) ([]*responsesFoldBufferedOutput, error) {
+	byIndex := make(map[string]*responsesFoldBufferedOutput)
+	byID := make(map[string]*responsesFoldBufferedOutput)
+	for _, entry := range entries {
+		item, err := responsesFoldEntryIdentity(entry)
+		if err != nil {
+			return nil, err
+		}
+		entry.item = item
+		key := responsesFoldOutputIndexKey(entry.index)
+		if prior := byIndex[key]; prior != nil && prior != entry {
+			return nil, fmt.Errorf("duplicate output index")
+		}
+		byIndex[key] = entry
+		if id := stringFromInterface(item["id"]); id != "" {
+			if prior := byID[id]; prior != nil && prior != entry {
+				return nil, fmt.Errorf("duplicate output id")
+			}
+			byID[id] = entry
+		}
+	}
+	snapshot, _ := mapFromInterface(terminal["response"])["output"].([]interface{})
+	snapshotIDs := make(map[string]bool)
+	matches := make([]*responsesFoldBufferedOutput, len(snapshot))
+	claimed := make(map[*responsesFoldBufferedOutput]bool)
+	unmatchedSnapshots := len(snapshot)
+	// Snapshot offsets are compact; upstream output_index values may be sparse.
+	// Reserve every stable-ID match before considering any positional fallback.
+	for i, raw := range snapshot {
+		id := stringFromInterface(mapFromInterface(raw)["id"])
+		if id == "" {
+			continue
+		}
+		if snapshotIDs[id] {
+			return nil, fmt.Errorf("duplicate snapshot id")
+		}
+		snapshotIDs[id] = true
+		if entry := byID[id]; entry != nil {
+			matches[i] = entry
+			claimed[entry] = true
+			unmatchedSnapshots--
+		}
+	}
+	unmatchedEntries := len(entries) - len(claimed)
+	for _, entry := range entries {
+		if !claimed[entry] && stringFromInterface(entry.item["id"]) == "" && unmatchedSnapshots > 1 {
+			return nil, fmt.Errorf("ambiguous output without stable id")
+		}
+	}
+	for i, raw := range snapshot {
+		item := mapFromInterface(raw)
+		match := matches[i]
+		if match == nil {
+			if stringFromInterface(item["id"]) == "" && unmatchedEntries > 1 {
+				return nil, fmt.Errorf("ambiguous snapshot without stable id")
+			}
+			if candidate := byIndex[strconv.Itoa(i)]; candidate != nil && !claimed[candidate] {
+				match = candidate
+			}
+		}
+		if match == nil {
+			match = &responsesFoldBufferedOutput{index: i}
+			entries = append(entries, match)
+		}
+		claimed[match] = true
+		merged := cloneStringInterfaceMap(match.item)
+		for _, key := range []string{"id", "type", "call_id", "name", "namespace"} {
+			a, b := stringFromInterface(merged[key]), stringFromInterface(item[key])
+			if a != "" && b != "" && a != b {
+				return nil, fmt.Errorf("conflicting output identity %s", key)
+			}
+		}
+		for _, event := range match.events {
+			if event["type"] != "response.output_item.done" {
+				continue
+			}
+			prior := mapFromInterface(event["item"])
+			for _, key := range []string{"content", "summary", "arguments", "input", "encrypted_content"} {
+				a, aok := prior[key]
+				b, bok := item[key]
+				if !aok || !bok {
+					continue
+				}
+				aj, _ := json.Marshal(a)
+				bj, _ := json.Marshal(b)
+				if !bytes.Equal(aj, bj) {
+					return nil, fmt.Errorf("conflicting completed item %s", key)
+				}
+			}
+		}
+		for key, value := range item {
+			merged[key] = value
+		}
+		match.item = merged
+		matches[i] = match
+	}
+	// Live reasoning keeps its committed prefix; fold always emits remaining
+	// reasoning before buffered visible output. Reject a snapshot that contradicts it.
+	ordered := make([]*responsesFoldBufferedOutput, 0, len(entries))
+	for _, entry := range entries {
+		if entry.live {
+			ordered = append(ordered, entry)
+		}
+	}
+	var pending []*responsesFoldBufferedOutput
+	for _, match := range matches {
+		if !match.live {
+			pending = append(pending, match)
+		}
+	}
+	for _, entry := range entries {
+		if !entry.live && !claimed[entry] {
+			pending = append(pending, entry)
+		}
+	}
+	for _, reasoning := range []bool{true, false} {
+		for _, entry := range pending {
+			if (entry.item["type"] == "reasoning") == reasoning {
+				ordered = append(ordered, entry)
+			}
+		}
+	}
+	snapshotPosition := make(map[*responsesFoldBufferedOutput]int)
+	for i, match := range matches {
+		snapshotPosition[match] = i
+	}
+	lastPosition := -1
+	for _, entry := range ordered {
+		if position, ok := snapshotPosition[entry]; ok {
+			if position <= lastPosition {
+				return nil, fmt.Errorf("snapshot contradicts committed/fold output order")
+			}
+			lastPosition = position
+		}
+	}
+	entries = ordered
+	for _, e := range entries {
+		if err := completeResponsesFoldEntry(e); err != nil {
+			return nil, err
+		}
+	}
+	return entries, nil
+}
+
+// responsesFoldEntryIdentity validates the original lifecycle before any snapshot merge.
+func responsesFoldEntryIdentity(e *responsesFoldBufferedOutput) (map[string]interface{}, error) {
+	identity := make(map[string]interface{})
+	check := func(item map[string]interface{}) error {
+		for _, key := range []string{"id", "type", "call_id", "name", "namespace"} {
+			value := stringFromInterface(item[key])
+			if value == "" {
+				continue
+			}
+			if old := stringFromInterface(identity[key]); old != "" && old != value {
+				return fmt.Errorf("conflicting lifecycle identity %s", key)
+			}
+			identity[key] = value
+		}
+		return nil
+	}
+	for _, event := range e.events {
+		if index, ok := event["output_index"]; ok && responsesFoldOutputIndexKey(index) != responsesFoldOutputIndexKey(e.index) {
+			return nil, fmt.Errorf("conflicting lifecycle index")
+		}
+		typ := stringFromInterface(event["type"])
+		if typ == "response.output_item.added" || typ == "response.output_item.done" {
+			if err := check(mapFromInterface(event["item"])); err != nil {
+				return nil, err
+			}
+		}
+		item := map[string]interface{}{"id": event["item_id"], "call_id": event["call_id"], "name": event["name"], "namespace": event["namespace"]}
+		switch {
+		case strings.HasPrefix(typ, "response.output_text."):
+			item["type"] = "message"
+		case strings.HasPrefix(typ, "response.function_call_arguments."):
+			item["type"] = "function_call"
+		case strings.HasPrefix(typ, "response.custom_tool_call_input."):
+			item["type"] = "custom_tool_call"
+		case strings.HasPrefix(typ, "response.reasoning"):
+			item["type"] = "reasoning"
+		}
+		if err := check(item); err != nil {
+			return nil, err
+		}
+	}
+	if err := check(e.item); err != nil {
+		return nil, err
+	}
+	item := cloneStringInterfaceMap(e.item)
+	for key, value := range identity {
+		item[key] = value
+	}
+	return item, nil
+}
+
+func validateResponsesFoldLifecycle(events []map[string]interface{}, item map[string]interface{}) error {
+	type fieldState struct{ partAdded, fieldDone, partDone bool }
+	fields := make(map[int]*fieldState)
+	message := item["type"] == "message"
+	stem := ""
+	switch item["type"] {
+	case "message":
+		stem = "response.output_text"
+		parts, _ := item["content"].([]interface{})
+		for i, raw := range parts {
+			if mapFromInterface(raw)["type"] == "output_text" {
+				fields[i] = &fieldState{}
+			}
+		}
+	case "function_call":
+		stem = "response.function_call_arguments"
+		fields[-1] = &fieldState{}
+	case "custom_tool_call":
+		stem = "response.custom_tool_call_input"
+		fields[-1] = &fieldState{}
+	}
+	added, done := false, false
+	for _, event := range events {
+		typ := stringFromInterface(event["type"])
+		if typ == "response.output_item.added" {
+			if added || done {
+				return fmt.Errorf("duplicate/late item added")
+			}
+			added = true
+			continue
+		}
+		if !added || done {
+			return fmt.Errorf("event outside item lifecycle")
+		}
+		if typ == "response.output_item.done" {
+			for _, state := range fields {
+				if !state.fieldDone || (message && !state.partDone) {
+					return fmt.Errorf("item done before field/part done")
+				}
+			}
+			done = true
+			continue
+		}
+		index := -1
+		if message {
+			index = intFromInterfaceDefault(event["content_index"])
+		}
+		state := fields[index]
+		if state == nil {
+			if typ == stem+".delta" || typ == stem+".done" {
+				return fmt.Errorf("field event has no matching output part")
+			}
+			if message && (typ == "response.content_part.added" || typ == "response.content_part.done") {
+				parts, _ := item["content"].([]interface{})
+				if index < 0 || index >= len(parts) {
+					return fmt.Errorf("part event has no matching output part")
+				}
+			}
+			continue
+		}
+		switch typ {
+		case "response.content_part.added":
+			if !message || state.partAdded || state.fieldDone || mapFromInterface(event["part"])["type"] != "output_text" {
+				return fmt.Errorf("duplicate/late part added")
+			}
+			state.partAdded = true
+		case stem + ".delta", stem + ".done":
+			if state.fieldDone || state.partDone || (message && !state.partAdded) {
+				return fmt.Errorf("field event outside lifecycle")
+			}
+			if typ == stem+".done" {
+				state.fieldDone = true
+			}
+		case "response.content_part.done":
+			if !message || !state.partAdded || !state.fieldDone || state.partDone {
+				return fmt.Errorf("part done outside lifecycle")
+			}
+			state.partDone = true
+		}
+	}
+	if !done {
+		return fmt.Errorf("missing item done")
+	}
+	return nil
+}
+
+func completeResponsesFoldEntry(e *responsesFoldBufferedOutput) error {
+	if stringFromInterface(e.item["type"]) == "" {
+		return fmt.Errorf("orphan output has no item")
+	}
+	added, done := false, false
+	for _, event := range e.events {
+		added = added || event["type"] == "response.output_item.added"
+		done = done || event["type"] == "response.output_item.done"
+	}
+	event := func(kind string) map[string]interface{} {
+		return map[string]interface{}{"type": kind, "output_index": e.index, "item_id": e.item["id"]}
+	}
+	var prefix []map[string]interface{}
+	if added && !e.live {
+		var ordered []map[string]interface{}
+		for _, v := range e.events {
+			if v["type"] == "response.output_item.added" {
+				ordered = append(ordered, v)
+			}
+		}
+		if len(ordered) != 1 {
+			return fmt.Errorf("duplicate output item added")
+		}
+		for _, v := range e.events {
+			if v["type"] != "response.output_item.added" {
+				ordered = append(ordered, v)
+			}
+		}
+		e.events = ordered
+	}
+	if !added {
+		a := event("response.output_item.added")
+		item := cloneStringInterfaceMap(e.item)
+		item["status"] = "in_progress"
+		delete(item, "arguments")
+		delete(item, "input")
+		if item["type"] == "message" {
+			item["content"] = []interface{}{}
+		}
+		a["item"] = item
+		prefix = append(prefix, a)
+	}
+	// Only the unobserved suffix is synthesized; conflicting snapshots never concatenate.
+	supplement := func(kind, field, full string, contentIndex int) error {
+		seen := ""
+		closed := false
+		partClosed := false
+		for _, v := range e.events {
+			if contentIndex >= 0 && intFromInterfaceDefault(v["content_index"]) != contentIndex {
+				continue
+			}
+			if v["type"] == kind+".delta" {
+				if closed || partClosed {
+					return fmt.Errorf("delta follows field/part done")
+				}
+				seen += stringFromInterface(v["delta"])
+			}
+			if contentIndex >= 0 && v["type"] == "response.content_part.done" {
+				partClosed = true
+				part := mapFromInterface(v["part"])
+				if part["type"] != "output_text" || stringFromInterface(part["text"]) != full {
+					return fmt.Errorf("conflicting completed part")
+				}
+			}
+			if v["type"] == kind+".done" {
+				if closed || partClosed {
+					return fmt.Errorf("field done follows close")
+				}
+				closed = true
+				if stringFromInterface(v[field]) != full {
+					return fmt.Errorf("conflicting output done")
+				}
+			}
+		}
+		if !strings.HasPrefix(full, seen) {
+			return fmt.Errorf("conflicting output delta")
+		}
+		var supplement []map[string]interface{}
+		if len(full) > len(seen) {
+			v := event(kind + ".delta")
+			v["delta"] = full[len(seen):]
+			if contentIndex >= 0 {
+				v["content_index"] = contentIndex
+			}
+			supplement = append(supplement, v)
+		}
+		if !closed {
+			v := event(kind + ".done")
+			v[field] = full
+			if contentIndex >= 0 {
+				v["content_index"] = contentIndex
+			}
+			supplement = append(supplement, v)
+		}
+		if len(supplement) > 0 {
+			insertAt := len(e.events)
+			for i, v := range e.events {
+				matchingPart := contentIndex >= 0 && intFromInterfaceDefault(v["content_index"]) == contentIndex
+				if v["type"] == "response.output_item.done" || (v["type"] == kind+".done" && (contentIndex < 0 || matchingPart)) || (matchingPart && v["type"] == "response.content_part.done") {
+					insertAt = i
+					break
+				}
+			}
+			if e.live && insertAt < e.emitted {
+				return fmt.Errorf("snapshot extends delivered lifecycle")
+			}
+			suffix := append([]map[string]interface{}{}, e.events[insertAt:]...)
+			e.events = append(append(e.events[:insertAt], supplement...), suffix...)
+		}
+		return nil
+	}
+	switch e.item["type"] {
+	case "message":
+		parts, _ := e.item["content"].([]interface{})
+		for i, raw := range parts {
+			part := mapFromInterface(raw)
+			if part["type"] != "output_text" {
+				continue
+			}
+			if err := supplement("response.output_text", "text", stringFromInterface(part["text"]), i); err != nil {
+				return err
+			}
+		}
+	case "function_call":
+		if err := supplement("response.function_call_arguments", "arguments", stringFromInterface(e.item["arguments"]), -1); err != nil {
+			return err
+		}
+	case "custom_tool_call":
+		if err := supplement("response.custom_tool_call_input", "input", stringFromInterface(e.item["input"]), -1); err != nil {
+			return err
+		}
+	}
+	// Live reasoning already has a delivered prefix; only its unobserved suffix may change.
+	if e.live && done {
+		return validateResponsesFoldLifecycle(e.events, e.item)
+	}
+	events := append(prefix, e.events...)
+	if !done {
+		v := event("response.output_item.done")
+		v["item"] = e.item
+		events = append(events, v)
+	} else {
+		for _, v := range events {
+			if v["type"] == "response.output_item.done" {
+				v["item"] = e.item
+			}
+		}
+	}
+	if e.item["type"] == "message" {
+		parts, _ := e.item["content"].([]interface{})
+		for i, raw := range parts {
+			part := mapFromInterface(raw)
+			if part["type"] != "output_text" {
+				continue
+			}
+			hasAdded, hasDone := false, false
+			for _, v := range events {
+				if intFromInterfaceDefault(v["content_index"]) == i {
+					hasAdded = hasAdded || v["type"] == "response.content_part.added"
+					hasDone = hasDone || v["type"] == "response.content_part.done"
+				}
+			}
+			var normalized []map[string]interface{}
+			for _, v := range events {
+				matching := intFromInterfaceDefault(v["content_index"]) == i
+				if !hasAdded && matching && (v["type"] == "response.output_text.delta" || v["type"] == "response.output_text.done") {
+					a := event("response.content_part.added")
+					p := cloneStringInterfaceMap(part)
+					p["text"] = ""
+					a["part"] = p
+					a["content_index"] = i
+					normalized = append(normalized, a)
+					hasAdded = true
+				}
+				normalized = append(normalized, v)
+				if !hasDone && matching && v["type"] == "response.output_text.done" {
+					d := event("response.content_part.done")
+					d["part"] = part
+					d["content_index"] = i
+					normalized = append(normalized, d)
+					hasDone = true
+				}
+			}
+			events = normalized
+		}
+	}
+	if err := validateResponsesFoldLifecycle(events, e.item); err != nil {
+		return err
+	}
+	e.events = events
+	return nil
+}
+
 func remapFoldCodexEntry(ctx *converters.CodexToolContext, entry *responsesFoldBufferedOutput) {
 	if ctx == nil || entry == nil || entry.item == nil {
 		return
@@ -521,7 +1051,7 @@ func (e *responsesFoldHTTPEmitter) emit(event map[string]interface{}) error {
 	}
 	extractResponsesTextFromEvent(eventString, &e.preflightText)
 
-	hasContent := common.HasResponsesSemanticContent(eventString) || !common.IsEffectivelyEmptyStreamText(e.preflightText.String())
+	hasContent := common.HasResponsesSemanticContent(eventString) || !common.IsEffectivelyEmptyStreamText(strings.TrimSpace(e.preflightText.String()))
 	if hasContent {
 		return e.commit()
 	}

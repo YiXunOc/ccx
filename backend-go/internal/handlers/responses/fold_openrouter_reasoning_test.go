@@ -132,7 +132,29 @@ func TestRunResponsesFoldKeepsStandardSummaryEventsUntouched(t *testing.T) {
 	if !strings.Contains(string(raw), `"summary_index"`) {
 		t.Fatalf("standard summary_index should be preserved: %s", raw)
 	}
-	item := emitted[2]["item"].(map[string]interface{})
+	added, done := false, 0
+	var item map[string]interface{}
+	for _, event := range emitted {
+		if event["type"] == "response.output_item.added" && mapFromInterface(event["item"])["id"] == "rs_9" {
+			if added {
+				t.Fatal("duplicate added")
+			}
+			added = true
+		}
+		if event["item_id"] == "rs_9" && event["type"] == "response.reasoning_summary_text.delta" && !added {
+			t.Fatal("delta before added")
+		}
+		if event["type"] == "response.output_item.done" && mapFromInterface(event["item"])["id"] == "rs_9" {
+			if !added {
+				t.Fatal("done before added")
+			}
+			done++
+			item = mapFromInterface(event["item"])
+		}
+	}
+	if done != 1 {
+		t.Fatalf("done count=%d", done)
+	}
 	summary := item["summary"].([]interface{})[0].(map[string]interface{})
 	if summary["text"] != "官方形态" || summary["type"] != "summary_text" {
 		t.Fatalf("standard item was mutated: %#v", item)

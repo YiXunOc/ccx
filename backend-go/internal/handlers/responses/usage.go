@@ -221,11 +221,11 @@ func jsonIntFromMap(m map[string]interface{}, key string) int {
 	return 0
 }
 
-// normalizeCompletedEventUsageToOpenAISemantics 在流式 response.completed 事件出口处
+// normalizeCompletedEventUsageToOpenAISemantics 在流式 completed/incomplete 终态出口处
 // 把 usage 归一为官方 OpenAI 口径，避免按官方语义计算"未命中输入 = input_tokens - cached_tokens"
 // 的客户端在缓存占比过半时得到负数（#274）。仅用于协议转换路径。
 func normalizeCompletedEventUsageToOpenAISemantics(event string) string {
-	if !isResponsesCompletedEvent(event) {
+	if !isResponsesCompletedEvent(event) && responsesStreamTerminalType(event) != "response.incomplete" {
 		return event
 	}
 	lines := strings.Split(event, "\n")
@@ -239,8 +239,8 @@ func normalizeCompletedEventUsageToOpenAISemantics(event string) string {
 	return result.String()
 }
 
-// normalizeCompletedUsageDataLine 改写单个 data: 行中的 completed usage；
-// 非 data 行、非 completed 事件、无 usage 时原样返回。
+// normalizeCompletedUsageDataLine 改写单个 data: 行中的 completed/incomplete usage；
+// 非 data 行、非目标终态、无 usage 时原样返回。
 func normalizeCompletedUsageDataLine(line string) string {
 	if !strings.HasPrefix(line, "data:") {
 		return line
@@ -252,7 +252,7 @@ func normalizeCompletedUsageDataLine(line string) string {
 	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 		return line
 	}
-	if data["type"] != "response.completed" {
+	if data["type"] != "response.completed" && data["type"] != "response.incomplete" {
 		return line
 	}
 	response, ok := data["response"].(map[string]interface{})

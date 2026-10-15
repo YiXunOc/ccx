@@ -42,12 +42,13 @@ func (st *chatToResponsesState) ensureCodexToolContext(originalRequestRawJSON []
 }
 
 func (st *chatToResponsesState) customToolOutputIndex(idx int) int {
-	outputIndex := idx
-	if st.ReasoningPartAdded {
-		outputIndex++
+	if st.FuncOutputIndexes == nil {
+		st.FuncOutputIndexes = make(map[int]int)
 	}
-	if st.CurrentMsgID != "" {
-		outputIndex++
+	if index, ok := st.FuncOutputIndexes[idx]; ok {
+		return index
 	}
-	return outputIndex
+	index := st.allocateOutputIndex()
+	st.FuncOutputIndexes[idx] = index
+	return index
 }
