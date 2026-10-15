@@ -1105,10 +1105,11 @@ func TryUpstreamWithAllKeys(
 
 			// (Key,模型) 持久化限制复查：autopilot 映射在选 Key 之后才发生，
 			// 选 Key 阶段的 IsKeyModelDisabledNow 只能按映射前模型检查，
-			// 这里按实际发往上游的模型补查，保证 model_not_found 学习到的限制
-			// 在自动映射渠道上真正生效。命中即跳过本 Key，走正常 failover，
+			// 这里按实际发往上游的模型补查临时限制及人工分组排除，
+			// 保证两者在自动映射渠道上真正生效。命中即跳过本 Key，走正常 failover，
 			// 不重复计熔断、不写新黑名单（这是已知限制，不是新故障信号）。
-			if actualAttemptModel != "" && upstream.IsKeyModelDisabledNow(apiKey, actualAttemptModel, time.Now()) {
+			if actualAttemptModel != "" && (upstream.IsKeyModelDisabledNow(apiKey, actualAttemptModel, time.Now()) ||
+				upstream.IsAPIKeyGroupModelDisabled(apiKey, actualAttemptModel)) {
 				RequestLogf(c, "[%s-KeyModel] 跳过 (Key %s, 模型 %s)：处于限制期，尝试下一个 Key/渠道",
 					apiType, utils.MaskAPIKey(apiKey), actualAttemptModel)
 				failedKeys[apiKey] = true
@@ -2688,7 +2689,7 @@ func failedKeysWithRestrictions(upstream *config.UpstreamConfig, failedKeys map[
 }
 
 func failedKeysWithPersistentRestrictions(upstream *config.UpstreamConfig, failedKeys map[string]bool, model string) map[string]bool {
-	if upstream == nil || (len(upstream.DisabledAPIKeys) == 0 && (model == "" || len(upstream.DisabledKeyModels) == 0)) {
+	if upstream == nil || (len(upstream.DisabledAPIKeys) == 0 && (model == "" || (len(upstream.DisabledKeyModels) == 0 && len(upstream.DisabledGroupModels) == 0))) {
 		return failedKeys
 	}
 
@@ -2696,7 +2697,7 @@ func failedKeysWithPersistentRestrictions(upstream *config.UpstreamConfig, faile
 	now := time.Now()
 	for _, key := range upstream.APIKeys {
 		keyDisabled := upstream.IsKeyDisabledNow(key, now)
-		modelDisabled := model != "" && upstream.IsKeyModelDisabledNow(key, model, now)
+		modelDisabled := model != "" && (upstream.IsKeyModelDisabledNow(key, model, now) || upstream.IsAPIKeyGroupModelDisabled(key, model))
 		if !keyDisabled && !modelDisabled {
 			continue
 		}

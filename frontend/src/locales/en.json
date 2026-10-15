@@ -1642,7 +1642,9 @@
   "costReport.csv.compressionOriginalTokens": "compressionOriginalTokens",
   "costReport.csv.compressionSavedTokens": "compressionSavedTokens",
   "subscription.keyMultiplier.channelLimitHint": "Channel limit {limit}; over-limit keys drop from routing",
-  "channelCard.groupModelInlineHint": "Picking or entering a model stages the exclusion (fill the note first); it is submitted when the channel is saved. Staged items can be removed here and restored via the records below after saving",
+  "channelCard.groupModelInlineHint": "New exclusions pending channel save",
+  "channelCard.groupModelInvalidPattern": "Only exact names, prefix*, *suffix, *contains*, or * are supported",
+  "channelCard.groupModelConfirmAll": "Exclude all models for this key or quota group?",
   "channelCard.keyDetail": "Key details (multiplier / model exclusion)",
   "subscription.keyMultiplier.stagedHint": "Changes take effect when the channel is saved"
 }

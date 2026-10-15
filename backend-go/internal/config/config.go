@@ -1033,7 +1033,7 @@ func (u *UpstreamConfig) IsGroupModelDisabled(apiKey, quotaGroup, model string) 
 		return false
 	}
 	for _, dm := range u.DisabledGroupModels {
-		if strings.ToLower(strings.TrimSpace(dm.Model)) != model {
+		if !matchesGroupModelPattern(dm.Model, model) {
 			continue
 		}
 		disabledGroup := strings.TrimSpace(dm.QuotaGroup)
@@ -2894,6 +2894,10 @@ func (cm *ConfigManager) DisableGroupModel(apiType string, channelIndex int, api
 	model = strings.TrimSpace(model)
 	if apiKey == "" || model == "" {
 		return "", 0, fmt.Errorf("apiKey 和 model 不能为空")
+	}
+
+	if err := validateGroupModelPattern(model); err != nil {
+		return "", 0, err
 	}
 
 	upstream := &(*upstreams)[channelIndex]

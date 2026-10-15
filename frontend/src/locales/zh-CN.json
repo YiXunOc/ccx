@@ -1642,7 +1642,9 @@
   "costReport.csv.compressionOriginalTokens": "compressionOriginalTokens",
   "costReport.csv.compressionSavedTokens": "compressionSavedTokens",
   "subscription.keyMultiplier.channelLimitHint": "渠道上限 {limit}，超出自动退出调度",
-  "channelCard.groupModelInlineHint": "选定或输入模型即暂存排除（备注需先于模型填写），随渠道保存时提交；暂存条目可点击移除，保存后也可在下方记录中恢复",
+  "channelCard.groupModelInlineHint": "新增排除规则待渠道保存",
+  "channelCard.groupModelInvalidPattern": "模型规则仅支持精确名称、prefix*、*suffix、*contains* 或 *",
+  "channelCard.groupModelConfirmAll": "排除 * 将禁用此 Key 或配额组的全部模型。确认继续？",
   "channelCard.keyDetail": "Key 详情（倍率 / 模型排除）",
   "subscription.keyMultiplier.stagedHint": "改动随渠道保存一并生效"
 }

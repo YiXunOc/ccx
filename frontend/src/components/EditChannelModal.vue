@@ -79,6 +79,7 @@
                 <h3 class="section-header-title">{{ t('channelEditor.nav.auth') }}</h3>
               </header>
               <ApiKeyManagementSection
+                ref="apiKeySectionRef"
                 :api-keys="form.apiKeys"
                 :disabled-keys="visibleDisabledKeys"
                 :disabled-key-models="visibleDisabledKeyModels"
@@ -432,7 +433,7 @@
       <!-- 底部按钮 -->
       <v-card-actions class="pa-6 pt-2 border-t">
         <v-spacer />
-        <v-btn variant="outlined" :disabled="submitting" @click="handleCancel">
+        <v-btn variant="outlined" data-model-exclusion-action="cancel" :disabled="submitting" @click="handleCancel">
           {{ t('app.actions.cancel') }}<span class="shortcut-hint ml-2 text-xs opacity-50">Esc</span>
         </v-btn>
         <v-btn
@@ -440,6 +441,7 @@
           variant="elevated"
           :disabled="!isFormValid || submitting"
           :loading="submitting"
+          data-model-exclusion-action="save"
           @click="handleSubmitWithBind"
         >
           {{ t('app.actions.save') }}<span class="shortcut-hint ml-2 text-xs opacity-50">{{ isMac ? '⌘Enter' : 'Ctrl+Enter' }}</span>
@@ -627,7 +629,13 @@ const handleAccountsUpdated = () => {
 
 // 认证管理面板：主保存时若绑定表单已填写则先执行绑定（绑定失败中止保存，错误显示在面板内）
 const newApiPanelRef = ref<InstanceType<typeof NewApiAccountPanel> | null>(null)
+const apiKeySectionRef = ref<InstanceType<typeof ApiKeyManagementSection> | null>(null)
 const handleSubmitWithBind = async () => {
+  if (submitting.value) return
+  if (apiKeySectionRef.value?.finalizeModelExclusions() === false) {
+    scrollToSection('auth')
+    return
+  }
   const panel = newApiPanelRef.value
   if (panel?.hasFilledBindForm()) {
     submitting.value = true
@@ -656,7 +664,9 @@ useDialogHotkeys(
       if (isAnySelectMenuOpen.value || Date.now() < suppressDialogEscapeUntil.value) return false
       handleCancel()
     },
-    confirm: () => { void handleSubmitWithBind() },
+    confirm: event => {
+      if (!event.isComposing && event.keyCode !== 229) void handleSubmitWithBind()
+    },
   },
 )
 

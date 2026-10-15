@@ -491,9 +491,29 @@ AutopilotDiagnosePanel:
 - 添加 API 密钥（`App.vue:610`）：`newApiKey` 输入，Enter 添加。
 - 通用确认对话框（`App.vue:636`）：`dialogStore.confirm({message,confirmText,cancelText,color})` 返回 Promise。
 - 认证登录（`App.vue:18`）+ 自动认证 overlay（`App.vue:4`）：`showAuthDialog` computed。
-- 分组模型排除 / Key 倍率（`ApiKeyManagementSection.vue`）：合并为 **Key 行统一详情面板**——行尾 chevron 按钮（渠道列表同款下箭头，带 aria-label）toggle 展开，一次一行（`expandedDetailKey`），同块承载两组输入（倍率在上、divider、排除在下），展开时初始化倍率表单并 `ensure-models-loaded` 懒拉模型。**两组输入均不即时落盘——随渠道主保存一并提交**：倍率改动写入表单 `apiKeyConfigs`（行 chips 经 props 回流即时反映），主保存时自定义渠道随渠道 PUT 的 apiKeyConfigs merge 落盘、托管渠道由 `buildStagedKeyMultiplierConfigs` diff 后并入单卡更新补发；排除暂存于 `useDisabledApiKeys.pendingGroupModelDisables`（面板中列 warning chips 可移除），主保存成功（对话框经保存链路关闭）后 `flushStagedGroupModelDisables` 逐个提交，取消编辑则丢弃暂存（handleCancel 显式清空+抑制标记区分）。
+- 分组模型排除 / Key 倍率（`ApiKeyManagementSection.vue`）：合并为 **Key 行统一详情面板**——行尾 chevron 按钮（渠道列表同款下箭头，带 aria-label）toggle 展开，一次一行（`expandedDetailKey`），同块承载两组输入（倍率在上、divider、排除在下），展开时初始化倍率表单并 `ensure-models-loaded` 懒拉模型。**倍率修改和新增排除随渠道主保存提交；删除已保存排除立即请求恢复，不受取消渠道编辑撤销**：倍率改动写入表单 `apiKeyConfigs`（行 chips 经 props 回流即时反映），主保存时自定义渠道随渠道 PUT 的 apiKeyConfigs merge 落盘、托管渠道由 `buildStagedKeyMultiplierConfigs` diff 后并入单卡更新补发；排除暂存于 `useDisabledApiKeys.pendingGroupModelDisables`（面板中列 warning chips 可移除），主保存成功（对话框经保存链路关闭）后 `flushStagedGroupModelDisables` 逐个提交，取消编辑则丢弃暂存（handleCancel 显式清空+抑制标记区分）。
   - **Key 倍率（去按钮化，随主保存）**：统一面板上半区，仅消耗策略下拉 + 分组倍率数字框：策略选择（`@update:model-value`）与倍率失焦/回车定稿（`@change`）均 `applyMultiplierToConfigs` 写入外层表单 `apiKeyConfigs`（定位 keyUid/credentialUid/key，非法输入跳过暂存保留上次合法值）；输入经 `parseMultiplierInput` 安全转 JSON 数字（非有限/负值抛错，241de1f5）。面板 caption「改动随渠道保存一并生效」。渠道上限仅启用时作数字框 hint（`channelMaxGroupMultiplierHint`，未启用不显示）；「标记公开 Key」按钮已删，语义由用户自选「优先消耗」策略表达。倍率 PATCH 端点（即时保存链路）已从编辑面板移除，仅保留给订阅页等直连场景。
-  - **分组模型排除（模型定稿即暂存，随主保存提交）**：统一面板下半区（divider 隔开），上下文 caption（key 掩码·分组 chip·同组影响 key 数）提到面板顶部共享。模型 combobox + 备注 input；模型**选定/手输定稿即** emit `stage-group-model-disable` 暂存（备注需先于模型填写，清空不触发），暂存条目以 warning chips（可点移除）列于面板内；面板保持展开继续编辑。主保存成功后逐个调 `disableGroupModel` 端点提交；误排可在暂存期移除，保存后经下方记录列表恢复按钮撤销。无取消/确认按钮。
+  - **分组模型排除（框内 Tag + 分号批量录入）**：统一面板下半区显示已保存规则与暂存规则。文本用英文 `;` 或中文 `；` 分隔；失焦、普通 Enter、切换 Key 和主保存共用整批定稿入口，主保存收集尚未失焦的末尾输入。先校验整批，再忽略空项及相同作用域内大小写/首尾空白重复表达式；非法文本原样保留，显示错误并阻止主保存。IME 组合期间不定稿；新增 `*` 需确认，取消确认保留整批文本且不暂存。暂存 Tag 删除仅本地撤销，取消渠道编辑丢弃暂存；已保存 Tag 删除立即走恢复端点，失败保留 Tag 供重试，渠道取消不会撤销已成功恢复。跨物理路由新增部分失败只重试未成功路由；恢复部分失败保留记录，后端幂等恢复允许重试。
+
+### 人工模型排除的有限通配符
+
+仅人工 `disabledGroupModels` 使用此语法；自动探测临时 `DisabledKeyModels`、熔断和模型清单过滤不改变语义。规则沿用 `model` 字段，不引入通用 glob 或正则。
+
+| 表达式 | 含义 | 示例 |
+| --- | --- | --- |
+| 精确模型名 | 完整匹配 | `gpt-5` |
+| `prefix*` | 前缀匹配 | `gpt-*` |
+| `*suffix` | 后缀匹配 | `*-mini` |
+| `*contains*` | 包含匹配 | `*preview*` |
+| `*` | 排除作用域内所有非空模型 | `*` |
+
+匹配忽略大小写和首尾空白；点号、加号、斜杠、冒号等普通模型名字符按字面处理。禁止 `?`、`[`、`]`、`!`、`^`，以及中间或重复星号（如 `a*b`、`**`、`a**`）；不提供转义来排除名称本身含上述保留字符的模型。
+
+非空配额组规则仅影响同组 Key，空组规则仅影响记录中的具体 Key。通配规则按每次请求匹配，不展开成当前模型列表，因此覆盖未来新增的匹配模型；选 Key 时检查请求模型，发送前还检查实际映射目标，所有候选均被排除时不得回退绕过。取消按表达式身份定位，不按匹配集合定位：同时保存 `gpt-*` 和 `gpt-5`，删除 `gpt-5` 后 `gpt-*` 仍会排除该模型，删除 `gpt-*` 不会删除其他独立重叠规则。
+
+**历史兼容变化**：原有边缘 `*` 人工规则从字面精确匹配变为通配匹配；旧 `*` 现在覆盖作用域内所有模型，可能扩大排除范围。历史非法表达式不再参与匹配，但仍可按原表达式恢复删除，恢复接口不执行新增模式校验。启用前须人工核查已有含 `*` 规则，不自动改写运行配置。本次工作区未找到运行 `config.json`，历史现场核查未完成，未读取外部业务配置。
+
+本节记录已批准并实现的源码行为，源码与自动化验证通过，不代表部署或浏览器现场验收完成。仍需在现有服务核验桌面/窄屏 Tag 换行、IME、原生全模型确认、主保存末尾输入、非法输入阻止保存和跨路由部分失败恢复。
 - 计费条款 / 订阅关联渠道 / 同步结果（`SubscriptionsView.vue:49`/`:64`/`:102`）：`billingDialog`（四字段 paymentAmount/paymentUnit/creditAmount/creditUnit，a96098da 统一币种/金额模型）、`linkDialog`（v-select 选 `linkableChannels` + 已关联 channelUid chips 逐个解绑 `unlinkChannel`，入口 SubscriptionPlanTable 行操作）、`syncDialog`。
 
 布局示意图（按出现顺序，宽度标注在图右下）：
@@ -533,16 +553,16 @@ Key 行统一详情面板（行内展开，单一入口）:
 │  (⏲ 改动随渠道保存一并生效)         │
 │ ── divider ──                       │
 │ ── 分组模型排除（定稿即暂存)──      │
-│ 模型[combobox]  备注[input]         │
-│  (hint:选定即暂存,随渠道保存提交,  │
-│   备注先填;chips可移除)            │
+│ [已保存Tag x][暂存Tag x][文本...]  │
+│ 分号批量输入，失焦/Enter定稿        │
+│ 新增随保存；已保存Tag删除立即恢复  │
 └────────────────────────────────────┘
  行尾 chevron 按钮(带aria-label,渠道列
  表同款下箭头)toggle 再点收起;策略选择
  /数字定稿写表单apiKeyConfigs(随主保存);模型
  定稿即stage暂存(面板不收起,可继续添
  加);主保存成功后逐个提交;误排可移除
- 或保存后走记录「恢复」;无确认按钮
+ 或删除已保存Tag立即恢复；新增*需确认
 
 linkDialog 绑定渠道（560）:            syncDialog 同步结果（760）:
 ┌────────────────────────────┐        ┌──────────────────────────────┐

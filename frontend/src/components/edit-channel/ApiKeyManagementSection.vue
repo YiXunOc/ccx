@@ -619,24 +619,8 @@
                   <v-divider class="my-3" />
 
                   <div class="text-subtitle-2 font-weight-medium mb-1">{{ t(editingQuotaGroup ? 'channelCard.groupModelPolicy' : 'channelCard.keyModelPolicy') }}</div>
-                  <v-combobox
-                    v-model="groupModelForm.model"
-                    :items="modelOptions"
-                    item-title="title"
-                    item-value="value"
-                    :return-object="false"
-                    auto-select-first
-                    :label="t('channelCard.groupModelModel')"
-                    :placeholder="t('channelCard.groupModelModelPlaceholder')"
-                    variant="outlined"
-                    density="compact"
-                    clearable
-                    @update:model-value="submitGroupModelDisable"
-                  />
-                  <!-- 无确认按钮：模型选定即暂存排除，随渠道主保存提交；误排可在此撤销或保存后经记录恢复。
-                       auto-select-first：回车优先选中列表匹配项的完整模型名，避免把输入过程中的部分文本（如 "g"/"ge"）暂存成误条目。 -->
-                  <div class="text-caption text-medium-emphasis mt-2">{{ t('channelCard.groupModelInlineHint') }}</div>
-                  <div v-if="savedDisablesForEditingKey.length || pendingDisablesForEditingKey.length" class="d-flex flex-wrap ga-2 mt-2">
+                  <div class="model-exclusion-input d-flex flex-wrap ga-2" :class="{ 'model-exclusion-input--error': groupModelError }">
+
                     <v-chip
                       v-for="saved in savedDisablesForEditingKey"
                       :key="'saved|' + groupModelPolicyKey(saved)"
@@ -669,12 +653,33 @@
                       closable
                       :close-label="t('app.actions.cancel')"
                       :title="t('app.actions.cancel')"
-                      @click:close="unstageGroupModelDisable(pending.key, pending.model)"
+                      :model-value="true"
+                      @update:model-value="() => {}"
+                      :disabled="!!changingGroupModel"
+                      @click:close="!changingGroupModel && unstageGroupModelDisable(pending.key, pending.model)"
                     >
                       <v-icon start size="14">mdi-clock-outline</v-icon>
                       {{ pending.model }}
                     </v-chip>
+                    <input
+                      v-model="groupModelForm.model"
+                      class="model-exclusion-text"
+                      :aria-label="t('channelCard.groupModelModel')"
+                      :aria-invalid="!!groupModelError"
+                      :aria-describedby="groupModelError ? 'model-exclusion-error' : undefined"
+                      :placeholder="t('channelCard.groupModelModelPlaceholder')"
+                      list="model-exclusion-options"
+                      @blur="onGroupModelBlur"
+                      @keydown.enter="onGroupModelEnter"
+                      @compositionstart="groupModelComposing = true"
+                      @compositionend="groupModelComposing = false"
+                    />
+                    <datalist id="model-exclusion-options">
+                      <option v-for="option in modelOptions" :key="option.value" :value="option.value" />
+                    </datalist>
                   </div>
+                  <div v-if="groupModelError" id="model-exclusion-error" class="text-error text-caption mt-1" role="alert">{{ groupModelError }}</div>
+                  <div class="text-caption text-medium-emphasis mt-2">{{ t('channelCard.groupModelInlineHint') }}</div>
                 </div>
               </v-expand-transition>
 
@@ -1556,6 +1561,16 @@ const duplicateKeyIndex = ref<number | null>(null)
 const copiedKey = ref('')
 const groupModelEditing = ref<ChannelApiKeyRow | null>(null)
 const groupModelForm = ref({ model: '' })
+const groupModelError = ref('')
+const groupModelComposing = ref(false)
+watch(() => props.dialogOpen, open => {
+  if (!open) {
+    groupModelForm.value.model = ''
+    groupModelError.value = ''
+    groupModelComposing.value = false
+    closeKeyDetail()
+  }
+})
 // Key 行统一详情展开（倍率 + 分组模型排除同一块）：一次只展开一行，切换即重置编辑态。
 const expandedDetailKey = ref<string | null>(null)
 const multiplierEditing = ref<ChannelApiKeyRow | null>(null)
@@ -1784,6 +1799,7 @@ const openMultiplierEditor = (row: ChannelApiKeyRow) => {
 // Key 行统一详情展开（替代旧弹窗与两个独立入口）：一次只展开一行，切换即重置编辑态。
 // 面板同时承载 Key 倍率（暂存表单，随渠道主保存落盘）与分组模型排除（暂存，主保存后提交）。
 const toggleKeyDetail = (row: ChannelApiKeyRow) => {
+  if (!submitGroupModelDisable()) return
   if (expandedDetailKey.value === row.key) {
     closeKeyDetail()
     return
@@ -1865,20 +1881,49 @@ const parseMultiplierInput = (value: number | string | null): number | null => {
   return parsed
 }
 
-// 模型选定（combobox 选择/手输回车定稿）即暂存排除（不即时调端点），
-// 随渠道主保存成功后统一提交；暂存条目在面板中可撤销。清空（clearable → null）不触发。
-const submitGroupModelDisable = (model: unknown = groupModelForm.value.model) => {
+// Validate the complete batch before staging any rule; failed text stays editable.
+const submitGroupModelDisable = (): boolean => {
+  if (groupModelComposing.value) return false
   const row = groupModelEditing.value
-  const trimmed = (model ?? '').toString().trim()
-  if (!row || !trimmed) return
-  const policyKey = groupModelPolicyKey({ quotaGroup: editingQuotaGroup.value, key: row.key, model: trimmed })
-  const duplicate = savedDisablesForEditingKey.value.some(record => groupModelPolicyKey(record) === policyKey)
-    || pendingDisablesForEditingKey.value.some(item => groupModelPolicyKey({
-      ...item, quotaGroup: editingQuotaGroup.value,
-    }) === policyKey)
-  if (!duplicate) emit('stage-group-model-disable', row.key, trimmed)
-  groupModelForm.value = { model: '' }
+  const models = groupModelForm.value.model.split(/[;；]/).map(model => model.trim()).filter(Boolean)
+  groupModelError.value = ''
+  if (!models.length) { groupModelForm.value.model = ''; return true }
+  if (!row) return false
+  if (models.some(model => !/^(?:\*|\*?[^*?\[\]!^]+\*?)$/.test(model))) {
+    groupModelError.value = t('channelCard.groupModelInvalidPattern')
+    return false
+  }
+  const seen = new Set([
+    ...savedDisablesForEditingKey.value.map(groupModelPolicyKey),
+    ...pendingDisablesForEditingKey.value.map(item => groupModelPolicyKey({ ...item, quotaGroup: editingQuotaGroup.value })),
+  ])
+  const additions = models.filter(model => {
+    const identity = groupModelPolicyKey({ key: row.key, quotaGroup: editingQuotaGroup.value, model })
+    if (seen.has(identity)) return false
+    seen.add(identity)
+    return true
+  })
+  if (additions.includes('*') && !window.confirm(t('channelCard.groupModelConfirmAll'))) return false
+  for (const model of additions) emit('stage-group-model-disable', row.key, model)
+  groupModelForm.value.model = ''
+  return true
 }
+const onGroupModelBlur = (event: FocusEvent) => {
+  // Save finalizes explicitly; cancel discards. Avoid a second confirmation on the same click.
+  if ((event.relatedTarget as HTMLElement | null)?.closest('[data-model-exclusion-action]')) return
+  submitGroupModelDisable()
+}
+const onGroupModelEnter = (event: KeyboardEvent) => {
+  if (event.isComposing || groupModelComposing.value || event.keyCode === 229) {
+    event.stopPropagation()
+    return
+  }
+  if (event.ctrlKey || event.metaKey) return // The parent owns shortcut saves and finalization.
+  event.stopPropagation()
+  event.preventDefault()
+  submitGroupModelDisable()
+}
+defineExpose({ finalizeModelExclusions: submitGroupModelDisable })
 
 const unstageGroupModelDisable = (key: string, model: string) => {
   emit('unstage-group-model-disable', key, model)
@@ -3105,4 +3150,24 @@ const getDisabledKeyLabel = (reason: string) => {
   }
 }
 
+.model-exclusion-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.4);
+  border-radius: 4px;
+  align-items: center;
+}
+.model-exclusion-input:focus-within { border-color: rgb(var(--v-theme-primary)); }
+.model-exclusion-input--error,
+.model-exclusion-input--error:focus-within { border-color: rgb(var(--v-theme-error)); }
+.model-exclusion-text {
+  flex: 1 1 180px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 32px;
+  outline: none;
+  color: inherit;
+}
+.model-exclusion-input :deep(.v-chip) { max-width: 100%; height: auto; min-height: 26px; }
+.model-exclusion-input :deep(.v-chip__content) { white-space: normal; overflow-wrap: anywhere; }
 </style>

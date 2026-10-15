@@ -1642,7 +1642,9 @@
   "costReport.csv.compressionOriginalTokens": "compressionOriginalTokens",
   "costReport.csv.compressionSavedTokens": "compressionSavedTokens",
   "subscription.keyMultiplier.channelLimitHint": "Batas kanal {limit}; key yang melebihi keluar dari routing",
-  "channelCard.groupModelInlineHint": "Memilih atau mengetik model menyetor eksklusi; dikirim saat kanal disimpan. Item tersimpan dapat dihapus di sini dan dipulihkan lewat catatan di bawah setelah disimpan",
+  "channelCard.groupModelInlineHint": "Eksklusi baru menunggu penyimpanan kanal",
+  "channelCard.groupModelInvalidPattern": "Hanya nama persis, prefix*, *suffix, *contains*, atau * didukung",
+  "channelCard.groupModelConfirmAll": "Kecualikan semua model untuk key atau grup kuota ini?",
   "channelCard.keyDetail": "Detail key (pengali / eksklusi model)",
   "subscription.keyMultiplier.stagedHint": "Perubahan berlaku saat kanal disimpan"
 }
