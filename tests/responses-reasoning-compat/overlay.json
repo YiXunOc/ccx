@@ -1,0 +1,6 @@
+{
+  "Replace": {
+    "D:/ZuoXueSoftware/IdeaWorkSpaces/largemodel20250304/AI/ccx1/ccx/backend-go/internal/converters/installed_client_export_test.go": "D:/ZuoXueSoftware/IdeaWorkSpaces/largemodel20250304/AI/ccx1/ccx/tests/responses-reasoning-compat/export_test.go",
+    "D:/ZuoXueSoftware/IdeaWorkSpaces/largemodel20250304/AI/ccx1/ccx/backend-go/internal/converters/independent_compat_identity_test.go": "D:/ZuoXueSoftware/IdeaWorkSpaces/largemodel20250304/AI/ccx1/ccx/tests/responses-reasoning-compat/identity_test.go"
+  }
+}

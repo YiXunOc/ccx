@@ -464,7 +464,7 @@ func TestChatMixedOutputSlots(t *testing.T) {
 					case "response.output_text.delta":
 						text += e.Get("delta").String()
 					case "response.reasoning_summary_text.delta":
-						reason += e.Get("text").String()
+						reason += e.Get("delta").String()
 					case "response.output_item.done":
 						item := e.Get("item")
 						id := item.Get("id").String()

@@ -516,11 +516,11 @@ func (st *chatToResponsesState) handleReasoningPart(reasoningText string, nextSe
 
 	// 发送 reasoning delta
 	st.ReasoningBuf.WriteString(reasoningText)
-	msg := `{"type":"response.reasoning_summary_text.delta","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"text":""}`
+	msg := `{"type":"response.reasoning_summary_text.delta","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"delta":""}`
 	msg, _ = sjson.Set(msg, "sequence_number", nextSeq())
 	msg, _ = sjson.Set(msg, "item_id", st.ReasoningItemID)
 	msg, _ = sjson.Set(msg, "output_index", st.ReasoningIndex)
-	msg, _ = sjson.Set(msg, "text", reasoningText)
+	msg, _ = sjson.Set(msg, "delta", reasoningText)
 	out = append(out, emitResponsesEvent("response.reasoning_summary_text.delta", msg))
 	return out
 }

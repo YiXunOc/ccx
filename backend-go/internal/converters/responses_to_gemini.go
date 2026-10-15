@@ -344,7 +344,7 @@ type geminiToResponsesStreamState struct {
 	CachedTokens int64
 	UsageSeen    bool
 	// function calls
-	FunctionCalls []map[string]interface{}
+	FunctionCalls map[int]map[string]interface{}
 }
 
 // ConvertGeminiStreamToResponses 将 Gemini SSE 转换为 Responses SSE
@@ -447,11 +447,11 @@ func ConvertGeminiStreamToResponses(ctx context.Context, modelName string, origi
 					}
 
 					st.ReasoningBuf.WriteString(textContent)
-					msg := `{"type":"response.reasoning_summary_text.delta","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"text":""}`
+					msg := `{"type":"response.reasoning_summary_text.delta","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"delta":""}`
 					msg, _ = sjson.Set(msg, "sequence_number", nextSeq())
 					msg, _ = sjson.Set(msg, "item_id", st.CurrentReasoningID)
 					msg, _ = sjson.Set(msg, "output_index", st.ReasoningIndex)
-					msg, _ = sjson.Set(msg, "text", textContent)
+					msg, _ = sjson.Set(msg, "delta", textContent)
 					out = append(out, emitResponsesEvent("response.reasoning_summary_text.delta", msg))
 					continue
 				}
@@ -496,18 +496,10 @@ func ConvertGeminiStreamToResponses(ctx context.Context, modelName string, origi
 
 			// 处理工具调用
 			if functionCall := part.Get("functionCall"); functionCall.Exists() {
-				name := functionCall.Get("name").String()
-				args := functionCall.Get("args").Value()
-
-				// 使用函数名作为 call_id,与 function_call_output 的 name 字段保持一致
-				argsJSON, _ := JSONMarshal(args)
-
-				// 收集到状态中，稍后在 completed 事件中输出
-				st.FunctionCalls = append(st.FunctionCalls, map[string]interface{}{
-					"call_id":   name, // 使用函数名而非随机 ID
-					"name":      name,
-					"arguments": string(argsJSON),
-				})
+				if st.InReasoningBlock {
+					out = append(out, st.closeGeminiReasoningBlock(nextSeq)...)
+				}
+				out = append(out, st.emitGeminiFunctionCall(functionCall, nextSeq)...)
 			}
 		}
 
@@ -553,6 +545,38 @@ func ConvertGeminiStreamToResponses(ctx context.Context, modelName string, origi
 		}
 	}
 
+	return out
+}
+
+// Each Gemini functionCall part carries a complete argument value, not a JSON delta.
+func (st *geminiToResponsesStreamState) emitGeminiFunctionCall(call gjson.Result, nextSeq func() int) []string {
+	index := st.NextOutputIndex
+	st.NextOutputIndex++
+	id := fmt.Sprintf("fc_%s_%d", st.ResponseID, index)
+	name := call.Get("name").String()
+	args, _ := JSONMarshal(call.Get("args").Value())
+	item := map[string]interface{}{
+		"id": id, "type": "function_call", "status": "in_progress",
+		"call_id": name, "name": name, "arguments": "",
+	}
+	var out []string
+	emit := func(typ string, event map[string]interface{}) {
+		event["type"] = typ
+		event["sequence_number"] = nextSeq()
+		event["output_index"] = index
+		data, _ := JSONMarshal(event)
+		out = append(out, emitResponsesEvent(typ, string(data)))
+	}
+	emit("response.output_item.added", map[string]interface{}{"item": item})
+	emit("response.function_call_arguments.delta", map[string]interface{}{"item_id": id, "delta": string(args)})
+	emit("response.function_call_arguments.done", map[string]interface{}{"item_id": id, "arguments": string(args)})
+	item["status"] = "completed"
+	item["arguments"] = string(args)
+	emit("response.output_item.done", map[string]interface{}{"item": item})
+	if st.FunctionCalls == nil {
+		st.FunctionCalls = make(map[int]map[string]interface{})
+	}
+	st.FunctionCalls[index] = item
 	return out
 }
 
@@ -646,10 +670,10 @@ func (st *geminiToResponsesStreamState) generateCompletedEvent(originalRequestRa
 	}
 
 	// 构建 output
-	var outputs []interface{}
+	outputs := make([]interface{}, st.NextOutputIndex)
 
 	if st.ReasoningBuf.Len() > 0 {
-		outputs = append(outputs, map[string]interface{}{
+		outputs[st.ReasoningIndex] = map[string]interface{}{
 			"id":     st.CurrentReasoningID,
 			"type":   "reasoning",
 			"status": "completed",
@@ -657,7 +681,7 @@ func (st *geminiToResponsesStreamState) generateCompletedEvent(originalRequestRa
 				"type": "summary_text",
 				"text": st.ReasoningBuf.String(),
 			}},
-		})
+		}
 	}
 
 	// 添加文本消息（如果有）
@@ -674,16 +698,12 @@ func (st *geminiToResponsesStreamState) generateCompletedEvent(originalRequestRa
 			}},
 			"role": "assistant",
 		}
-		outputs = append(outputs, m)
+		outputs[st.TextIndex] = m
 	}
 
 	// 添加工具调用（如果有）
-	for _, fc := range st.FunctionCalls {
-		outputs = append(outputs, map[string]interface{}{
-			"type":    "function_call",
-			"role":    "assistant",
-			"content": fc,
-		})
+	for index, fc := range st.FunctionCalls {
+		outputs[index] = fc
 	}
 
 	if len(outputs) > 0 {

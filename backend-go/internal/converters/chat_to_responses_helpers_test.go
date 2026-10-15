@@ -49,7 +49,7 @@ func collectThinkStreamText(events []string) (reasoning, text string) {
 			typ := gjson.Get(payload, "type").String()
 			switch typ {
 			case "response.reasoning_summary_text.delta":
-				reasoning += gjson.Get(payload, "text").String()
+				reasoning += gjson.Get(payload, "delta").String()
 			case "response.output_text.delta":
 				text += gjson.Get(payload, "delta").String()
 			}

@@ -1,0 +1,2099 @@
+{
+  "runtimeVersion": "0.2.1-alpha.2",
+  "nodeVersion": "v24.21.0",
+  "versions": {
+    "@earendil-works/pi-ai": "1.0.2",
+    "@deepseek-ai/dsh-llm-pi-ai": "0.2.1-alpha.2",
+    "@deepseek-ai/dsh-llm": "0.2.1-alpha.2"
+  },
+  "entries": {
+    "adapter": "D:/Software/AI/DSH-Desktop-x64-Portable/App/resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js",
+    "parser": "D:/Software/AI/DSH-Desktop-x64-Portable/App/resources/app.asar/dsh/node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js",
+    "accumulator": "D:/Software/AI/DSH-Desktop-x64-Portable/App/resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js"
+  },
+  "network": {
+    "requestsServedInMemory": 22,
+    "socketAttempts": 0
+  },
+  "results": [
+    {
+      "name": "chat/no_reasoning",
+      "status": "passed",
+      "deltas": [],
+      "blocks": [
+        {
+          "type": "text",
+          "text": "answer"
+        }
+      ],
+      "finish": {
+        "kind": "stop"
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "text"
+          }
+        },
+        {
+          "type": "text-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [],
+          "texts": [
+            "answer"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 3,
+          "chunk": {
+            "type": "block-end",
+            "index": 0,
+            "block": {
+              "type": "text",
+              "text": "answer"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 4,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "stop"
+            },
+            "replayState": {
+              "response": {
+                "kind": "pi-ai",
+                "version": 2,
+                "api": "openai-responses",
+                "provider": "compat-offline",
+                "model": "m",
+                "responseId": "resp_1792069802899276700",
+                "stopReason": "stop"
+              },
+              "blocks": [
+                {
+                  "type": "text",
+                  "textSignature": "{\"v\":1,\"id\":\"msg_resp_1792069802899276700_0\"}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "chat/reasoning_only",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second",
+        "\n\n"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        }
+      ],
+      "finish": {
+        "kind": "stop"
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1,
+            1
+          ],
+          "texts": [
+            "first",
+            " second",
+            "\n\n"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "block-end",
+            "index": 0,
+            "block": {
+              "type": "reasoning",
+              "text": "first second"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 6,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 7,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "stop"
+            },
+            "replayState": {
+              "response": {
+                "kind": "pi-ai",
+                "version": 2,
+                "api": "openai-responses",
+                "provider": "compat-offline",
+                "model": "m",
+                "responseId": "contract",
+                "stopReason": "stop"
+              },
+              "blocks": [
+                {
+                  "type": "reasoning",
+                  "thinkingSignature": "{\"id\":\"rs_contract_0\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"text\":\"first second\",\"type\":\"summary_text\"}]}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "chat/text",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second",
+        "\n\n"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        },
+        {
+          "type": "text",
+          "text": "answer"
+        }
+      ],
+      "finish": {
+        "kind": "stop"
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1,
+            1
+          ],
+          "texts": [
+            "first",
+            " second",
+            "\n\n"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "block-end",
+            "index": 0,
+            "block": {
+              "type": "reasoning",
+              "text": "first second"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 6,
+          "chunk": {
+            "type": "block-start",
+            "index": 1,
+            "blockType": "text"
+          }
+        },
+        {
+          "type": "text-chunks",
+          "time0": 7,
+          "index": 1,
+          "dt": [],
+          "texts": [
+            "answer"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 8,
+          "chunk": {
+            "type": "block-end",
+            "index": 1,
+            "block": {
+              "type": "text",
+              "text": "answer"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 9,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 10,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "stop"
+            },
+            "replayState": {
+              "response": {
+                "kind": "pi-ai",
+                "version": 2,
+                "api": "openai-responses",
+                "provider": "compat-offline",
+                "model": "m",
+                "responseId": "contract",
+                "stopReason": "stop"
+              },
+              "blocks": [
+                {
+                  "type": "reasoning",
+                  "thinkingSignature": "{\"id\":\"rs_contract_0\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"text\":\"first second\",\"type\":\"summary_text\"}]}"
+                },
+                {
+                  "type": "text",
+                  "textSignature": "{\"v\":1,\"id\":\"msg_contract_1\"}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "chat/tool",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second",
+        "\n\n"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        },
+        {
+          "type": "tool-call",
+          "id": "call_lookup|fc_call_lookup",
+          "name": "lookup",
+          "arguments": "{}"
+        }
+      ],
+      "finish": {
+        "kind": "tool-calls"
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1,
+            1
+          ],
+          "texts": [
+            "first",
+            " second",
+            "\n\n"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "block-end",
+            "index": 0,
+            "block": {
+              "type": "reasoning",
+              "text": "first second"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 6,
+          "chunk": {
+            "type": "block-start",
+            "index": 1,
+            "blockType": "tool-call"
+          }
+        },
+        {
+          "type": "tool-call-chunks",
+          "time0": 7,
+          "index": 1,
+          "dt": [],
+          "id": "call_lookup|fc_call_lookup",
+          "name": "lookup",
+          "args": [
+            "{}"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 8,
+          "chunk": {
+            "type": "block-end",
+            "index": 1,
+            "block": {
+              "type": "tool-call",
+              "id": "call_lookup|fc_call_lookup",
+              "name": "lookup",
+              "arguments": "{}"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 9,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 10,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "tool-calls"
+            },
+            "replayState": {
+              "response": {
+                "kind": "pi-ai",
+                "version": 2,
+                "api": "openai-responses",
+                "provider": "compat-offline",
+                "model": "m",
+                "responseId": "contract",
+                "stopReason": "toolUse"
+              },
+              "blocks": [
+                {
+                  "type": "reasoning",
+                  "thinkingSignature": "{\"id\":\"rs_contract_0\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"text\":\"first second\",\"type\":\"summary_text\"}]}"
+                },
+                {
+                  "type": "tool-call"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "claude/no_reasoning",
+      "status": "passed",
+      "deltas": [],
+      "blocks": [
+        {
+          "type": "text",
+          "text": "answer"
+        }
+      ],
+      "finish": {
+        "kind": "stop"
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "text"
+          }
+        },
+        {
+          "type": "text-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [],
+          "texts": [
+            "answer"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 3,
+          "chunk": {
+            "type": "block-end",
+            "index": 0,
+            "block": {
+              "type": "text",
+              "text": "answer"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 4,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "stop"
+            },
+            "replayState": {
+              "response": {
+                "kind": "pi-ai",
+                "version": 2,
+                "api": "openai-responses",
+                "provider": "compat-offline",
+                "model": "m",
+                "responseId": "contract",
+                "stopReason": "stop"
+              },
+              "blocks": [
+                {
+                  "type": "text",
+                  "textSignature": "{\"v\":1,\"id\":\"msg_contract_0\"}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "claude/reasoning_only",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second",
+        "\n\n"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        }
+      ],
+      "finish": {
+        "kind": "stop"
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1,
+            1
+          ],
+          "texts": [
+            "first",
+            " second",
+            "\n\n"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "block-end",
+            "index": 0,
+            "block": {
+              "type": "reasoning",
+              "text": "first second"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 6,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 7,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "stop"
+            },
+            "replayState": {
+              "response": {
+                "kind": "pi-ai",
+                "version": 2,
+                "api": "openai-responses",
+                "provider": "compat-offline",
+                "model": "m",
+                "responseId": "contract",
+                "stopReason": "stop"
+              },
+              "blocks": [
+                {
+                  "type": "reasoning",
+                  "thinkingSignature": "{\"id\":\"rs_contract_0\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"text\":\"first second\",\"type\":\"summary_text\"}]}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "claude/text",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second",
+        "\n\n"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        },
+        {
+          "type": "text",
+          "text": "answer"
+        }
+      ],
+      "finish": {
+        "kind": "stop"
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1,
+            1
+          ],
+          "texts": [
+            "first",
+            " second",
+            "\n\n"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "block-end",
+            "index": 0,
+            "block": {
+              "type": "reasoning",
+              "text": "first second"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 6,
+          "chunk": {
+            "type": "block-start",
+            "index": 1,
+            "blockType": "text"
+          }
+        },
+        {
+          "type": "text-chunks",
+          "time0": 7,
+          "index": 1,
+          "dt": [],
+          "texts": [
+            "answer"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 8,
+          "chunk": {
+            "type": "block-end",
+            "index": 1,
+            "block": {
+              "type": "text",
+              "text": "answer"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 9,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 10,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "stop"
+            },
+            "replayState": {
+              "response": {
+                "kind": "pi-ai",
+                "version": 2,
+                "api": "openai-responses",
+                "provider": "compat-offline",
+                "model": "m",
+                "responseId": "contract",
+                "stopReason": "stop"
+              },
+              "blocks": [
+                {
+                  "type": "reasoning",
+                  "thinkingSignature": "{\"id\":\"rs_contract_0\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"text\":\"first second\",\"type\":\"summary_text\"}]}"
+                },
+                {
+                  "type": "text",
+                  "textSignature": "{\"v\":1,\"id\":\"msg_contract_1\"}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "claude/tool",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second",
+        "\n\n"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        },
+        {
+          "type": "tool-call",
+          "id": "call_lookup|fc_call_lookup",
+          "name": "lookup",
+          "arguments": "{}"
+        }
+      ],
+      "finish": {
+        "kind": "tool-calls"
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1,
+            1
+          ],
+          "texts": [
+            "first",
+            " second",
+            "\n\n"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "block-end",
+            "index": 0,
+            "block": {
+              "type": "reasoning",
+              "text": "first second"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 6,
+          "chunk": {
+            "type": "block-start",
+            "index": 1,
+            "blockType": "tool-call"
+          }
+        },
+        {
+          "type": "tool-call-chunks",
+          "time0": 7,
+          "index": 1,
+          "dt": [],
+          "id": "call_lookup|fc_call_lookup",
+          "name": "lookup",
+          "args": [
+            "{}"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 8,
+          "chunk": {
+            "type": "block-end",
+            "index": 1,
+            "block": {
+              "type": "tool-call",
+              "id": "call_lookup|fc_call_lookup",
+              "name": "lookup",
+              "arguments": "{}"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 9,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 10,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "tool-calls"
+            },
+            "replayState": {
+              "response": {
+                "kind": "pi-ai",
+                "version": 2,
+                "api": "openai-responses",
+                "provider": "compat-offline",
+                "model": "m",
+                "responseId": "contract",
+                "stopReason": "toolUse"
+              },
+              "blocks": [
+                {
+                  "type": "reasoning",
+                  "thinkingSignature": "{\"id\":\"rs_contract_0\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"text\":\"first second\",\"type\":\"summary_text\"}]}"
+                },
+                {
+                  "type": "tool-call"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "gemini/no_reasoning",
+      "status": "passed",
+      "deltas": [],
+      "blocks": [
+        {
+          "type": "text",
+          "text": "answer"
+        }
+      ],
+      "finish": {
+        "kind": "stop"
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "text"
+          }
+        },
+        {
+          "type": "text-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [],
+          "texts": [
+            "answer"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 3,
+          "chunk": {
+            "type": "block-end",
+            "index": 0,
+            "block": {
+              "type": "text",
+              "text": "answer"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 4,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "stop"
+            },
+            "replayState": {
+              "response": {
+                "kind": "pi-ai",
+                "version": 2,
+                "api": "openai-responses",
+                "provider": "compat-offline",
+                "model": "m",
+                "responseId": "resp_1792069802899816300",
+                "stopReason": "stop"
+              },
+              "blocks": [
+                {
+                  "type": "text",
+                  "textSignature": "{\"v\":1,\"id\":\"msg_resp_1792069802899816300_0\"}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "gemini/reasoning_only",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second",
+        "\n\n"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        }
+      ],
+      "finish": {
+        "kind": "stop"
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1,
+            1
+          ],
+          "texts": [
+            "first",
+            " second",
+            "\n\n"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "block-end",
+            "index": 0,
+            "block": {
+              "type": "reasoning",
+              "text": "first second"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 6,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 7,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "stop"
+            },
+            "replayState": {
+              "response": {
+                "kind": "pi-ai",
+                "version": 2,
+                "api": "openai-responses",
+                "provider": "compat-offline",
+                "model": "m",
+                "responseId": "resp_1792069802899816300",
+                "stopReason": "stop"
+              },
+              "blocks": [
+                {
+                  "type": "reasoning",
+                  "thinkingSignature": "{\"id\":\"rs_resp_1792069802899816300_0\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"text\":\"first second\",\"type\":\"summary_text\"}]}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "gemini/text",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second",
+        "\n\n"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        },
+        {
+          "type": "text",
+          "text": "answer"
+        }
+      ],
+      "finish": {
+        "kind": "stop"
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1,
+            1
+          ],
+          "texts": [
+            "first",
+            " second",
+            "\n\n"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "block-end",
+            "index": 0,
+            "block": {
+              "type": "reasoning",
+              "text": "first second"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 6,
+          "chunk": {
+            "type": "block-start",
+            "index": 1,
+            "blockType": "text"
+          }
+        },
+        {
+          "type": "text-chunks",
+          "time0": 7,
+          "index": 1,
+          "dt": [],
+          "texts": [
+            "answer"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 8,
+          "chunk": {
+            "type": "block-end",
+            "index": 1,
+            "block": {
+              "type": "text",
+              "text": "answer"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 9,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 10,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "stop"
+            },
+            "replayState": {
+              "response": {
+                "kind": "pi-ai",
+                "version": 2,
+                "api": "openai-responses",
+                "provider": "compat-offline",
+                "model": "m",
+                "responseId": "resp_1792069802899816300",
+                "stopReason": "stop"
+              },
+              "blocks": [
+                {
+                  "type": "reasoning",
+                  "thinkingSignature": "{\"id\":\"rs_resp_1792069802899816300_0\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"text\":\"first second\",\"type\":\"summary_text\"}]}"
+                },
+                {
+                  "type": "text",
+                  "textSignature": "{\"v\":1,\"id\":\"msg_resp_1792069802899816300_1\"}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "gemini/tool",
+      "status": "failed",
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n+ actual - expected\n\n+ undefined\n- 'lookup'\n",
+      "observed": [
+        {
+          "type": "block-start",
+          "index": 0,
+          "blockType": "reasoning"
+        },
+        {
+          "type": "reasoning-delta",
+          "index": 0,
+          "text": "first"
+        },
+        {
+          "type": "reasoning-delta",
+          "index": 0,
+          "text": " second"
+        },
+        {
+          "type": "reasoning-delta",
+          "index": 0,
+          "text": "\n\n"
+        },
+        {
+          "type": "block-end",
+          "index": 0,
+          "block": {
+            "type": "reasoning",
+            "text": "first second"
+          }
+        },
+        {
+          "type": "usage",
+          "usage": {
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "totalTokens": 0
+          }
+        },
+        {
+          "type": "finish",
+          "reason": {
+            "kind": "stop"
+          },
+          "replayState": {
+            "response": {
+              "kind": "pi-ai",
+              "version": 2,
+              "api": "openai-responses",
+              "provider": "compat-offline",
+              "model": "m",
+              "responseId": "resp_1792069802899816300",
+              "stopReason": "stop"
+            },
+            "blocks": [
+              {
+                "type": "reasoning",
+                "thinkingSignature": "{\"id\":\"rs_resp_1792069802899816300_0\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"text\":\"first second\",\"type\":\"summary_text\"}]}"
+              }
+            ]
+          }
+        }
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        }
+      ],
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1,
+            1
+          ],
+          "texts": [
+            "first",
+            " second",
+            "\n\n"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "block-end",
+            "index": 0,
+            "block": {
+              "type": "reasoning",
+              "text": "first second"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 6,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 7,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "stop"
+            },
+            "replayState": {
+              "response": {
+                "kind": "pi-ai",
+                "version": 2,
+                "api": "openai-responses",
+                "provider": "compat-offline",
+                "model": "m",
+                "responseId": "resp_1792069802899816300",
+                "stopReason": "stop"
+              },
+              "blocks": [
+                {
+                  "type": "reasoning",
+                  "thinkingSignature": "{\"id\":\"rs_resp_1792069802899816300_0\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"text\":\"first second\",\"type\":\"summary_text\"}]}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "standard/passthrough",
+      "status": "passed",
+      "deltas": [
+        "思考 ",
+        "😀 done",
+        "\n\n"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "思考 😀 done"
+        }
+      ],
+      "finish": {
+        "kind": "stop"
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1,
+            1
+          ],
+          "texts": [
+            "思考 ",
+            "😀 done",
+            "\n\n"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "block-end",
+            "index": 0,
+            "block": {
+              "type": "reasoning",
+              "text": "思考 😀 done"
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 6,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 7,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "stop"
+            },
+            "replayState": {
+              "response": {
+                "kind": "pi-ai",
+                "version": 2,
+                "api": "openai-responses",
+                "provider": "compat-offline",
+                "model": "m",
+                "responseId": "standard",
+                "stopReason": "stop"
+              },
+              "blocks": [
+                {
+                  "type": "reasoning",
+                  "thinkingSignature": "{\"id\":\"r\",\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"思考 😀 done\"}]}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "chat/early_eof",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        }
+      ],
+      "finish": {
+        "kind": "error",
+        "failure": {
+          "message": "OpenAI Responses stream ended before a terminal response event",
+          "code": "TRANSPORT"
+        }
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1
+          ],
+          "texts": [
+            "first",
+            " second"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 4,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "error",
+              "failure": {
+                "message": "OpenAI Responses stream ended before a terminal response event",
+                "code": "TRANSPORT"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "chat/response.incomplete",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        }
+      ],
+      "finish": {
+        "kind": "error",
+        "failure": {
+          "message": "Response incomplete: upstream_error",
+          "code": "PI_AI_ERROR"
+        }
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1
+          ],
+          "texts": [
+            "first",
+            " second"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 4,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "error",
+              "failure": {
+                "message": "Response incomplete: upstream_error",
+                "code": "PI_AI_ERROR"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "chat/response.failed",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        }
+      ],
+      "finish": {
+        "kind": "error",
+        "failure": {
+          "message": "upstream_error: offline synthetic interruption",
+          "code": "PI_AI_ERROR"
+        }
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1
+          ],
+          "texts": [
+            "first",
+            " second"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 4,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "error",
+              "failure": {
+                "message": "upstream_error: offline synthetic interruption",
+                "code": "PI_AI_ERROR"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "claude/early_eof",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        }
+      ],
+      "finish": {
+        "kind": "error",
+        "failure": {
+          "message": "OpenAI Responses stream ended before a terminal response event",
+          "code": "TRANSPORT"
+        }
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1
+          ],
+          "texts": [
+            "first",
+            " second"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 4,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "error",
+              "failure": {
+                "message": "OpenAI Responses stream ended before a terminal response event",
+                "code": "TRANSPORT"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "claude/response.incomplete",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        }
+      ],
+      "finish": {
+        "kind": "error",
+        "failure": {
+          "message": "Response incomplete: upstream_error",
+          "code": "PI_AI_ERROR"
+        }
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1
+          ],
+          "texts": [
+            "first",
+            " second"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 4,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "error",
+              "failure": {
+                "message": "Response incomplete: upstream_error",
+                "code": "PI_AI_ERROR"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "claude/response.failed",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        }
+      ],
+      "finish": {
+        "kind": "error",
+        "failure": {
+          "message": "upstream_error: offline synthetic interruption",
+          "code": "PI_AI_ERROR"
+        }
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1
+          ],
+          "texts": [
+            "first",
+            " second"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 4,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "error",
+              "failure": {
+                "message": "upstream_error: offline synthetic interruption",
+                "code": "PI_AI_ERROR"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "gemini/early_eof",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        }
+      ],
+      "finish": {
+        "kind": "error",
+        "failure": {
+          "message": "OpenAI Responses stream ended before a terminal response event",
+          "code": "TRANSPORT"
+        }
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1
+          ],
+          "texts": [
+            "first",
+            " second"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 4,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "error",
+              "failure": {
+                "message": "OpenAI Responses stream ended before a terminal response event",
+                "code": "TRANSPORT"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "gemini/response.incomplete",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        }
+      ],
+      "finish": {
+        "kind": "error",
+        "failure": {
+          "message": "Response incomplete: upstream_error",
+          "code": "PI_AI_ERROR"
+        }
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1
+          ],
+          "texts": [
+            "first",
+            " second"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 4,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "error",
+              "failure": {
+                "message": "Response incomplete: upstream_error",
+                "code": "PI_AI_ERROR"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "gemini/response.failed",
+      "status": "passed",
+      "deltas": [
+        "first",
+        " second"
+      ],
+      "blocks": [
+        {
+          "type": "reasoning",
+          "text": "first second"
+        }
+      ],
+      "finish": {
+        "kind": "error",
+        "failure": {
+          "message": "upstream_error: offline synthetic interruption",
+          "code": "PI_AI_ERROR"
+        }
+      },
+      "record": [
+        {
+          "type": "chunk",
+          "time": 1,
+          "chunk": {
+            "type": "block-start",
+            "index": 0,
+            "blockType": "reasoning"
+          }
+        },
+        {
+          "type": "reasoning-chunks",
+          "time0": 2,
+          "index": 0,
+          "dt": [
+            1
+          ],
+          "texts": [
+            "first",
+            " second"
+          ]
+        },
+        {
+          "type": "chunk",
+          "time": 4,
+          "chunk": {
+            "type": "usage",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalTokens": 0
+            }
+          }
+        },
+        {
+          "type": "chunk",
+          "time": 5,
+          "chunk": {
+            "type": "finish",
+            "reason": {
+              "kind": "error",
+              "failure": {
+                "message": "upstream_error: offline synthetic interruption",
+                "code": "PI_AI_ERROR"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

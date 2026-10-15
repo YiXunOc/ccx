@@ -193,7 +193,7 @@ func TestResponsesHandler_DeepSeekChatAndMessagesStreamThinkingMatrix(t *testing
 			}, "\n"),
 			want: []string{
 				`response.reasoning_summary_text.delta`,
-				`"text":"chat reasoning"`,
+				`"delta":"chat reasoning"`,
 				`"delta":"chat text"`,
 				`"type":"response.completed"`,
 			},
@@ -210,7 +210,7 @@ func TestResponsesHandler_DeepSeekChatAndMessagesStreamThinkingMatrix(t *testing
 			}, "\n"),
 			want: []string{
 				`response.reasoning_summary_text.delta`,
-				`"text":"vllm reasoning"`,
+				`"delta":"vllm reasoning"`,
 				`"delta":"chat text"`,
 				`"type":"response.completed"`,
 			},

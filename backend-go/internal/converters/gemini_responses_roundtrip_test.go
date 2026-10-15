@@ -232,7 +232,7 @@ func TestConvertGeminiStreamToResponses_ThoughtToReasoning(t *testing.T) {
 
 	for _, want := range []string{
 		`response.reasoning_summary_text.delta`,
-		`"text":"gemini thinking"`,
+		`"delta":"gemini thinking"`,
 		`"type":"reasoning"`,
 		`"delta":"answer"`,
 		`"type":"response.completed"`,
@@ -281,7 +281,7 @@ func TestConvertGeminiStreamToResponses_PreservesFunctionCallCallID(t *testing.T
 		t.Fatalf("expected 1 output item, got %d", len(output))
 	}
 	item := output[0].(map[string]interface{})
-	content := item["content"].(map[string]interface{})
+	content := item
 	if content["name"] != "get_weather" {
 		t.Fatalf("expected function name get_weather, got %#v", content["name"])
 	}

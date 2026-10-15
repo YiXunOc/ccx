@@ -235,11 +235,11 @@ func (st *claudeToResponsesState) startReasoning(nextSeq func() int) []string {
 
 func (st *claudeToResponsesState) appendReasoningDelta(text string, nextSeq func() int) []string {
 	st.ReasoningBuf.WriteString(text)
-	delta := `{"type":"response.reasoning_summary_text.delta","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"text":""}`
+	delta := `{"type":"response.reasoning_summary_text.delta","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"delta":""}`
 	delta, _ = sjson.Set(delta, "sequence_number", nextSeq())
 	delta, _ = sjson.Set(delta, "item_id", st.CurrentReasoningID)
 	delta, _ = sjson.Set(delta, "output_index", st.ReasoningIndex)
-	delta, _ = sjson.Set(delta, "text", text)
+	delta, _ = sjson.Set(delta, "delta", text)
 	return []string{emitResponsesEvent("response.reasoning_summary_text.delta", delta)}
 }
 

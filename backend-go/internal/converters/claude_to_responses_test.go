@@ -29,7 +29,7 @@ func TestConvertClaudeMessagesToResponses_StreamThinkingToReasoning(t *testing.T
 	if !strings.Contains(joined, `"type":"reasoning"`) {
 		t.Fatalf("expected reasoning item events, got %v", events)
 	}
-	if !strings.Contains(joined, `"text":"messages thinking"`) {
+	if !strings.Contains(joined, `"delta":"messages thinking"`) {
 		t.Fatalf("expected reasoning text, got %v", events)
 	}
 	if !strings.Contains(joined, `"delta":"messages text"`) {
