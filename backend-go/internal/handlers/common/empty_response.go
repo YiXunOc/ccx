@@ -2,11 +2,11 @@
 package common
 
 import (
-	"encoding/json"
 	"errors"
 	"strings"
 
 	"github.com/BenedictKing/ccx/internal/types"
+	"github.com/BenedictKing/ccx/internal/utils"
 )
 
 // ErrEmptyNonStreamResponse 上游返回 HTTP 200 且 JSON 可解析，但语义内容为空。
@@ -276,47 +276,10 @@ func isMalformedNamedToolArguments(name string, args interface{}) bool {
 }
 
 func isMalformedToolArguments(name string, args interface{}) bool {
-	if args == nil {
-		return toolRequiresArguments(name)
-	}
-
-	switch v := args.(type) {
-	case string:
-		trimmed := strings.TrimSpace(v)
-		if trimmed == "" || trimmed == "{}" {
-			return toolRequiresArguments(name)
-		}
-		var parsed interface{}
-		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
-			return true
-		}
-		return parsedJSONEmptyObject(parsed) && toolRequiresArguments(name)
-	case map[string]interface{}:
-		return len(v) == 0 && toolRequiresArguments(name)
-	case []interface{}:
-		return len(v) == 0 && toolRequiresArguments(name)
-	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			return true
-		}
-		return isMalformedToolArguments(name, string(b))
-	}
+	return utils.IsMalformedNamedToolArguments(name, args)
 }
 
-func toolRequiresArguments(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "read", "edit", "write", "bash", "grep", "glob", "webfetch", "websearch", "agent", "taskcreate", "taskupdate", "taskget", "taskoutput", "taskstop", "notebookedit", "askuserquestion", "sendmessage", "skill", "croncreate", "crondelete", "enterworktree", "exitworktree", "mcp__serena__read_memory", "mcp__serena__write_memory", "mcp__serena__find_symbol", "mcp__serena__replace_content":
-		return true
-	default:
-		return false
-	}
-}
-
-func parsedJSONEmptyObject(v interface{}) bool {
-	m, ok := v.(map[string]interface{})
-	return ok && len(m) == 0
-}
+func toolRequiresArguments(name string) bool { return utils.ToolRequiresArguments(name) }
 
 func firstNonEmptyString(values ...string) string {
 	for _, v := range values {

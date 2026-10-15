@@ -39,7 +39,7 @@ func (col *streamOutputCollector) processEvent(event string) {
 		switch eventType {
 		case "response.output_item.done":
 			if itemMap, ok := data["item"].(map[string]interface{}); ok {
-				col.items = append(col.items, types.NormalizeResponsesItem(types.ResponsesItemFromMap(itemMap)))
+				col.collectItem(itemMap)
 			}
 		case "response.completed", "response.incomplete":
 			// responseID 可能在顶层 data["id"]，或嵌套在 data["response"]["id"]（response.completed 格式）
@@ -52,7 +52,7 @@ func (col *streamOutputCollector) processEvent(event string) {
 				}
 			}
 			// 兜底：若未通过 output_item.done 收集到 items，从终止事件的 output 数组提取
-			if len(col.items) == 0 {
+			{
 				// output 可能在顶层 data["output"] 或嵌套在 data["response"]["output"]
 				var outputArr []interface{}
 				if arr, ok := data["output"].([]interface{}); ok {
@@ -64,12 +64,50 @@ func (col *streamOutputCollector) processEvent(event string) {
 				}
 				for _, rawItem := range outputArr {
 					if itemMap, ok := rawItem.(map[string]interface{}); ok {
-						col.items = append(col.items, types.NormalizeResponsesItem(types.ResponsesItemFromMap(itemMap)))
+						col.collectItem(itemMap)
 					}
 				}
 			}
 		}
 	}
+}
+
+// collectItem fills missing fields only for a stable ID; anonymous items never
+// overwrite a positional neighbour. First delivered fields and order win.
+func (col *streamOutputCollector) collectItem(itemMap map[string]interface{}) {
+	item := types.NormalizeResponsesItem(types.ResponsesItemFromMap(itemMap))
+	if item.ID != "" {
+		for i, existing := range col.items {
+			if existing.ID != item.ID {
+				continue
+			}
+			if existing.Type != "" && item.Type != "" && existing.Type != item.Type {
+				return
+			}
+			raw, _ := json.Marshal(existing)
+			var merged map[string]interface{}
+			_ = json.Unmarshal(raw, &merged)
+			incoming, _ := json.Marshal(item)
+			var fields map[string]interface{}
+			_ = json.Unmarshal(incoming, &fields)
+			for key, value := range fields {
+				old, exists := merged[key]
+				empty := !exists || old == nil
+				if s, ok := old.(string); ok && s == "" {
+					empty = true
+				}
+				if arr, ok := old.([]interface{}); ok && len(arr) == 0 {
+					empty = true
+				}
+				if empty {
+					merged[key] = value
+				}
+			}
+			col.items[i] = types.NormalizeResponsesItem(types.ResponsesItemFromMap(merged))
+			return
+		}
+	}
+	col.items = append(col.items, item)
 }
 
 // extractSSEDataLine 从单行中提取 "data:" 后的 JSON 负载。

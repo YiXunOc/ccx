@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,13 +40,66 @@ type responsesFoldResult struct {
 	BilledUsage map[string]interface{}
 }
 
+const responsesRetainedByteLimit = 32 * 1024 * 1024
+
+// Counts retained serialized events and snapshots, not Go heap overhead.
+type responsesRetentionBudget struct {
+	used     int
+	exceeded bool
+}
+
+func (b *responsesRetentionBudget) reserve(n int) error {
+	if b == nil {
+		return nil
+	}
+	if n > responsesRetainedByteLimit-b.used {
+		b.exceeded = true
+		return fmt.Errorf("%w: retained Responses data exceeds 32MiB", common.ErrInvalidResponseBody)
+	}
+	b.used += n
+	return nil
+}
+func responsesRetainedSize(v interface{}) int { data, _ := json.Marshal(v); return len(data) }
+func (b *responsesRetentionBudget) hold(v interface{}) error {
+	return b.reserve(responsesRetainedSize(v))
+}
+func (b *responsesRetentionBudget) release(n int) {
+	if b != nil {
+		b.used -= n
+	}
+}
+
 type responsesFoldBufferedOutput struct {
+	budget     *responsesRetentionBudget
+	retained   int
 	item       map[string]interface{}
 	events     []map[string]interface{}
 	index      interface{}
 	live       bool
 	emitted    int
 	downstream int
+}
+
+func (e *responsesFoldBufferedOutput) keepEvent(event map[string]interface{}) error {
+	n := responsesRetainedSize(event)
+	if err := e.budget.reserve(n); err != nil {
+		return err
+	}
+	e.retained += n
+	return nil
+}
+func (e *responsesFoldBufferedOutput) setItem(item map[string]interface{}) error {
+	old := 0
+	if e.item != nil {
+		old = responsesRetainedSize(e.item)
+	}
+	n := responsesRetainedSize(item)
+	if err := e.budget.reserve(n - old); err != nil {
+		return err
+	}
+	e.retained += n - old
+	e.item = item
+	return nil
 }
 
 func handleFoldedResponsesStreamSuccess(
@@ -73,6 +127,7 @@ func handleFoldedResponsesStreamSuccess(
 	}
 
 	emitter := newResponsesFoldHTTPEmitter(c, resp, sessionManager, originalReq)
+	defer emitter.clearPreflight()
 	var codexCtx *converters.CodexToolContext
 	if hoisted, ok := c.Get("codex_additional_tools_hoisted"); ok && hoisted == true {
 		if ctxVal, ok := c.Get("codex_tool_context"); ok {
@@ -108,7 +163,7 @@ func handleFoldedResponsesStreamSuccess(
 		return roundResp, bodyBytes, nil
 	}
 
-	result, err := runResponsesFold(baseBody, resp, openRound, emitter.emit, codexCtx)
+	result, err := runResponsesFoldWithBudget(baseBody, resp, openRound, emitter.emit, codexCtx, emitter.budget)
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +181,10 @@ func runResponsesFold(
 	emit responsesFoldEmitter,
 	codexCtx *converters.CodexToolContext,
 ) (responsesFoldResult, error) {
+	return runResponsesFoldWithBudget(baseBody, firstResp, openRound, emit, codexCtx, &responsesRetentionBudget{})
+}
+
+func runResponsesFoldWithBudget(baseBody map[string]interface{}, firstResp *http.Response, openRound responsesFoldRoundOpener, emit responsesFoldEmitter, codexCtx *converters.CodexToolContext, budget *responsesRetentionBudget) (result responsesFoldResult, resultErr error) {
 	origInput := responsesFoldInputItems(baseBody["input"])
 	seq := 0
 	dsOutputIndex := 0
@@ -137,14 +196,26 @@ func runResponsesFold(
 	var roundsInfo []map[string]interface{}
 
 	stamp := func(event map[string]interface{}) map[string]interface{} {
+		event = cloneStringInterfaceMap(event)
 		event["sequence_number"] = seq
 		seq++
 		return event
 	}
 
 	currentResp := firstResp
+	defer func() {
+		_ = currentResp.Body.Close()
+		if resultErr != nil && errors.Is(resultErr, common.ErrInvalidResponseBody) {
+			incomplete := responsesFoldTerminalEvent(nil, baseResponse, finalOutput, responsesFoldAgentUsage(firstUsage, summedUsage, nil, false), roundsInfo, summedUsage, "upstream_error", "upstream_error")
+			if err := emit(stamp(incomplete)); err == nil {
+				result = responsesFoldResult{AgentUsage: responseUsageMap(incomplete), BilledUsage: summedUsage}
+				resultErr = nil
+			}
+		}
+	}()
 	for roundNo := 1; ; roundNo++ {
 		iterator := newResponsesSSEIterator(currentResp.Body)
+		iterator.budget = budget
 		outputIndexToDownstream := make(map[string]int)
 		outputKind := make(map[string]string)
 		bufferedByIndex := make(map[string]*responsesFoldBufferedOutput)
@@ -157,6 +228,9 @@ func runResponsesFold(
 			frame, ok, err := iterator.next()
 			if err != nil {
 				_ = currentResp.Body.Close()
+				if budget.exceeded {
+					return result, err
+				}
 				incomplete := responsesFoldTerminalEvent(nil, baseResponse, finalOutput, responsesFoldAgentUsage(firstUsage, summedUsage, usage, false), roundsInfo, summedUsage, "upstream_error", "upstream_error")
 				return responsesFoldResult{AgentUsage: responseUsageMap(incomplete), BilledUsage: summedUsage}, emit(stamp(incomplete))
 			}
@@ -175,7 +249,13 @@ func runResponsesFold(
 			case "response.created", "response.in_progress":
 				if roundNo == 1 {
 					if eventType == "response.created" {
+						if baseResponse != nil {
+							budget.release(responsesRetainedSize(baseResponse))
+						}
 						baseResponse = mapFromInterface(frame.event["response"])
+						if err := budget.hold(baseResponse); err != nil {
+							return result, err
+						}
 					}
 					if err := emit(stamp(frame.event)); err != nil {
 						_ = currentResp.Body.Close()
@@ -184,6 +264,9 @@ func runResponsesFold(
 				}
 				continue
 			case "response.completed", "response.failed", "response.incomplete":
+				if err := budget.hold(frame.event); err != nil {
+					return result, err
+				}
 				terminal = frame.event
 				usage = responsesFoldUsageFromTerminal(frame.event)
 				goto roundDone
@@ -194,7 +277,14 @@ func runResponsesFold(
 			if eventType == "response.output_item.added" {
 				item := mapFromInterface(frame.event["item"])
 				if item["type"] == "reasoning" && bufferedByIndex[outputIndexKey] == nil {
-					entry := &responsesFoldBufferedOutput{item: item, index: outputIndex, live: true, downstream: dsOutputIndex, events: []map[string]interface{}{cloneStringInterfaceMap(frame.event)}, emitted: 1}
+					entry := &responsesFoldBufferedOutput{budget: budget, index: outputIndex, live: true, downstream: dsOutputIndex, emitted: 1}
+					if err := entry.setItem(item); err != nil {
+						return result, err
+					}
+					if err := entry.keepEvent(frame.event); err != nil {
+						return result, err
+					}
+					entry.events = []map[string]interface{}{cloneStringInterfaceMap(frame.event)}
 					bufferedByIndex[outputIndexKey] = entry
 					bufferedOrder = append(bufferedOrder, entry)
 					outputKind[outputIndexKey] = "reasoning"
@@ -209,11 +299,16 @@ func runResponsesFold(
 					outputKind[outputIndexKey] = "buffered"
 					entry := bufferedByIndex[outputIndexKey]
 					if entry == nil {
-						entry = &responsesFoldBufferedOutput{index: outputIndex}
+						entry = &responsesFoldBufferedOutput{budget: budget, index: outputIndex}
 						bufferedByIndex[outputIndexKey] = entry
 						bufferedOrder = append(bufferedOrder, entry)
 					}
-					entry.item = item
+					if err := entry.setItem(item); err != nil {
+						return result, err
+					}
+					if err := entry.keepEvent(frame.event); err != nil {
+						return result, err
+					}
 					entry.events = append(entry.events, frame.event)
 
 				}
@@ -223,6 +318,9 @@ func runResponsesFold(
 			switch outputKind[outputIndexKey] {
 			case "reasoning":
 				entry := bufferedByIndex[outputIndexKey]
+				if err := entry.keepEvent(frame.event); err != nil {
+					return result, err
+				}
 				entry.events = append(entry.events, cloneStringInterfaceMap(frame.event))
 				entry.emitted++
 				if downstreamIndex, ok := outputIndexToDownstream[outputIndexKey]; ok && hasOutputIndex {
@@ -230,7 +328,9 @@ func runResponsesFold(
 				}
 				if eventType == "response.output_item.done" {
 					item := mapFromInterface(frame.event["item"])
-					entry.item = item
+					if err := entry.setItem(item); err != nil {
+						return result, err
+					}
 				}
 				if err := emit(stamp(frame.event)); err != nil {
 					_ = currentResp.Body.Close()
@@ -241,21 +341,31 @@ func runResponsesFold(
 				if entry == nil {
 					continue
 				}
+				if err := entry.keepEvent(frame.event); err != nil {
+					return result, err
+				}
 				entry.events = append(entry.events, frame.event)
 				if eventType == "response.output_item.done" {
-					entry.item = mapFromInterface(frame.event["item"])
+					if err := entry.setItem(mapFromInterface(frame.event["item"])); err != nil {
+						return result, err
+					}
 				}
 			default:
 				if hasOutputIndex {
 					entry := bufferedByIndex[outputIndexKey]
 					if entry == nil {
-						entry = &responsesFoldBufferedOutput{index: outputIndex}
+						entry = &responsesFoldBufferedOutput{budget: budget, index: outputIndex}
 						bufferedByIndex[outputIndexKey] = entry
 						bufferedOrder = append(bufferedOrder, entry)
 					}
+					if err := entry.keepEvent(frame.event); err != nil {
+						return result, err
+					}
 					entry.events = append(entry.events, frame.event)
 					if eventType == "response.output_item.done" {
-						entry.item = mapFromInterface(frame.event["item"])
+						if err := entry.setItem(mapFromInterface(frame.event["item"])); err != nil {
+							return result, err
+						}
 					}
 					continue
 				}
@@ -274,8 +384,11 @@ func runResponsesFold(
 		}
 
 		var reconcileErr error
-		bufferedOrder, reconcileErr = reconcileResponsesFoldOutput(bufferedOrder, terminal)
+		bufferedOrder, reconcileErr = reconcileResponsesFoldOutput(bufferedOrder, terminal, budget)
 		if reconcileErr != nil {
+			if budget.exceeded {
+				return result, reconcileErr
+			}
 			incomplete := responsesFoldTerminalEvent(nil, baseResponse, finalOutput, responsesFoldAgentUsage(firstUsage, summedUsage, usage, false), roundsInfo, summedUsage, "upstream_error", "upstream_error")
 			return responsesFoldResult{BilledUsage: summedUsage}, emit(stamp(incomplete))
 		}
@@ -293,7 +406,13 @@ func runResponsesFold(
 					return responsesFoldResult{BilledUsage: summedUsage}, err
 				}
 			}
+			if err := budget.hold(entry.item); err != nil {
+				return result, err
+			}
 			roundReasoning = append(roundReasoning, entry.item)
+			if err := budget.hold(entry.item); err != nil {
+				return result, err
+			}
 			finalOutput = append(finalOutput, entry.item)
 		}
 		reasoningTokens, hasReasoningTokens := responsesFoldReasoningTokens(usage)
@@ -331,6 +450,26 @@ func runResponsesFold(
 		}
 
 		if doContinue {
+			for _, item := range roundReasoning {
+				if err := budget.hold(item); err != nil {
+					return result, err
+				}
+			}
+			if err := budget.hold(responsesFoldCommentaryNudge()); err != nil {
+				return result, err
+			}
+			for _, entry := range bufferedOrder {
+				budget.release(entry.retained)
+			}
+			for _, item := range roundReasoning {
+				budget.release(responsesRetainedSize(item))
+			}
+			if terminal != nil {
+				budget.release(responsesRetainedSize(terminal))
+			}
+			bufferedOrder = nil
+			bufferedByIndex = nil
+			terminal = nil
 			replayTail = append(replayTail, roundReasoning...)
 			replayTail = append(replayTail, responsesFoldCommentaryNudge())
 			nextBody := responsesFoldNextRoundBody(baseBody, append(append([]interface{}{}, origInput...), replayTail...))
@@ -352,7 +491,9 @@ func runResponsesFold(
 			if entry.item["type"] == "reasoning" {
 				continue
 			}
-			remapFoldCodexEntry(codexCtx, entry)
+			if err := remapFoldCodexEntryBudgeted(codexCtx, entry); err != nil {
+				return result, err
+			}
 			for _, event := range entry.events {
 				if _, ok := event["output_index"]; ok {
 					event["output_index"] = dsOutputIndex
@@ -362,6 +503,9 @@ func runResponsesFold(
 				}
 			}
 			dsOutputIndex++
+			if err := budget.hold(entry.item); err != nil {
+				return result, err
+			}
 			finalOutput = append(finalOutput, entry.item)
 		}
 
@@ -380,7 +524,11 @@ func runResponsesFold(
 // fold 按 output_index 整项缓冲，轮末冲刷前 remap 完整 item，无需增量 delta 转换。
 // reconcileResponsesFoldOutput runs before continuation selection so encrypted reasoning
 // and terminal-only items participate in the same round as incremental output.
-func reconcileResponsesFoldOutput(entries []*responsesFoldBufferedOutput, terminal map[string]interface{}) ([]*responsesFoldBufferedOutput, error) {
+func reconcileResponsesFoldOutput(entries []*responsesFoldBufferedOutput, terminal map[string]interface{}, budgets ...*responsesRetentionBudget) ([]*responsesFoldBufferedOutput, error) {
+	var budget *responsesRetentionBudget
+	if len(budgets) > 0 {
+		budget = budgets[0]
+	}
 	byIndex := make(map[string]*responsesFoldBufferedOutput)
 	byID := make(map[string]*responsesFoldBufferedOutput)
 	for _, entry := range entries {
@@ -388,7 +536,9 @@ func reconcileResponsesFoldOutput(entries []*responsesFoldBufferedOutput, termin
 		if err != nil {
 			return nil, err
 		}
-		entry.item = item
+		if err := entry.setItem(item); err != nil {
+			return nil, err
+		}
 		key := responsesFoldOutputIndexKey(entry.index)
 		if prior := byIndex[key]; prior != nil && prior != entry {
 			return nil, fmt.Errorf("duplicate output index")
@@ -441,7 +591,7 @@ func reconcileResponsesFoldOutput(entries []*responsesFoldBufferedOutput, termin
 			}
 		}
 		if match == nil {
-			match = &responsesFoldBufferedOutput{index: i}
+			match = &responsesFoldBufferedOutput{budget: budget, index: i}
 			entries = append(entries, match)
 		}
 		claimed[match] = true
@@ -473,7 +623,9 @@ func reconcileResponsesFoldOutput(entries []*responsesFoldBufferedOutput, termin
 		for key, value := range item {
 			merged[key] = value
 		}
-		match.item = merged
+		if err := match.setItem(merged); err != nil {
+			return nil, err
+		}
 		matches[i] = match
 	}
 	// Live reasoning keeps its committed prefix; fold always emits remaining
@@ -701,6 +853,9 @@ func completeResponsesFoldEntry(e *responsesFoldBufferedOutput) error {
 			item["content"] = []interface{}{}
 		}
 		a["item"] = item
+		if err := e.keepEvent(a); err != nil {
+			return err
+		}
 		prefix = append(prefix, a)
 	}
 	// Only the unobserved suffix is synthesized; conflicting snapshots never concatenate.
@@ -756,6 +911,11 @@ func completeResponsesFoldEntry(e *responsesFoldBufferedOutput) error {
 			supplement = append(supplement, v)
 		}
 		if len(supplement) > 0 {
+			for _, v := range supplement {
+				if err := e.keepEvent(v); err != nil {
+					return err
+				}
+			}
 			insertAt := len(e.events)
 			for i, v := range e.events {
 				matchingPart := contentIndex >= 0 && intFromInterfaceDefault(v["content_index"]) == contentIndex
@@ -801,6 +961,9 @@ func completeResponsesFoldEntry(e *responsesFoldBufferedOutput) error {
 	if !done {
 		v := event("response.output_item.done")
 		v["item"] = e.item
+		if err := e.keepEvent(v); err != nil {
+			return err
+		}
 		events = append(events, v)
 	} else {
 		for _, v := range events {
@@ -832,6 +995,9 @@ func completeResponsesFoldEntry(e *responsesFoldBufferedOutput) error {
 					p["text"] = ""
 					a["part"] = p
 					a["content_index"] = i
+					if err := e.keepEvent(a); err != nil {
+						return err
+					}
 					normalized = append(normalized, a)
 					hasAdded = true
 				}
@@ -840,6 +1006,9 @@ func completeResponsesFoldEntry(e *responsesFoldBufferedOutput) error {
 					d := event("response.content_part.done")
 					d["part"] = part
 					d["content_index"] = i
+					if err := e.keepEvent(d); err != nil {
+						return err
+					}
 					normalized = append(normalized, d)
 					hasDone = true
 				}
@@ -851,6 +1020,30 @@ func completeResponsesFoldEntry(e *responsesFoldBufferedOutput) error {
 		return err
 	}
 	e.events = events
+	return nil
+}
+
+func remapFoldCodexEntryBudgeted(ctx *converters.CodexToolContext, entry *responsesFoldBufferedOutput) error {
+	if ctx == nil {
+		return nil
+	}
+	// Remapping rules are unchanged; account the replacement before retaining it.
+	var copyEntry responsesFoldBufferedOutput
+	raw, _ := json.Marshal(entry.item)
+	_ = json.Unmarshal(raw, &copyEntry.item)
+	raw, _ = json.Marshal(entry.events)
+	_ = json.Unmarshal(raw, &copyEntry.events)
+	remapFoldCodexEntry(ctx, &copyEntry)
+	n := responsesRetainedSize(copyEntry.item)
+	for _, event := range copyEntry.events {
+		n += responsesRetainedSize(event)
+	}
+	if err := entry.budget.reserve(n - entry.retained); err != nil {
+		return err
+	}
+	entry.retained = n
+	entry.item = copyEntry.item
+	entry.events = copyEntry.events
 	return nil
 }
 
@@ -964,6 +1157,10 @@ type responsesFoldHTTPEmitter struct {
 	outputCollector    *streamOutputCollector
 	reasoningCollector *thinkingcache.ResponsesStreamCollector
 	pseudoScanner      *common.PseudoToolCallMarkerScanner
+	budget             *responsesRetentionBudget
+	preflightBytes     int
+	toolNames          map[string]string
+	toolTracker        *common.StreamToolCallTracker
 	preflightEvents    []string
 	preflightText      bytes.Buffer
 	committed          bool
@@ -981,6 +1178,9 @@ func newResponsesFoldHTTPEmitter(
 	originalReq *types.ResponsesRequest,
 ) *responsesFoldHTTPEmitter {
 	return &responsesFoldHTTPEmitter{
+		budget:             &responsesRetentionBudget{},
+		toolNames:          make(map[string]string),
+		toolTracker:        common.NewStreamToolCallTracker(),
 		c:                  c,
 		resp:               resp,
 		sessionManager:     sessionManager,
@@ -1023,9 +1223,27 @@ func (e *responsesFoldHTTPEmitter) observeStreamContent(event map[string]interfa
 	}
 }
 
-func (e *responsesFoldHTTPEmitter) emit(event map[string]interface{}) error {
+func (e *responsesFoldHTTPEmitter) clearPreflight() {
+	e.preflightEvents = nil
+	e.preflightText.Reset()
+	e.budget.release(e.preflightBytes)
+	e.preflightBytes = 0
+}
+
+func (e *responsesFoldHTTPEmitter) emit(event map[string]interface{}) (emitErr error) {
+	defer func() {
+		if emitErr != nil {
+			e.clearPreflight()
+		}
+	}()
 	e.observeStreamContent(event)
 	eventString := formatResponsesFoldSSE(event)
+	if !validResponsesToolCompletion(eventString, e.toolNames) {
+		return fmt.Errorf("%w: malformed tool completion", common.ErrInvalidResponseBody)
+	}
+	if malformed, _ := e.toolTracker.ProcessResponsesEvent(responsesContentInspectionEvent(eventString)); malformed {
+		return fmt.Errorf("%w: malformed tool completion", common.ErrInvalidResponseBody)
+	}
 	if e.committed {
 		return e.writeEvent(eventString)
 	}
@@ -1039,6 +1257,15 @@ func (e *responsesFoldHTTPEmitter) emit(event map[string]interface{}) error {
 		return fmt.Errorf("%w: %s", common.ErrEmptyStreamResponse, diagnostic)
 	}
 
+	if e.budget.exceeded {
+		return fmt.Errorf("%w: retained Responses data exceeds 32MiB", common.ErrInvalidResponseBody)
+	}
+	if err := e.budget.reserve(len(eventString)); err != nil {
+		e.preflightEvents = nil
+		e.preflightText.Reset()
+		return err
+	}
+	e.preflightBytes += len(eventString)
 	e.preflightEvents = append(e.preflightEvents, eventString)
 	e.seenEvent = true
 	e.seenCompleted = e.seenCompleted || eventType == "response.completed"
@@ -1049,10 +1276,16 @@ func (e *responsesFoldHTTPEmitter) emit(event map[string]interface{}) error {
 			e.unknownEventType = t
 		}
 	}
-	extractResponsesTextFromEvent(eventString, &e.preflightText)
+	oldTextBytes := e.preflightText.Len()
+	extractResponsesDeliverableTextFromEvent(eventString, &e.preflightText)
+	textDelta := e.preflightText.Len() - oldTextBytes
+	if err := e.budget.reserve(textDelta); err != nil {
+		return err
+	}
+	e.preflightBytes += textDelta
 
-	hasContent := common.HasResponsesSemanticContent(eventString) || !common.IsEffectivelyEmptyStreamText(strings.TrimSpace(e.preflightText.String()))
-	if hasContent {
+	hasContent := common.HasResponsesDeliverableContent(responsesContentInspectionEvent(eventString)) || !common.IsEffectivelyEmptyStreamText(strings.TrimSpace(e.preflightText.String()))
+	if hasContent && !e.toolTracker.HasPendingToolCall() {
 		return e.commit()
 	}
 	if isResponsesFoldTerminalType(eventType) {
@@ -1090,6 +1323,9 @@ func (e *responsesFoldHTTPEmitter) commit() error {
 		}
 	}
 	e.preflightEvents = nil
+	e.budget.release(e.preflightBytes)
+	e.preflightBytes = 0
+	e.preflightText.Reset()
 	return nil
 }
 
@@ -1119,6 +1355,8 @@ type responsesSSEFrame struct {
 
 type responsesSSEIterator struct {
 	scanner   *bufio.Scanner
+	budget    *responsesRetentionBudget
+	retained  int
 	eventName string
 	dataLines []string
 }
@@ -1145,7 +1383,12 @@ func (it *responsesSSEIterator) next() (responsesSSEFrame, bool, error) {
 		case strings.HasPrefix(line, "event:"):
 			it.eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		case strings.HasPrefix(line, "data:"):
-			it.dataLines = append(it.dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if err := it.budget.reserve(len(data)); err != nil {
+				return responsesSSEFrame{}, false, err
+			}
+			it.retained += len(data)
+			it.dataLines = append(it.dataLines, data)
 		}
 	}
 	if err := it.scanner.Err(); err != nil {
@@ -1155,6 +1398,7 @@ func (it *responsesSSEIterator) next() (responsesSSEFrame, bool, error) {
 }
 
 func (it *responsesSSEIterator) flush() (responsesSSEFrame, bool, error) {
+	defer func() { it.budget.release(it.retained); it.retained = 0 }()
 	if len(it.dataLines) == 0 {
 		it.eventName = ""
 		return responsesSSEFrame{}, false, nil

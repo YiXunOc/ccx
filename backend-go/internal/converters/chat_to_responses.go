@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BenedictKing/ccx/internal/utils"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -686,6 +687,22 @@ func (st *chatToResponsesState) closeFuncBlocks(nextSeq func() int) []string {
 		if !st.toolCallReady(idx) || st.FuncItemDone[idx] {
 			continue
 		}
+		name := st.FuncNames[idx]
+		rawArgs := st.FuncArgsBuf[idx].String()
+		malformed := false
+		switch {
+		case st.isCustomProxy(idx):
+			malformed = strings.TrimSpace(ReconstructCustomToolCallInput(st.CodexCtx, name, rawArgs)) == ""
+		case st.isToolSearchProxy(idx):
+			// Search has its own established argument normalization.
+		default:
+			malformed = utils.IsMalformedNamedToolArguments(name, rawArgs)
+		}
+		if malformed {
+			st.FuncInvalid[idx] = true
+			st.IncompleteReason = "upstream_error"
+			continue
+		}
 		if st.FuncArgsBuf[idx].Len() == 0 {
 			st.FuncArgsBuf[idx].WriteString("{}")
 		}
@@ -696,7 +713,6 @@ func (st *chatToResponsesState) closeFuncBlocks(nextSeq func() int) []string {
 			args = buf.String()
 		}
 		callID := st.FuncCallIDs[idx]
-		name := st.FuncNames[idx]
 
 		// 计算 output_index
 		outputIndex := st.customToolOutputIndex(idx)

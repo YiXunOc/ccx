@@ -31,6 +31,7 @@ func handleStreamSuccess(
 	timeouts common.StreamPreflightTimeouts,
 ) (*types.Usage, error) {
 	if err := utils.DecompressResponseBodyIfNeeded(resp); err != nil {
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("%w: %v", common.ErrInvalidResponseBody, err)
 	}
 
@@ -61,10 +62,24 @@ func handleStreamSuccess(
 	type scanLine struct {
 		text string
 		ok   bool
+		err  error
 	}
 	lineChan := make(chan scanLine, 1)
 	scanDone := make(chan struct{})
+	scanExited := make(chan struct{})
+	scanStopped := false
+	stopScan := func() {
+		if !scanStopped {
+			scanStopped = true
+			close(scanDone)
+			_ = resp.Body.Close()
+			<-scanExited
+		}
+	}
+	defer stopScan()
+	var scanErr error
 	go func() {
+		defer close(scanExited)
 		defer close(lineChan)
 		for scanner.Scan() {
 			select {
@@ -74,14 +89,18 @@ func handleStreamSuccess(
 			}
 		}
 		select {
-		case lineChan <- scanLine{ok: false}: // scanner 结束
+		case lineChan <- scanLine{ok: false, err: scanner.Err()}: // scanner 结束
 		case <-scanDone:
 		}
 	}()
 
+	preflightBudget := &responsesRetentionBudget{}
+	converterRetained := 0
+	preflightTextRetained := 0
 	var bufferedLines []string
 	var preflightTextBuf bytes.Buffer
 	preflightToolTracker := common.NewStreamToolCallTracker()
+	preflightToolNames := make(map[string]string)
 	streamObserver := common.GetStreamTimeoutObserver(c)
 	preflightHasNonTextContent := false
 	preflightEmpty := false
@@ -150,8 +169,11 @@ func handleStreamSuccess(
 
 	for !preflightDone {
 		select {
+		case <-c.Request.Context().Done():
+			return nil, c.Request.Context().Err()
 		case sl := <-lineChan:
 			if !sl.ok {
+				scanErr = sl.err
 				// scanner 结束
 				if preflightHasNonTextContent {
 					preflightEmpty = false
@@ -166,6 +188,9 @@ func handleStreamSuccess(
 				break
 			}
 			line := sl.text
+			if err := preflightBudget.reserve(len(line)); err != nil {
+				return nil, err
+			}
 			bufferedLines = append(bufferedLines, line)
 			if strings.TrimSpace(line) == "" {
 				currentSSEEventName = ""
@@ -217,25 +242,50 @@ func handleStreamSuccess(
 				eventsToCheck = []string{converters.NormalizeOpenRouterReasoningSSELine(line) + "\n"}
 			}
 
+			converterSize := 0
+			if converterState != nil {
+				converterSize = responsesRetainedSize(converterState)
+			}
+			if err := preflightBudget.reserve(converterSize - converterRetained); err != nil {
+				return nil, err
+			}
+			converterRetained = converterSize
 			for _, event := range eventsToCheck {
 				seenConvertedEvent = true
 				if upstreamErr, ok := detectResponsesStreamError(event, currentSSEEventName); ok {
 					preflightDiagnostic = formatResponsesErrorDiagnostic(upstreamErr)
-					close(scanDone)
+					stopScan()
 					if r, m := detectResponsesErrorBlacklist(upstreamErr); r != "" {
 						return nil, &common.ErrBlacklistKey{Reason: r, Message: m, RecoverAt: utils.ExtractQuotaRecoverAt(m)}
 					}
 					common.RequestLogf(c, "[Responses-UpstreamError] %s，触发重试", preflightDiagnostic)
 					return nil, fmt.Errorf("%w: %s", common.ErrEmptyStreamResponse, preflightDiagnostic)
 				}
+				if !validResponsesToolCompletion(event, preflightToolNames) {
+					preflightEmpty = true
+					preflightDone = true
+					preflightDiagnostic = "malformed tool completion"
+					break
+				}
+				inspectionEvent := responsesContentInspectionEvent(event)
 				hadPendingToolCall := preflightToolTracker.HasPendingToolCall()
-				if malformed, name := preflightToolTracker.ProcessResponsesEvent(event); malformed {
+				if malformed, name := preflightToolTracker.ProcessResponsesEvent(inspectionEvent); malformed {
 					preflightEmpty = true
 					preflightDiagnostic = fmt.Sprintf("malformed tool call: %s", name)
 					preflightDone = true
 					break
 				}
 				if responsesStreamTerminalType(event) == "response.incomplete" {
+					var terminalText bytes.Buffer
+					extractResponsesDeliverableTextFromEvent(event, &terminalText)
+					if err := preflightBudget.reserve(terminalText.Len()); err != nil {
+						return nil, err
+					}
+					preflightTextBuf.Write(terminalText.Bytes())
+					preflightTextRetained = preflightTextBuf.Len()
+					if common.HasResponsesDeliverableContent(inspectionEvent) && !preflightToolTracker.HasPendingToolCall() {
+						preflightHasNonTextContent = true
+					}
 					preflightEmpty = !preflightHasNonTextContent && common.IsEffectivelyEmptyStreamText(strings.TrimSpace(preflightTextBuf.String()))
 					preflightDone = true
 					break
@@ -249,7 +299,7 @@ func handleStreamSuccess(
 					}
 				}
 
-				if !preflightHasNonTextContent && common.HasResponsesDeliverableContent(event) && !preflightToolTracker.HasPendingToolCall() {
+				if !preflightHasNonTextContent && common.HasResponsesDeliverableContent(inspectionEvent) && !preflightToolTracker.HasPendingToolCall() {
 					preflightHasNonTextContent = true
 					preflightEmpty = false
 					// 进入阶段B，不立即放行
@@ -266,6 +316,10 @@ func handleStreamSuccess(
 				}
 
 				extractResponsesDeliverableTextFromEvent(event, &preflightTextBuf)
+				if err := preflightBudget.reserve(preflightTextBuf.Len() - preflightTextRetained); err != nil {
+					return nil, err
+				}
+				preflightTextRetained = preflightTextBuf.Len()
 
 				// 检查是否有有效内容 delta 事件
 				if !common.IsEffectivelyEmptyStreamText(strings.TrimSpace(preflightTextBuf.String())) {
@@ -298,7 +352,7 @@ func handleStreamSuccess(
 							// 量子串，直接扫原始行不依赖 extract 的提取时机。
 							if common.DetectPseudoToolCallMarker(event) || common.DetectPseudoToolCallMarker(preflightTextBuf.String()) {
 								common.RequestLogf(c, "[Racing-QualityGate] 观察窗捕获伪工具调用标记（阶段B第 %d 个有效内容），影子分支让位", pseudoProbeContentCount)
-								close(scanDone)
+								stopScan()
 								return nil, common.ErrRacingSuperseded
 							}
 							if !isDataLine || pseudoProbeContentCount < pseudoMarkerProbeMinDeltas {
@@ -333,7 +387,7 @@ func handleStreamSuccess(
 					if needsPseudoMarkerProbe() {
 						if common.DetectPseudoToolCallMarker(event) || common.DetectPseudoToolCallMarker(preflightTextBuf.String()) {
 							common.RequestLogf(c, "[Racing-QualityGate] 观察窗捕获伪工具调用标记（completed 兜底），影子分支让位")
-							close(scanDone)
+							stopScan()
 							return nil, common.ErrRacingSuperseded
 						}
 					}
@@ -371,7 +425,7 @@ func handleStreamSuccess(
 			// 阶段A超时：首个有效内容等待超时
 			if timeouts.FirstContentTimeoutMs > 0 {
 				common.RequestLogf(c, "[Responses-FirstContentTimeout] 流式首字超时: %dms，触发重试", timeouts.FirstContentTimeoutMs)
-				close(scanDone)
+				stopScan()
 				return nil, common.ErrStreamFirstContentTimeout
 			}
 			// 超时被禁用（0），保守放行
@@ -380,7 +434,7 @@ func handleStreamSuccess(
 		case <-inactivityChan:
 			// 阶段B超时：首字后断流
 			common.RequestLogf(c, "[Responses-StreamStalled] 流式断流: 首字后 %dms 无活动，触发重试", timeouts.InactivityTimeoutMs)
-			close(scanDone)
+			stopScan()
 			return nil, common.ErrStreamStalled
 		}
 	}
@@ -394,7 +448,7 @@ func handleStreamSuccess(
 		if rawLog := buildResponsesPreflightRawLog(bufferedLines); rawLog != "" {
 			common.RequestLogf(c, "[Responses-EmptyResponse-Raw] 上游流式响应原始内容:\n%s", rawLog)
 		}
-		close(scanDone) // 通知 scanner goroutine 退出
+		stopScan() // 通知 scanner goroutine 退出
 		if blacklistReason != "" {
 			return nil, &common.ErrBlacklistKey{Reason: blacklistReason, Message: blacklistMessage, RecoverAt: utils.ExtractQuotaRecoverAt(blacklistMessage)}
 		}
@@ -403,7 +457,7 @@ func handleStreamSuccess(
 
 	// 流中有拉黑错误但内容非空：仍返回拉黑错误以触发 Key 拉黑
 	if blacklistReason != "" {
-		close(scanDone)
+		stopScan()
 		return nil, &common.ErrBlacklistKey{Reason: blacklistReason, Message: blacklistMessage, RecoverAt: utils.ExtractQuotaRecoverAt(blacklistMessage)}
 	}
 
@@ -418,7 +472,7 @@ func handleStreamSuccess(
 	// ForStream 版带伪工具调用标记软校验：tool_choice=auto 下把工具调用
 	// 写成 <tool_call>/DSML 文本的分支让出提交权（codex 事故链的收口）。
 	if !common.RacingClaimClientCommitForStream(c, preflightTextBuf.String()) {
-		close(scanDone)
+		stopScan()
 		return nil, common.ErrRacingSuperseded
 	}
 
@@ -451,6 +505,8 @@ func handleStreamSuccess(
 	// 收集 reasoning encrypted_content 到 thinkingcache，供未来续接重放使用
 	reasoningCollector := thinkingcache.NewResponsesStreamCollector()
 
+	completionToolNames := make(map[string]string)
+	completionTracker := common.NewStreamToolCallTracker()
 	processEvents := func(eventsToProcess []string) []string {
 		for _, event := range eventsToProcess {
 			if terminalEventSent {
@@ -458,6 +514,14 @@ func handleStreamSuccess(
 			}
 			if malformedToolCall && (isResponsesCompletedEvent(event) || strings.TrimSpace(event) == "data: [DONE]") {
 				continue
+			}
+			invalid := !validResponsesToolCompletion(event, completionToolNames)
+			if malformed, _ := completionTracker.ProcessResponsesEvent(responsesContentInspectionEvent(event)); malformed {
+				invalid = true
+			}
+			if invalid {
+				malformedToolCall = true
+				return nil
 			}
 			if responsesStreamTerminalType(event) != "" {
 				terminalEventSent = true
@@ -565,6 +629,7 @@ func handleStreamSuccess(
 		return eventsToProcess
 	}
 
+	pendingNativeEventName := ""
 	// processLine 处理单行数据（复用于缓冲行回放和后续读取），并返回转换后的 Responses 事件用于 watchdog 状态判断。
 	processLine := func(line string) []string {
 		if terminalEventSent {
@@ -617,7 +682,16 @@ func handleStreamSuccess(
 			}
 			eventsToProcess = events
 		} else {
-			eventsToProcess = []string{converters.NormalizeOpenRouterReasoningSSELine(line) + "\n"}
+			if strings.HasPrefix(line, "event:") {
+				pendingNativeEventName = line
+				return nil
+			}
+			converted := converters.NormalizeOpenRouterReasoningSSELine(line) + "\n"
+			if pendingNativeEventName != "" && strings.HasPrefix(line, "data:") {
+				converted = pendingNativeEventName + "\n" + converted
+				pendingNativeEventName = ""
+			}
+			eventsToProcess = []string{converted}
 		}
 
 		return processEvents(eventsToProcess)
@@ -647,9 +721,14 @@ func handleStreamSuccess(
 
 	// 回放预检测期间缓冲的行
 	for _, bufferedLine := range bufferedLines {
+		if malformedToolCall {
+			break
+		}
 		observePostCommitEvents(processLine(bufferedLine))
 	}
 
+	bufferedLines = nil
+	preflightTextBuf.Reset()
 	// 继续从 lineChan 读取剩余的流数据（带 SSE keep-alive 防止下游 idle timeout）
 	keepaliveTicker := time.NewTicker(15 * time.Second)
 	defer keepaliveTicker.Stop()
@@ -700,10 +779,14 @@ func handleStreamSuccess(
 		return timeouts.InactivityTimeoutMs
 	}
 
-	for !terminalEventSent {
+	for !terminalEventSent && !malformedToolCall {
 		select {
+		case <-c.Request.Context().Done():
+			clientGone = true
+			goto streamEnd
 		case sl, ok := <-lineChan:
 			if !ok || !sl.ok {
+				scanErr = sl.err
 				goto streamEnd
 			}
 			events := processLine(sl.text)
@@ -741,14 +824,12 @@ func handleStreamSuccess(
 			} else {
 				common.RequestLogf(c, "[Responses-StreamStalled] 流式断流: Header 已发送后 %dms 无上游输出", activePostCommitTimeoutMs)
 			}
-			close(scanDone)
+			stopScan()
 			// 补写 response.incomplete 终端事件，确保下游客户端收到带 incomplete_details.reason 的
 			// 终止信号，而非裸断连。对齐 Messages 协议在 post-commit stall 时的 BuildStreamErrorEvent 行为。
 			if !clientGone {
 				incompleteEvent := converters.SynthesizeResponsesIncomplete(eventsSentCount+1, outputCollector.responseID, "stream_stalled")
-				if _, err := c.Writer.Write([]byte(incompleteEvent)); err == nil && flusher != nil {
-					flusher.Flush()
-				}
+				processEvents([]string{incompleteEvent})
 			}
 			// 流被中断时仍回写已收集的 reasoning 状态，避免推理状态因断流而丢失
 			stallSessionID := writeStreamSession(sessionManager, originalReq, outputCollector)
@@ -768,7 +849,7 @@ func handleStreamSuccess(
 		}
 	}
 streamEnd:
-	close(scanDone)
+	stopScan()
 	if completedEventSent {
 		progress.Finish("completed")
 	} else {
@@ -776,7 +857,7 @@ streamEnd:
 	}
 
 	// Missing wire terminators are recoverable only after protocol-level completion.
-	if !terminalEventSent && !completedEventSent && !clientGone && upstreamCompletionEvidence && scanner.Err() == nil && !malformedToolCall {
+	if !terminalEventSent && !completedEventSent && !clientGone && upstreamCompletionEvidence && scanErr == nil && !malformedToolCall {
 		common.RequestLogf(c, "[Responses-Stream] 上游未发送终止符，补发 response.completed (upstreamType=%s)", upstreamType)
 
 		var fallbackEvents []string
@@ -804,7 +885,7 @@ streamEnd:
 
 	if !terminalEventSent && !completedEventSent && !clientGone && needConvert && upstreamType != "claude" && upstreamType != "gemini" {
 		reason := "upstream_eof"
-		if scanner.Err() != nil {
+		if scanErr != nil {
 			reason = "upstream_error"
 		}
 		processEvents(converters.FinalizeChatResponsesIncomplete(originalRequestJSON, &converterState, reason))
@@ -812,13 +893,11 @@ streamEnd:
 
 	if !terminalEventSent && !completedEventSent && !clientGone {
 		reason := "upstream_eof"
-		if scanner.Err() != nil || malformedToolCall {
+		if scanErr != nil || malformedToolCall {
 			reason = "upstream_error"
 		}
 		incomplete := converters.SynthesizeResponsesIncomplete(eventsSentCount+1, outputCollector.responseID, reason)
-		if _, err := c.Writer.Write([]byte(incomplete)); err == nil && flusher != nil {
-			flusher.Flush()
-		}
+		processEvents([]string{incomplete})
 	}
 
 	// 会话回写：将流式收集的 input/output items（含 reasoning encrypted_content）写入 session。
@@ -830,7 +909,7 @@ streamEnd:
 		reasoningCollector.Store(streamSessionID)
 	}
 
-	if err := scanner.Err(); err != nil {
+	if err := scanErr; err != nil {
 		if !isClientDisconnectError(err) {
 			common.RequestLogf(c, "[Responses-Stream] 警告: 流式响应读取错误: %v", err)
 		} else if envCfg.ShouldLog("info") {
@@ -945,6 +1024,79 @@ func normalizeResponsesSSEFieldLine(line string) string {
 	return line
 }
 
+// Validate completion before any bytes leave the handler.
+func validResponsesToolCompletion(event string, names map[string]string) bool {
+	validItem := func(item map[string]interface{}) bool {
+		switch item["type"] {
+		case "function_call":
+			return !utils.IsMalformedNamedToolArguments(stringFromInterface(item["name"]), item["arguments"])
+		case "custom_tool_call":
+			return strings.TrimSpace(stringFromInterface(item["input"])) != ""
+		}
+		return true
+	}
+	for _, line := range strings.Split(event, "\n") {
+		raw, ok := extractSSEDataLine(line)
+		if !ok {
+			continue
+		}
+		var data map[string]interface{}
+		if json.Unmarshal([]byte(raw), &data) != nil {
+			continue
+		}
+		key := responsesFoldOutputIndexKey(data["output_index"])
+		switch data["type"] {
+		case "response.output_item.added":
+			item := mapFromInterface(data["item"])
+			if name := stringFromInterface(item["name"]); name != "" {
+				names[key] = name
+			}
+		case "response.function_call_arguments.done":
+			name := names[key]
+			if name == "" {
+				name = stringFromInterface(data["name"])
+			}
+			if utils.IsMalformedNamedToolArguments(name, data["arguments"]) {
+				return false
+			}
+		case "response.custom_tool_call_input.done":
+			if strings.TrimSpace(stringFromInterface(data["input"])) == "" {
+				return false
+			}
+		case "response.output_item.done":
+			if !validItem(mapFromInterface(data["item"])) {
+				return false
+			}
+		case "response.completed", "response.incomplete":
+			output, _ := mapFromInterface(data["response"])["output"].([]interface{})
+			for _, raw := range output {
+				if !validItem(mapFromInterface(raw)) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// Shared preflight inspectors currently recognize snapshots on completed only.
+// Adapt the inspection copy, never the event delivered to the client.
+func responsesContentInspectionEvent(event string) string {
+	for _, line := range strings.Split(event, "\n") {
+		raw, ok := extractSSEDataLine(line)
+		if !ok {
+			continue
+		}
+		var data map[string]interface{}
+		if json.Unmarshal([]byte(raw), &data) == nil && data["type"] == "response.incomplete" {
+			data["type"] = "response.completed"
+			payload, _ := json.Marshal(data)
+			return "data: " + string(payload) + "\n\n"
+		}
+	}
+	return event
+}
+
 // extractResponsesTextFromEvent 从 Responses SSE 事件中提取文本内容（包含 reasoning，
 // 供日志、session 和 token 估算使用）。
 func extractResponsesTextFromEvent(event string, buf *bytes.Buffer) {
@@ -974,6 +1126,10 @@ func extractResponsesTextFromEventMode(event string, buf *bytes.Buffer, includeR
 		}
 
 		eventType, _ := data["type"].(string)
+		// Argument fragments are not deliverable text; the tool tracker validates completion.
+		if !includeReasoning && (strings.HasPrefix(eventType, "response.function_call_arguments.") || strings.HasPrefix(eventType, "response.custom_tool_call_input.")) {
+			continue
+		}
 
 		// 处理各种 delta 类型
 		switch eventType {
@@ -1020,7 +1176,7 @@ func extractResponsesTextFromEventMode(event string, buf *bytes.Buffer, includeR
 					}
 				}
 			}
-		case "response.completed":
+		case "response.completed", "response.incomplete":
 			if response, ok := data["response"].(map[string]interface{}); ok {
 				writeResponsesOutputText(buf, response["output"], includeReasoning)
 			}
