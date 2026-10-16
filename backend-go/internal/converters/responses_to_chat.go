@@ -622,14 +622,14 @@ func convertChatUserMessageToResponsesItem(msg gjson.Result) string {
 						item, _ = sjson.SetRaw(item, "content.-1", tb)
 					}
 				case "image_url":
-					// 图片：转换为 Responses input_image 格式（保留 detail 等字段）
-					if imageURL := block.Get("image_url"); imageURL.Exists() && imageURL.IsObject() {
-						ib, _ := sjson.SetRaw(`{"type":"input_image","image_url":{}}`, "image_url", imageURL.Raw)
-						item, _ = sjson.SetRaw(item, "content.-1", ib)
-					} else if imageURL := block.Get("image_url.url"); imageURL.Exists() {
+					// Chat 图片对象中的 url/detail 转为 Responses 的字符串 image_url 与同级 detail。
+					if imageURL := block.Get("image_url.url"); imageURL.Type == gjson.String && imageURL.String() != "" {
 						ib := fmt.Sprintf(`{"type":"input_image","image_url":%s}`, jsonString(imageURL.String()))
+						if detail := block.Get("image_url.detail"); detail.Type == gjson.String && detail.String() != "" {
+							ib, _ = sjson.Set(ib, "detail", detail.String())
+						}
 						item, _ = sjson.SetRaw(item, "content.-1", ib)
-					} else if imageURL := block.Get("image_url"); imageURL.Exists() {
+					} else if imageURL := block.Get("image_url"); imageURL.Type == gjson.String && imageURL.String() != "" {
 						ib := fmt.Sprintf(`{"type":"input_image","image_url":%s}`, jsonString(imageURL.String()))
 						item, _ = sjson.SetRaw(item, "content.-1", ib)
 					}

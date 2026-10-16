@@ -26,6 +26,31 @@ func TestConvertChatRequestToResponsesRequest_NormalizesFunctionToolChoice(t *te
 	}
 }
 
+func TestConvertChatRequestToResponsesRequest_ImageURL(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		imageURL   string
+		wantURL    string
+		wantDetail string
+	}{
+		{"base64 object", `{"url":"data:image/png;base64,abc","detail":"high"}`, "data:image/png;base64,abc", "high"},
+		{"https object", `{"url":"https://example.com/a.png","detail":"low"}`, "https://example.com/a.png", "low"},
+		{"string", `"https://example.com/b.png"`, "https://example.com/b.png", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			input := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":` + tt.imageURL + `}]}]}`)
+			image := gjson.GetBytes(ConvertChatRequestToResponsesRequest(input), "input.0.content.1")
+			url := image.Get("image_url")
+			if image.Get("type").String() != "input_image" || url.Type != gjson.String || url.String() != tt.wantURL {
+				t.Fatalf("Responses image_url must be a URL string %q: %s", tt.wantURL, image.Raw)
+			}
+			if detail := image.Get("detail").String(); detail != tt.wantDetail {
+				t.Fatalf("detail = %q, want %q: %s", detail, tt.wantDetail, image.Raw)
+			}
+		})
+	}
+}
+
 func TestConvertResponsesToOpenAIChatRequest(t *testing.T) {
 	tests := []struct {
 		name     string
