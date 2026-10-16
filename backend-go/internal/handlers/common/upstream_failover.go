@@ -1797,6 +1797,9 @@ func TryUpstreamWithAllKeys(
 			// 竞速场景分支响应头经分支 writer 隔离（racingBranchWriter），无并发写
 			// 竞争；claim 败者的头随 Discard 丢弃，不会并入真实客户端 writer。
 			writeEchoMappingHeaders(c, cfgManager, appliedMappedModel, actualAttemptModel, model)
+			// 当前分支的只读结构化流观测身份；每次 attempt 重设，避免 failover 串号。
+			c.Set("ccx.stream_observation_attempt", logRequestID)
+			c.Set("ccx.stream_observation_channel", upstream.ChannelUID)
 			usage, err = handleSuccess(c, resp, upstreamCopy, apiKey, attemptBody)
 			channelLogStore.UpdateUsage(metricsKey, logRequestID, usage)
 			// 上下文窗口自学习（放宽侧）：2xx 完成即实证该渠道×协议×模型可承载本次输入，

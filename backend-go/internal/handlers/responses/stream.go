@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +19,122 @@ import (
 	"github.com/BenedictKing/ccx/internal/utils"
 	"github.com/gin-gonic/gin"
 )
+
+var responsesObservationToken = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+func responsesObservationValue(value interface{}) string {
+	s, ok := value.(string)
+	if !ok || !responsesObservationToken.MatchString(s) {
+		return "-"
+	}
+	return s
+}
+
+func responsesObservationCode(value interface{}) string {
+	switch value {
+	case "failed", "incomplete", "completed", "server_error", "rate_limit_exceeded", "insufficient_quota", "invalid_request_error", "context_length_exceeded", "max_output_tokens", "content_filter", "stream_stalled", "upstream_eof", "upstream_error":
+		return value.(string)
+	case nil, "":
+		return "-"
+	default:
+		return "other"
+	}
+}
+
+// Inspect only bounded protocol discriminants; never format a raw SSE or error message.
+func responsesFailureEventSummary(event string) string {
+	for _, line := range strings.Split(event, "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var data map[string]interface{}
+		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &data) != nil {
+			continue
+		}
+		kind, _ := data["type"].(string)
+		if kind == "" {
+			for _, eventLine := range strings.Split(event, "\n") {
+				if strings.HasPrefix(eventLine, "event:") {
+					kind = strings.TrimSpace(strings.TrimPrefix(eventLine, "event:"))
+					break
+				}
+			}
+		}
+		if kind != "response.failed" && kind != "response.incomplete" && kind != "error" && kind != "response.error" {
+			continue
+		}
+		response := mapFromInterface(data["response"])
+		_, errorPresent := response["error"]
+		_, incompletePresent := response["incomplete_details"]
+		errObj := mapFromInterface(response["error"])
+		if len(errObj) == 0 {
+			errObj = mapFromInterface(data["error"])
+		}
+		return fmt.Sprintf("terminal=%s status=%s errorPresent=%t errorCode=%s incompletePresent=%t incompleteReason=%s", kind,
+			responsesObservationCode(response["status"]), errorPresent, responsesObservationCode(errObj["code"]), incompletePresent,
+			responsesObservationCode(mapFromInterface(response["incomplete_details"])["reason"]))
+	}
+	return "terminal=none status=- errorPresent=false errorCode=- incompletePresent=false incompleteReason=-"
+}
+
+func responsesObservationEventCounts(counts map[string]int) string {
+	if len(counts) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(counts))
+	for _, name := range []string{"response.metadata", "response.created", "response.output_text.delta", "response.output_item.added", "response.output_item.done", "response.function_call_arguments.delta", "response.function_call_arguments.done", "response.completed", "response.failed", "response.incomplete", "error", "other"} {
+		if n := counts[name]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%s:%d", name, n))
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
+func responsesObservationCountEvent(event string, counts map[string]int) {
+	for _, line := range strings.Split(event, "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var data map[string]interface{}
+		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &data) != nil {
+			continue
+		}
+		kind, _ := data["type"].(string)
+		if kind == "" {
+			for _, eventLine := range strings.Split(event, "\n") {
+				if strings.HasPrefix(eventLine, "event:") {
+					kind = strings.TrimSpace(strings.TrimPrefix(eventLine, "event:"))
+					break
+				}
+			}
+		}
+		if kind == "" {
+			continue
+		}
+		if !strings.Contains("|response.metadata|response.created|response.output_text.delta|response.output_item.added|response.output_item.done|response.function_call_arguments.delta|response.function_call_arguments.done|response.completed|response.failed|response.incomplete|error|", "|"+kind+"|") {
+			kind = "other"
+		}
+		if counts[kind] < 10000 {
+			counts[kind]++
+		}
+	}
+}
+
+func logResponsesStreamOutcome(c *gin.Context, phase, summary string, headerCommitted bool, eventCounts map[string]int) {
+	correlation, attempt, channel := "-", "-", "-"
+	if c != nil {
+		if value, ok := c.Get("ccx.request_correlation_id"); ok {
+			correlation = responsesObservationValue(value)
+		}
+		if value, ok := c.Get("ccx.stream_observation_attempt"); ok {
+			attempt = responsesObservationValue(value)
+		}
+		if value, ok := c.Get("ccx.stream_observation_channel"); ok {
+			channel = responsesObservationValue(value)
+		}
+	}
+	common.RequestLogf(c, "[Responses-StreamOutcome] correlation=%s attempt=%s channel=%s phase=%s headerCommitted=%t %s eventCounts=%s", correlation, attempt, channel, phase, headerCommitted, summary, responsesObservationEventCounts(eventCounts))
+}
 
 func handleStreamSuccess(
 	c *gin.Context,
@@ -134,6 +251,7 @@ func handleStreamSuccess(
 	preflightDone := false
 	var blacklistReason, blacklistMessage string
 	seenConvertedEvent := false
+	preflightEventCounts := make(map[string]int)
 	seenCompletedEvent := false
 	seenUsageOnlyEvent := false
 	seenUnknownEvent := false
@@ -252,7 +370,9 @@ func handleStreamSuccess(
 			converterRetained = converterSize
 			for _, event := range eventsToCheck {
 				seenConvertedEvent = true
+				responsesObservationCountEvent(event, preflightEventCounts)
 				if upstreamErr, ok := detectResponsesStreamError(event, currentSSEEventName); ok {
+					logResponsesStreamOutcome(c, "preflight", responsesFailureEventSummary(event), false, preflightEventCounts)
 					preflightDiagnostic = formatResponsesErrorDiagnostic(upstreamErr)
 					stopScan()
 					if r, m := detectResponsesErrorBlacklist(upstreamErr); r != "" {
@@ -444,10 +564,8 @@ func handleStreamSuccess(
 
 	// 空响应：Header 未发送，可安全重试
 	if preflightEmpty {
+		logResponsesStreamOutcome(c, "preflight", "terminal=empty", false, preflightEventCounts)
 		common.RequestLogf(c, "[Responses-EmptyResponse] 上游返回空响应 (缓冲行数: %d, 诊断: %s)，触发重试", len(bufferedLines), preflightDiagnostic)
-		if rawLog := buildResponsesPreflightRawLog(bufferedLines); rawLog != "" {
-			common.RequestLogf(c, "[Responses-EmptyResponse-Raw] 上游流式响应原始内容:\n%s", rawLog)
-		}
 		stopScan() // 通知 scanner goroutine 退出
 		if blacklistReason != "" {
 			return nil, &common.ErrBlacklistKey{Reason: blacklistReason, Message: blacklistMessage, RecoverAt: utils.ExtractQuotaRecoverAt(blacklistMessage)}
@@ -498,6 +616,8 @@ func handleStreamSuccess(
 	upstreamCompletionEvidence := false
 	malformedToolCall := false
 	eventsSentCount := 0
+	postCommitEventCounts := make(map[string]int)
+	syntheticTerminal := false
 	progress := common.NewStreamProgressLogger("Responses", startTime, envCfg.ShouldLog("info"), common.RequestLogTag(c))
 
 	// 收集流式 output items（含 reasoning 的 encrypted_content）用于 session 回写
@@ -512,6 +632,9 @@ func handleStreamSuccess(
 			if terminalEventSent {
 				break
 			}
+			if !syntheticTerminal {
+				responsesObservationCountEvent(event, postCommitEventCounts)
+			}
 			if malformedToolCall && (isResponsesCompletedEvent(event) || strings.TrimSpace(event) == "data: [DONE]") {
 				continue
 			}
@@ -523,6 +646,7 @@ func handleStreamSuccess(
 				malformedToolCall = true
 				return nil
 			}
+			failureSummary := responsesFailureEventSummary(event)
 			if responsesStreamTerminalType(event) != "" {
 				terminalEventSent = true
 			}
@@ -609,9 +733,11 @@ func handleStreamSuccess(
 				eventToSend = strings.TrimRight(eventToSend, "\n") + "\n\n"
 			}
 			// 转发给客户端
+			writeOutcome := "not_written"
 			if !clientGone {
 				_, err := c.Writer.Write([]byte(eventToSend))
 				if err != nil {
+					writeOutcome = "write_error"
 					clientGone = true
 					if !isClientDisconnectError(err) {
 						common.RequestLogf(c, "[Responses-Stream] 警告: 流式响应传输错误: %v", err)
@@ -619,11 +745,15 @@ func handleStreamSuccess(
 						common.RequestLogf(c, "[Responses-Stream] 客户端中断连接 (正常行为)，继续接收上游数据...")
 					}
 				} else {
+					writeOutcome = "writer_accepted"
 					eventsSentCount++
 					if flusher != nil {
 						flusher.Flush()
 					}
 				}
+			}
+			if !syntheticTerminal && !strings.HasPrefix(failureSummary, "terminal=none ") {
+				logResponsesStreamOutcome(c, "postcommit", failureSummary+" write="+writeOutcome, true, postCommitEventCounts)
 			}
 		}
 		return eventsToProcess
@@ -819,6 +949,7 @@ func handleStreamSuccess(
 			}
 		case <-postCommitChan:
 			progress.Finish("stalled")
+			logResponsesStreamOutcome(c, "postcommit", "terminal=timeout reason=stream_stalled", true, postCommitEventCounts)
 			if postCommitToolTracker.HasPendingToolCall() {
 				common.RequestLogf(c, "[Responses-StreamStalled] 流式断流: 工具调用阶段空闲 %dms 无上游输出（Header 已发送）", activePostCommitTimeoutMs)
 			} else {
@@ -829,7 +960,9 @@ func handleStreamSuccess(
 			// 终止信号，而非裸断连。对齐 Messages 协议在 post-commit stall 时的 BuildStreamErrorEvent 行为。
 			if !clientGone {
 				incompleteEvent := converters.SynthesizeResponsesIncomplete(eventsSentCount+1, outputCollector.responseID, "stream_stalled")
+				syntheticTerminal = true
 				processEvents([]string{incompleteEvent})
+				syntheticTerminal = false
 			}
 			// 流被中断时仍回写已收集的 reasoning 状态，避免推理状态因断流而丢失
 			stallSessionID := writeStreamSession(sessionManager, originalReq, outputCollector)
@@ -881,6 +1014,16 @@ streamEnd:
 		}
 
 		processEvents(fallbackEvents)
+	}
+	if !terminalEventSent && !completedEventSent && !clientGone {
+		reason := "upstream_eof"
+		if scanErr != nil {
+			reason = "upstream_error"
+		} else if malformedToolCall {
+			reason = "malformed_tool"
+		}
+		logResponsesStreamOutcome(c, "postcommit", "terminal=missing reason="+reason, true, postCommitEventCounts)
+		syntheticTerminal = true
 	}
 
 	if !terminalEventSent && !completedEventSent && !clientGone && needConvert && upstreamType != "claude" && upstreamType != "gemini" {
