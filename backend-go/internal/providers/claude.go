@@ -13,6 +13,7 @@ import (
 
 	"github.com/BenedictKing/ccx/internal/config"
 	"github.com/BenedictKing/ccx/internal/errutil"
+	"github.com/BenedictKing/ccx/internal/observability"
 	"github.com/BenedictKing/ccx/internal/thinkingcache"
 	"github.com/BenedictKing/ccx/internal/types"
 	"github.com/BenedictKing/ccx/internal/utils"
@@ -819,7 +820,7 @@ func (p *ClaudeProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 	utils.SetAuthenticationHeaderWithOverride(req.Header, apiKey, upstream.AuthHeader)
 	utils.EnsureCompatibleUserAgent(req.Header, "claude")
 
-	return req, bodyBytes, nil
+	return observability.WithConvertedBytes(req, bodyBytes), bodyBytes, nil
 }
 
 // ConvertToClaudeResponse 转换为 Claude 响应（直接透传）

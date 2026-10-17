@@ -127,8 +127,7 @@ func HandleMultiChannelFailoverWithSelectionFilter(
 	requestStartedAt := time.Now()
 
 	// 生成服务端逻辑请求关联 ID（贯穿所有渠道尝试和 trace）
-	correlationID := autopilot.GenerateRequestCorrelationID()
-	c.Set("ccx.request_correlation_id", correlationID)
+	EnsureRequestCorrelation(c)
 
 	// 该外壳是 route-aware 调用方：失败集合只按物理路由记录，避免不同 kind
 	// 的相同 index 相互污染。旧 SelectChannel/SelectionOptions 调用方仍可显式传 FailedChannels。

@@ -14,6 +14,7 @@ import (
 
 	"github.com/BenedictKing/ccx/internal/config"
 	"github.com/BenedictKing/ccx/internal/errutil"
+	"github.com/BenedictKing/ccx/internal/observability"
 	"github.com/BenedictKing/ccx/internal/types"
 	"github.com/BenedictKing/ccx/internal/utils"
 	"github.com/gin-gonic/gin"
@@ -73,7 +74,7 @@ func (p *GeminiProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 	utils.SetGeminiAuthenticationHeader(req.Header, apiKey)
 	utils.ApplyCustomHeaders(req.Header, upstream.CustomHeaders)
 
-	return req, originalBodyBytes, nil
+	return observability.WithConvertedBytes(req, reqBodyBytes), originalBodyBytes, nil
 }
 
 // convertToGeminiRequest 转换为 Gemini 请求体

@@ -15,6 +15,7 @@ import (
 	"github.com/BenedictKing/ccx/internal/config"
 	"github.com/BenedictKing/ccx/internal/converters"
 	"github.com/BenedictKing/ccx/internal/handlers/common"
+	"github.com/BenedictKing/ccx/internal/observability"
 	"github.com/BenedictKing/ccx/internal/providers"
 	"github.com/BenedictKing/ccx/internal/session"
 	"github.com/BenedictKing/ccx/internal/thinkingcache"
@@ -44,6 +45,7 @@ const responsesRetainedByteLimit = 32 * 1024 * 1024
 
 // Counts retained serialized events and snapshots, not Go heap overhead.
 type responsesRetentionBudget struct {
+	observer *observability.Observer
 	used     int
 	exceeded bool
 }
@@ -127,6 +129,7 @@ func handleFoldedResponsesStreamSuccess(
 	}
 
 	emitter := newResponsesFoldHTTPEmitter(c, resp, sessionManager, originalReq)
+	emitter.budget.observer = common.PayloadObserver(c)
 	defer emitter.clearPreflight()
 	var codexCtx *converters.CodexToolContext
 	if hoisted, ok := c.Get("codex_additional_tools_hoisted"); ok && hoisted == true {
@@ -226,6 +229,17 @@ func runResponsesFoldWithBudget(baseBody map[string]interface{}, firstResp *http
 
 		for {
 			frame, ok, err := iterator.next()
+			if err != nil || !ok {
+				budget.observer.ReadEnd(err)
+			}
+			if ok {
+				if frame.done {
+					budget.observer.Event("done")
+				} else {
+					kind, _ := frame.event["type"].(string)
+					budget.observer.Event(kind)
+				}
+			}
 			if err != nil {
 				_ = currentResp.Body.Close()
 				if budget.exceeded {
@@ -1231,6 +1245,7 @@ func (e *responsesFoldHTTPEmitter) clearPreflight() {
 }
 
 func (e *responsesFoldHTTPEmitter) emit(event map[string]interface{}) (emitErr error) {
+	common.ObservePayloadEmitter(e.c)
 	defer func() {
 		if emitErr != nil {
 			e.clearPreflight()

@@ -136,7 +136,7 @@ func preflightChatStream(resp *http.Response, upstreamType string, timeouts comm
 	}
 
 	// 启动 goroutine 读取 body chunk。preflight 放行后继续由同一个 channel 驱动正常流式转发，避免丢 chunk。
-	chunkChan, bodyErrChan := common.StartBodyChunkReader(resp.Body, 32*1024, 16, common.RequestDone(resp))
+	chunkChan, bodyErrChan := common.StartObservedBodyChunkReader(resp, 32*1024, 16)
 
 	// 阶段A：首个有效内容等待超时
 	var firstContentTimer *time.Timer
@@ -243,6 +243,7 @@ func preflightChatStream(resp *http.Response, upstreamType string, timeouts comm
 		completeLines := lines[:len(lines)-1]
 
 		for _, line := range completeLines {
+
 			wasInPhaseB := hasFirstContent
 			wasPendingToolCall := hasPendingToolCall()
 			lineSet := []string{line}

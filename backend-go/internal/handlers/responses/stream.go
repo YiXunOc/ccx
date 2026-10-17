@@ -290,7 +290,9 @@ func handleStreamSuccess(
 		case <-c.Request.Context().Done():
 			return nil, c.Request.Context().Err()
 		case sl := <-lineChan:
+			common.ObservePayloadSSELine(c, sl.text)
 			if !sl.ok {
+				common.PayloadObserver(c).ReadEnd(sl.err)
 				scanErr = sl.err
 				// scanner 结束
 				if preflightHasNonTextContent {
@@ -915,7 +917,9 @@ func handleStreamSuccess(
 			clientGone = true
 			goto streamEnd
 		case sl, ok := <-lineChan:
+			common.ObservePayloadSSELine(c, sl.text)
 			if !ok || !sl.ok {
+				common.PayloadObserver(c).ReadEnd(sl.err)
 				scanErr = sl.err
 				goto streamEnd
 			}

@@ -16,6 +16,7 @@ import (
 	"github.com/BenedictKing/ccx/internal/converters"
 	"github.com/BenedictKing/ccx/internal/copilot"
 	"github.com/BenedictKing/ccx/internal/errutil"
+	"github.com/BenedictKing/ccx/internal/observability"
 	"github.com/BenedictKing/ccx/internal/session"
 	"github.com/BenedictKing/ccx/internal/types"
 	"github.com/BenedictKing/ccx/internal/utils"
@@ -129,7 +130,7 @@ func (p *ResponsesProvider) ConvertBodyToProviderRequest(
 		utils.ApplyCustomHeaders(req.Header, upstream.CustomHeaders)
 	}
 
-	return req, bodyBytes, nil
+	return observability.WithConvertedBytes(req, reqBody), bodyBytes, nil
 }
 
 func (p *ResponsesProvider) buildProviderRequestBody(c *gin.Context, requestPath string, bodyBytes []byte, upstream *config.UpstreamConfig) (interface{}, []byte, error) {

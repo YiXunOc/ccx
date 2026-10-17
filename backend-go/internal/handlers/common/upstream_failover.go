@@ -19,6 +19,7 @@ import (
 	"github.com/BenedictKing/ccx/internal/keypool"
 	"github.com/BenedictKing/ccx/internal/metrics"
 	"github.com/BenedictKing/ccx/internal/middleware"
+	"github.com/BenedictKing/ccx/internal/observability"
 	"github.com/BenedictKing/ccx/internal/providers"
 	"github.com/BenedictKing/ccx/internal/racing"
 	"github.com/BenedictKing/ccx/internal/ratelimit"
@@ -492,6 +493,7 @@ func TryUpstreamWithAllKeys(
 	channelLogStore *metrics.ChannelLogStore,
 	opts ...TryUpstreamOption,
 ) (handled bool, successKey string, successBaseURLIdx int, failoverErr *FailoverError, usage *types.Usage, lastError error) {
+	EnsureRequestCorrelation(c)
 	if upstream == nil || len(upstream.APIKeys) == 0 {
 		return false, "", 0, nil, nil, nil
 	}
@@ -1186,6 +1188,17 @@ func TryUpstreamWithAllKeys(
 			// 联邦 sibling 必须归属到 chat/responses，
 			// 否则日志会把 chat 上的尝试错误地展示成 messages 渠道的尝试。
 			logRequestID := CreatePendingLog(channelLogStore, metricsKey, executionIndex, upstream.Name, actualAttemptModel, actualOriginalModel, originalReasoningEffort, actualReasoningEffort, apiKey, currentBaseURL, executionAPIType, operation, metrics.RequestSourceProxy, AgentContextFromGin(c), SessionIDFromGin(c), logOpts...)
+			traceUIDForCapture := ""
+			if value, ok := c.Get("ccx.autopilot_trace_uid"); ok {
+				traceUIDForCapture, _ = value.(string)
+			}
+			correlationIDForCapture := ""
+			if value, ok := c.Get("ccx.request_correlation_id"); ok {
+				correlationIDForCapture, _ = value.(string)
+			}
+			captureCtx := observability.NewContext(correlationIDForCapture, traceUIDForCapture, logRequestID, upstream.ChannelUID, ChannelAPIType(kind), string(executionAPIType), actualAttemptModel, utils.MaskAPIKey(apiKey))
+			req, payloadObserver := startPayloadAttempt(c, envCfg, captureCtx, req)
+			payloadWriteBefore := c.Writer.Size()
 
 			// 计算当前 Key 的 ConsumptionPolicy，供 metrics 与 trace 共同使用。
 			consumptionPolicy := ""
@@ -1281,6 +1294,7 @@ func TryUpstreamWithAllKeys(
 			}
 			resp, err := SendRequestWithLifecycleTrace(req, requestUpstream, envCfg, isStream, apiType, lifecycleTrace)
 			if err != nil {
+				finishPayloadAttempt(c, payloadObserver, err, 0, payloadWriteBefore)
 				lastError = err
 				// 竞速败出：被赢家取消（SendRequest 阶段），不计失败不 failover。
 				if isRacingSuperseded(c, err) {
@@ -1364,7 +1378,10 @@ func TryUpstreamWithAllKeys(
 			signalEndpointUID := autopilot.GenerateEndpointUID(upstream.ChannelUID, currentBaseURL, keyHash)
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				respBodyBytes, _ := io.ReadAll(resp.Body)
+				respBodyBytes, payloadReadErr := io.ReadAll(resp.Body)
+				payloadObserver.ReadEnd(payloadReadErr)
+				payloadObserver.Response(resp.StatusCode)
+				finishPayloadAttempt(c, payloadObserver, payloadReadErr, resp.StatusCode, payloadWriteBefore)
 				_ = resp.Body.Close()
 				respBodyBytes = utils.DecompressGzipIfNeeded(resp, respBodyBytes)
 
@@ -1801,6 +1818,8 @@ func TryUpstreamWithAllKeys(
 			c.Set("ccx.stream_observation_attempt", logRequestID)
 			c.Set("ccx.stream_observation_channel", upstream.ChannelUID)
 			usage, err = handleSuccess(c, resp, upstreamCopy, apiKey, attemptBody)
+			payloadObserver.Response(resp.StatusCode)
+			finishPayloadAttempt(c, payloadObserver, err, resp.StatusCode, payloadWriteBefore)
 			channelLogStore.UpdateUsage(metricsKey, logRequestID, usage)
 			// 上下文窗口自学习（放宽侧）：2xx 完成即实证该渠道×协议×模型可承载本次输入，
 			// 棘轮只升不降。失败/取消/空响应不学习（err 非 nil 时内部直接返回）。
@@ -2886,6 +2905,7 @@ func applyResolvedEffortToProviderRequest(req *http.Request, target *autopilot.R
 		return io.NopCloser(bytes.NewReader(rewritten)), nil
 	}
 	req.ContentLength = int64(len(rewritten))
+	*req = *observability.WithConvertedBytes(req, rewritten)
 	return true
 }
 

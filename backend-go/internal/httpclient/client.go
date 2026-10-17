@@ -81,7 +81,7 @@ func (cm *ClientManager) getStandardClient(timeout time.Duration, responseHeader
 	applyProxy(transport, proxyAddr)
 
 	client := &http.Client{
-		Transport: transport,
+		Transport: observeTransport(transport),
 		Timeout:   timeout,
 	}
 
@@ -159,7 +159,7 @@ func (cm *ClientManager) GetStreamClientWithResponseHeaderTimeout(responseHeader
 	applyProxy(transport, proxyAddr)
 
 	client := &http.Client{
-		Transport: transport,
+		Transport: observeTransport(transport),
 		Timeout:   0, // 流式请求无超时
 	}
 
@@ -268,7 +268,7 @@ func (cm *ClientManager) NewClient(opts ClientOptions) *http.Client {
 		timeout = 0 // 流式请求无整体超时
 	}
 	return &http.Client{
-		Transport: &directFirstRoundTripper{direct: direct, proxied: proxied, proxyURL: opts.ProxyURL},
+		Transport: observeTransport(&directFirstRoundTripper{direct: direct, proxied: proxied, proxyURL: opts.ProxyURL}),
 		Timeout:   timeout,
 	}
 }
@@ -302,7 +302,7 @@ func (cm *ClientManager) getDirectFirstClient(opts ClientOptions) *http.Client {
 		timeout = 0 // 流式请求无整体超时
 	}
 	client := &http.Client{
-		Transport: &directFirstRoundTripper{direct: direct, proxied: proxied, proxyURL: opts.ProxyURL},
+		Transport: observeTransport(&directFirstRoundTripper{direct: direct, proxied: proxied, proxyURL: opts.ProxyURL}),
 		Timeout:   timeout,
 	}
 	cm.clients[key] = client

@@ -2,8 +2,10 @@ package common
 
 import (
 	"bytes"
+	"github.com/BenedictKing/ccx/internal/observability"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -123,6 +125,19 @@ func RequestDone(resp *http.Response) <-chan struct{} {
 // 注意：done 是"整个请求"的生命周期，不是"本次预检"的生命周期。预检失败后转下一个
 // 渠道时 goroutine 会继续存活到本次请求结束（handler 返回时收敛），不会跨请求泄漏。
 func StartBodyChunkReader(body io.ReadCloser, chunkSize int, bufferSize int, done <-chan struct{}) (<-chan []byte, <-chan error) {
+	return startBodyChunkReaderObserved(body, chunkSize, bufferSize, done, nil)
+}
+
+// StartObservedBodyChunkReader observes the existing first read only, never replay.
+func StartObservedBodyChunkReader(resp *http.Response, chunkSize, bufferSize int) (<-chan []byte, <-chan error) {
+	var observer *observability.Observer
+	if resp.Request != nil {
+		observer = observability.FromContext(resp.Request.Context())
+	}
+	return startBodyChunkReaderObserved(resp.Body, chunkSize, bufferSize, RequestDone(resp), observer)
+}
+
+func startBodyChunkReaderObserved(body io.ReadCloser, chunkSize int, bufferSize int, done <-chan struct{}, observer *observability.Observer) (<-chan []byte, <-chan error) {
 	if chunkSize <= 0 {
 		chunkSize = 32 * 1024
 	}
@@ -135,9 +150,27 @@ func StartBodyChunkReader(body io.ReadCloser, chunkSize int, bufferSize int, don
 	go func() {
 		defer close(chunkChan)
 		buf := make([]byte, chunkSize)
+		var pending string
 		for {
 			n, err := body.Read(buf)
 			if n > 0 {
+				if observer != nil {
+					pending += string(buf[:n])
+					for {
+						pos := strings.IndexByte(pending, '\n')
+						if pos < 0 {
+							break
+						}
+						line := pending[:pos]
+						pending = pending[pos+1:]
+						if strings.HasPrefix(line, "data:") {
+							observer.Data(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+						}
+					}
+					if len(pending) > 64*1024 {
+						pending = ""
+					}
+				}
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
 				// done 为 nil 时该 case 永不就绪，等价于阻塞发送。
@@ -148,6 +181,7 @@ func StartBodyChunkReader(body io.ReadCloser, chunkSize int, bufferSize int, don
 				}
 			}
 			if err != nil {
+				observer.ReadEnd(err)
 				if err != io.EOF {
 					select {
 					case errChan <- err:

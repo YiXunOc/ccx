@@ -27,6 +27,7 @@ type EnvConfig struct {
 	QuietPollingLogs     bool   // 静默轮询端点日志
 	RawLogOutput         bool   // 原始日志输出（不缩进、不截断、不重排序）
 	SSEDebugLevel        string // SSE 调试级别: off, summary, full
+	PayloadCaptureMode   string // 阶段一低风险观测: off, summary, failed, all
 	RewriteResponseModel bool   // 是否改写响应中的 model 字段为请求的 model（默认 false）
 	ServerReadTimeout    int    // HTTP 服务端读取请求超时（毫秒），仅用于入站连接读取
 
@@ -85,6 +86,7 @@ func NewEnvConfig() *EnvConfig {
 		QuietPollingLogs:     getEnv("QUIET_POLLING_LOGS", "true") != "false",
 		RawLogOutput:         getEnv("RAW_LOG_OUTPUT", "false") == "true",
 		SSEDebugLevel:        getEnv("SSE_DEBUG_LEVEL", "off"),
+		PayloadCaptureMode:   normalizePayloadCaptureMode(getEnv("CCX_PAYLOAD_CAPTURE_MODE", "off")),
 		RewriteResponseModel: getEnv("REWRITE_RESPONSE_MODEL", "false") == "true",
 		ServerReadTimeout:    clampInt(getEnvAsInt("SERVER_READ_TIMEOUT", 60000), 10000, 300000),
 
@@ -114,6 +116,15 @@ func NewEnvConfig() *EnvConfig {
 		LogMaxAge:     getEnvAsInt("LOG_MAX_AGE", 30),     // 默认保留 30 天
 		LogCompress:   getEnv("LOG_COMPRESS", "true") != "false",
 		LogToConsole:  getEnv("LOG_TO_CONSOLE", "true") != "false",
+	}
+}
+
+func normalizePayloadCaptureMode(value string) string {
+	switch value = strings.ToLower(strings.TrimSpace(value)); value {
+	case "summary", "failed", "all":
+		return value
+	default:
+		return "off"
 	}
 }
 

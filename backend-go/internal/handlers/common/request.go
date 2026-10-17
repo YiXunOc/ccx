@@ -17,6 +17,7 @@ import (
 	"github.com/BenedictKing/ccx/internal/httpclient"
 	"github.com/BenedictKing/ccx/internal/logger"
 	"github.com/BenedictKing/ccx/internal/metrics"
+	"github.com/BenedictKing/ccx/internal/observability"
 	"github.com/BenedictKing/ccx/internal/utils"
 	"github.com/gin-gonic/gin"
 )
@@ -105,6 +106,7 @@ type RequestLifecycleTrace struct {
 // 返回: (bodyBytes, error)
 // 如果请求体过大，会自动返回 413 错误并排空剩余数据
 func ReadRequestBody(c *gin.Context, maxBodySize int64) ([]byte, error) {
+	EnsureRequestCorrelation(c)
 	limitedReader := io.LimitReader(c.Request.Body, maxBodySize+1)
 	bodyBytes, err := io.ReadAll(limitedReader)
 	if err != nil {
@@ -135,6 +137,7 @@ func ReadRequestBody(c *gin.Context, maxBodySize int64) ([]byte, error) {
 	}
 
 	// 恢复请求体供后续使用
+	c.Request = c.Request.WithContext(observability.WithClientBytes(c.Request.Context(), len(bodyBytes)))
 	c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	return bodyBytes, nil
 }
@@ -284,6 +287,7 @@ func SendRequestWithLifecycleTrace(req *http.Request, upstream *config.UpstreamC
 	}
 
 	req = withLifecycleTrace(req, lifecycleTrace)
+	observability.FromContext(req.Context()).Request(req)
 	return client.Do(req)
 }
 
