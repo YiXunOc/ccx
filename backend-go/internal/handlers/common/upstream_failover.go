@@ -1817,8 +1817,8 @@ func TryUpstreamWithAllKeys(
 			// 当前分支的只读结构化流观测身份；每次 attempt 重设，避免 failover 串号。
 			c.Set("ccx.stream_observation_attempt", logRequestID)
 			c.Set("ccx.stream_observation_channel", upstream.ChannelUID)
-			usage, err = handleSuccess(c, resp, upstreamCopy, apiKey, attemptBody)
 			payloadObserver.Response(resp.StatusCode)
+			usage, err = handleSuccess(c, resp, upstreamCopy, apiKey, attemptBody)
 			finishPayloadAttempt(c, payloadObserver, err, resp.StatusCode, payloadWriteBefore)
 			channelLogStore.UpdateUsage(metricsKey, logRequestID, usage)
 			// 上下文窗口自学习（放宽侧）：2xx 完成即实证该渠道×协议×模型可承载本次输入，

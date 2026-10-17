@@ -81,6 +81,13 @@ func (o *Observer) Request(req *http.Request) {
 	}
 	replayBytes := -1
 	replayError := ""
+	o.mu.Lock()
+	if o.requestObserved {
+		o.mu.Unlock()
+		return
+	}
+	o.requestObserved = true
+	o.mu.Unlock()
 	if req.GetBody != nil {
 		r, err := req.GetBody()
 		if err != nil || r == nil {
@@ -97,16 +104,12 @@ func (o *Observer) Request(req *http.Request) {
 		}
 	}
 	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.requestObserved {
-		return
-	}
-	o.requestObserved = true
 	o.summary.ClientBodyBytes = ClientBytes(req.Context())
 	o.summary.ConvertedBodyBytes = ConvertedBytes(req.Context())
 	o.summary.ContentLength = req.ContentLength
 	o.summary.GetBodyReplayBytes = replayBytes
 	o.summary.ReplayError = replayError
+	o.mu.Unlock()
 }
 func (o *Observer) Snapshot() Summary {
 	if o == nil {
@@ -141,6 +144,9 @@ func (o *Observer) Response(status int) {
 		return
 	}
 	o.mu.Lock()
+	if o.summary.FirstUpstreamStatus == 0 {
+		o.summary.FirstUpstreamStatus = status
+	}
 	o.summary.UpstreamStatus = status
 	o.mu.Unlock()
 }
@@ -221,6 +227,18 @@ func (o *Observer) Emitter() {
 	o.summary.EmitterEvents++
 	o.mu.Unlock()
 }
+func (o *Observer) MarkSyntheticTerminal() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	// A synthetic terminal is a local CCX outcome. Keep upstream event counts
+	// and status unchanged while making Finish classify the attempt as failed.
+	o.summary.Terminal = "response.incomplete"
+	o.summary.SyntheticFailure = true
+}
+
 func (o *Observer) Finish(outcome string, failed, committed bool, written int) {
 	if o == nil {
 		return

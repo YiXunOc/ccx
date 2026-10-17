@@ -136,3 +136,14 @@ func TestObserverFinishFailOpenAndTerminalClassification(t *testing.T) {
 		t.Fatal("missing channel treated as complete")
 	}
 }
+
+func TestObserverSyntheticTerminalDoesNotMutateUpstreamCounts(t *testing.T) {
+	o := NewObserver("summary", Context{}, nil)
+	o.Response(200)
+	o.Event("response.completed")
+	o.MarkSyntheticTerminal()
+	s := o.Snapshot()
+	if s.Terminal != "response.incomplete" || s.EventCounts["response.incomplete"] != 0 || s.EventCounts["response.completed"] != 1 || s.UpstreamStatus != 200 {
+		t.Fatalf("synthetic terminal corrupted upstream observation: %+v", s)
+	}
+}
