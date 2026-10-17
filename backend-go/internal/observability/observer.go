@@ -171,8 +171,10 @@ func (o *Observer) Event(kind string) {
 		o.summary.EventCounts[kind]++
 	}
 	switch kind {
-	case "response.completed", "response.failed", "response.incomplete", "error", "message_stop":
-		if o.summary.Terminal == "" || o.summary.Terminal == "done" || o.summary.Terminal == "message_stop" {
+	case "response.failed", "response.incomplete", "error":
+		o.summary.Terminal = kind
+	case "response.completed", "message_stop":
+		if o.summary.Terminal != "response.failed" && o.summary.Terminal != "response.incomplete" && o.summary.Terminal != "error" {
 			o.summary.Terminal = kind
 		}
 	case "done":
