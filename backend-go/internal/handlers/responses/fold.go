@@ -241,6 +241,9 @@ func runResponsesFoldWithBudget(baseBody map[string]interface{}, firstResp *http
 				}
 			}
 			if err != nil {
+				if budget.observer != nil {
+					budget.observer.Event("response.incomplete")
+				}
 				_ = currentResp.Body.Close()
 				if budget.exceeded {
 					return result, err
@@ -489,6 +492,9 @@ func runResponsesFoldWithBudget(baseBody map[string]interface{}, firstResp *http
 			nextBody := responsesFoldNextRoundBody(baseBody, append(append([]interface{}{}, origInput...), replayTail...))
 			nextResp, _, err := openRound(nextBody)
 			if err != nil {
+				if budget.observer != nil {
+					budget.observer.Event("response.incomplete")
+				}
 				incomplete := responsesFoldTerminalEvent(nil, baseResponse, finalOutput, responsesFoldAgentUsage(firstUsage, summedUsage, usage, false), roundsInfo, summedUsage, "upstream_error", "upstream_error")
 				return responsesFoldResult{AgentUsage: responseUsageMap(incomplete), BilledUsage: summedUsage}, emit(stamp(incomplete))
 			}

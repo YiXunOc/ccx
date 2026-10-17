@@ -94,6 +94,22 @@ func TestObserverReplayReadErrorAndConversionRewrite(t *testing.T) {
 	}
 }
 
+func TestObserverRequestKeepsFirstRoundMetadata(t *testing.T) {
+	o := NewObserver("summary", Context{}, nil)
+	first, _ := http.NewRequest("POST", "http://local.test", nil)
+	first.ContentLength = 11
+	first = WithConvertedBytes(first, []byte("first"))
+	o.Request(first)
+	second, _ := http.NewRequest("POST", "http://local.test", nil)
+	second.ContentLength = 22
+	second = WithConvertedBytes(second, []byte("second-round"))
+	o.Request(second)
+	s := o.Snapshot()
+	if s.ContentLength != 11 || s.ConvertedBodyBytes != 5 {
+		t.Fatalf("request metadata was overwritten: %+v", s)
+	}
+}
+
 func TestObserverFinishFailOpenAndTerminalClassification(t *testing.T) {
 	o := NewObserver("failed", NewContext("c", "r", "a", "ch", "responses", "responses", "", ""), func(s Summary) {
 		if s.Outcome != "upstream_terminal_failure" {
@@ -102,7 +118,11 @@ func TestObserverFinishFailOpenAndTerminalClassification(t *testing.T) {
 		panic("writer failure")
 	})
 	o.Event("response.failed")
+	o.Event("done")
 	o.Finish("success", false, false, 0)
+	if got := o.Snapshot().Terminal; got != "response.failed" {
+		t.Fatalf("DONE overwrote failure: %q", got)
+	}
 	o.Finish("duplicate", true, false, 0)
 	req, _ := http.NewRequest("POST", "http://local.test", nil)
 	req.GetBody = func() (io.ReadCloser, error) { return nil, nil }

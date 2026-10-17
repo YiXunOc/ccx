@@ -51,11 +51,12 @@ func ConvertedBytes(ctx context.Context) int {
 // Observer retains bounded counters only. Callbacks receive immutable snapshots.
 // Transport IDs describe explicit RoundTrip calls, excluding net/http internal retries.
 type Observer struct {
-	mu       sync.Mutex
-	mode     string
-	summary  Summary
-	emit     func(Summary)
-	finished bool
+	mu              sync.Mutex
+	mode            string
+	summary         Summary
+	emit            func(Summary)
+	finished        bool
+	requestObserved bool
 }
 
 func NewObserver(mode string, ctx Context, emit func(Summary)) *Observer {
@@ -97,6 +98,10 @@ func (o *Observer) Request(req *http.Request) {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.requestObserved {
+		return
+	}
+	o.requestObserved = true
 	o.summary.ClientBodyBytes = ClientBytes(req.Context())
 	o.summary.ConvertedBodyBytes = ConvertedBytes(req.Context())
 	o.summary.ContentLength = req.ContentLength
@@ -166,8 +171,14 @@ func (o *Observer) Event(kind string) {
 		o.summary.EventCounts[kind]++
 	}
 	switch kind {
-	case "response.completed", "response.failed", "response.incomplete", "error", "message_stop", "done":
-		o.summary.Terminal = kind
+	case "response.completed", "response.failed", "response.incomplete", "error", "message_stop":
+		if o.summary.Terminal == "" || o.summary.Terminal == "done" || o.summary.Terminal == "message_stop" {
+			o.summary.Terminal = kind
+		}
+	case "done":
+		if o.summary.Terminal == "" {
+			o.summary.Terminal = kind
+		}
 	}
 }
 
