@@ -205,7 +205,20 @@
                   </span>
                 </template>
                 <span v-else class="text-medium-emphasis log-meta">{{ formatDurationSeconds(row.log.durationMs) }}</span>
-                <v-chip v-if="row.log.selectionReason" size="small" color="secondary" variant="tonal" :title="row.log.selectionReason">
+                <v-chip v-if="row.log.selectionReason && !hasSelectionDetails(row.log)" size="small" color="secondary" variant="tonal" :title="row.log.selectionReason">
+                  {{ t('channelLogs.selectionReason') }} {{ row.log.selectionReason }}
+                </v-chip>
+                <v-chip
+                  v-else-if="row.log.selectionReason"
+                  tag="button"
+                  type="button"
+                  size="small"
+                  color="secondary"
+                  variant="tonal"
+                  :title="row.log.selectionReason"
+                  :aria-expanded="row.log.autopilotTraceUid ? undefined : expandedLogKey === row.key"
+                  @click.stop="openSelectionDetails(row)"
+                >
                   {{ t('channelLogs.selectionReason') }} {{ row.log.selectionReason }}
                 </v-chip>
                 <v-chip
@@ -244,6 +257,12 @@
               <div v-if="expandedLogKey === row.key && hasLogDetails(row.log)" class="px-4 py-2 log-detail-info">
                 <div v-if="row.log.errorInfo">
                   {{ formatErrorInfo(row.log.errorInfo) }}
+                </div>
+                <div v-if="row.log.selectionTraceSummary?.trim()" :class="{ 'mt-2': row.log.errorInfo }">
+                  <div>{{ t('channelLogs.selectionReason') }}</div>
+                  <div>requestId: <code>{{ row.log.requestId }}</code></div>
+                  <div v-if="row.log.requestCorrelationId">requestCorrelationId: <code>{{ row.log.requestCorrelationId }}</code></div>
+                  <code class="d-block">{{ row.log.selectionTraceSummary }}</code>
                 </div>
               </div>
             </v-expand-transition>
@@ -405,8 +424,19 @@ const onLogRowClick = (row: LogDisplayRow) => {
   expandedLogKey.value = expandedLogKey.value === row.key ? null : row.key
 }
 
+const hasSelectionDetails = (log: ChannelLogEntry): boolean =>
+  Boolean(log.autopilotTraceUid || log.selectionTraceSummary?.trim())
+
+const openSelectionDetails = (row: LogDisplayRow) => {
+  if (row.log.autopilotTraceUid) {
+    openAutopilotTrace(row.log.autopilotTraceUid, row.log.interfaceType)
+    return
+  }
+  expandedLogKey.value = expandedLogKey.value === row.key ? null : row.key
+}
+
 const hasLogDetails = (log: ChannelLogEntry): boolean => {
-  return Boolean(log.errorInfo?.trim())
+  return Boolean(log.errorInfo?.trim() || log.selectionTraceSummary?.trim())
 }
 
 const statusColor = (code: number): string => {
