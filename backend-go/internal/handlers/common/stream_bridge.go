@@ -103,10 +103,21 @@ func IsEventStreamResponse(resp *http.Response, body []byte) bool {
 func ReadUpstreamNonStreamBody(c *gin.Context, resp *http.Response, upstreamType string) ([]byte, error) {
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrStreamReadFailure, err)
 	}
 	if !IsEventStreamResponse(resp, bodyBytes) {
 		return bodyBytes, nil
+	}
+	if err := iterateSSEDataLines(bodyBytes, func(data string) error {
+		if _, _, _, explicit := DetectStreamDataError(data); explicit {
+			if rejected := RequestSideStreamError(data); rejected != nil {
+				return rejected
+			}
+			return StreamFailureFromData(data)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	var synthesized []byte

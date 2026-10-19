@@ -59,32 +59,34 @@ func (c Context) AssociationStatus() string {
 }
 
 type Summary struct {
-	Context             Context        `json:"association"`
-	AssociationStatus   string         `json:"associationStatus"`
-	ClientBodyBytes     int            `json:"clientBodyBytes"`
-	ConvertedBodyBytes  int            `json:"convertedBodyBytes"`
-	OutboundBodyBytes   int            `json:"outboundBodyBytes"`
-	ContentLength       int64          `json:"contentLength"`
-	GetBodyReplayBytes  int            `json:"getBodyReplayBytes"`
-	UpstreamStatus      int            `json:"upstreamStatus"`
-	FirstUpstreamStatus int            `json:"firstUpstreamStatus"`
-	SyntheticFailure    bool           `json:"syntheticFailure"`
-	HeaderCommitted     bool           `json:"headerCommitted"`
-	ClientWriteBytes    int            `json:"clientWriteBytes"`
-	EventCounts         map[string]int `json:"eventCounts,omitempty"`
-	Terminal            string         `json:"terminal,omitempty"`
-	Outcome             string         `json:"outcome,omitempty"`
-	EOF                 bool           `json:"eof"`
-	ReadError           string         `json:"readError,omitempty"`
-	CaptureDropped      bool           `json:"captureDropped"`
-	ReplayError         string         `json:"replayError,omitempty"`
-	TransportTries      int            `json:"transportTries"`
-	EmitterEvents       int            `json:"emitterEvents"`
-	TransportScope      string         `json:"transportScope"`
+	Context               Context        `json:"association"`
+	AssociationStatus     string         `json:"associationStatus"`
+	ClientBodyBytes       int            `json:"clientBodyBytes"`
+	ConvertedBodyBytes    int            `json:"convertedBodyBytes"`
+	OutboundBodyBytes     int            `json:"outboundBodyBytes"`
+	ContentLength         int64          `json:"contentLength"`
+	GetBodyReplayBytes    int            `json:"getBodyReplayBytes"`
+	UpstreamStatus        int            `json:"upstreamStatus"`
+	FirstUpstreamStatus   int            `json:"firstUpstreamStatus"`
+	SyntheticFailure      bool           `json:"syntheticFailure"`
+	HeaderCommitted       bool           `json:"headerCommitted"`
+	ClientWriteBytes      int            `json:"clientWriteBytes"`
+	EventCounts           map[string]int `json:"eventCounts,omitempty"`
+	DownstreamEventCounts map[string]int `json:"downstreamEventCounts,omitempty"`
+	Terminal              string         `json:"terminal,omitempty"`
+	DownstreamTerminal    string         `json:"downstreamTerminal,omitempty"`
+	Outcome               string         `json:"outcome,omitempty"`
+	EOF                   bool           `json:"eof"`
+	ReadError             string         `json:"readError,omitempty"`
+	CaptureDropped        bool           `json:"captureDropped"`
+	ReplayError           string         `json:"replayError,omitempty"`
+	TransportTries        int            `json:"transportTries"`
+	EmitterEvents         int            `json:"emitterEvents"`
+	TransportScope        string         `json:"transportScope"`
 }
 
 func NewSummary(ctx Context) Summary {
-	return Summary{Context: ctx, AssociationStatus: ctx.AssociationStatus(), ClientBodyBytes: -1, ConvertedBodyBytes: -1, OutboundBodyBytes: -1, ContentLength: -1, GetBodyReplayBytes: -1, ClientWriteBytes: -1, TransportScope: "explicit_roundtrip_excludes_net_http_internal_retries", EventCounts: make(map[string]int)}
+	return Summary{Context: ctx, AssociationStatus: ctx.AssociationStatus(), ClientBodyBytes: -1, ConvertedBodyBytes: -1, OutboundBodyBytes: -1, ContentLength: -1, GetBodyReplayBytes: -1, ClientWriteBytes: -1, TransportScope: "explicit_roundtrip_excludes_net_http_internal_retries", EventCounts: make(map[string]int), DownstreamEventCounts: make(map[string]int)}
 }
 
 func ShouldRecord(mode string, failed bool) bool {

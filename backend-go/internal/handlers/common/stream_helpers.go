@@ -390,6 +390,7 @@ func isInsufficientBalanceCode(code string) bool {
 
 // streamErrorPayload 是从单条 SSE data JSON 中提取的上游错误载荷。
 type streamErrorPayload struct {
+	event    string
 	errType  string
 	errCode  string
 	errMsg   string
@@ -412,7 +413,7 @@ func parseStreamErrorPayload(jsonData string) streamErrorPayload {
 	}
 
 	eventType, _ := data["type"].(string)
-	var p streamErrorPayload
+	p := streamErrorPayload{event: eventType}
 
 	if errObj, ok := data["error"].(map[string]interface{}); ok {
 		p.errType, _ = errObj["type"].(string)
@@ -426,12 +427,12 @@ func parseStreamErrorPayload(jsonData string) streamErrorPayload {
 	} else if errStr, ok := data["error"].(string); ok {
 		p.errMsg = errStr
 		p.hasError = true
+	} else if _, present := data["error"]; present {
+		p.hasError = true
 	} else if eventType == "error" {
-		// Claude 退化形态：type=="error" 且错误详情在顶层 message
-		if msg, ok := data["message"].(string); ok && strings.TrimSpace(msg) != "" {
-			p.errMsg = msg
-			p.hasError = true
-		}
+		// A bare SSE error event is still an explicit failure.
+		p.errMsg, _ = data["message"].(string)
+		p.hasError = true
 	} else if eventType == "response.failed" || eventType == "response.error" {
 		if response, ok := data["response"].(map[string]interface{}); ok {
 			if errObj, ok := response["error"].(map[string]interface{}); ok {
@@ -444,6 +445,43 @@ func parseStreamErrorPayload(jsonData string) streamErrorPayload {
 	}
 
 	return p
+}
+
+// UpstreamStreamFailureError retains bounded diagnostics without retaining SSE bytes.
+// Unwrap preserves the existing failover and metrics classification.
+type UpstreamStreamFailureError struct {
+	Event, Type, Code, Message string
+}
+
+func (e *UpstreamStreamFailureError) Unwrap() error { return ErrUpstreamStreamFailure }
+func (e *UpstreamStreamFailureError) Error() string {
+	return fmt.Sprintf("%s: event=%s type=%s code=%s message=%s", ErrUpstreamStreamFailure, e.Event, e.Type, e.Code, e.Message)
+}
+
+func streamFailureField(s string, max int) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return ' '
+		}
+		return r
+	}, strings.TrimSpace(s))
+	if len(s) > max {
+		s = strings.ToValidUTF8(s[:max], "")
+	}
+	return s
+}
+
+// StreamFailureFromData is called only after an explicit SSE failure was detected.
+func StreamFailureFromData(data string) error {
+	p := parseStreamErrorPayload(data)
+	return NewUpstreamStreamFailure(p.event, p.errType, p.errCode, p.errMsg)
+}
+
+func NewUpstreamStreamFailure(event, typ, code, message string) error {
+	return &UpstreamStreamFailureError{
+		Event: streamFailureField(event, 64), Type: streamFailureField(typ, 64),
+		Code: streamFailureField(code, 64), Message: streamFailureField(message, 256),
+	}
 }
 
 // DetectStreamDataError 检测单条 SSE data JSON 是否为错误事件，并复用拉黑分类词汇表。
@@ -548,6 +586,8 @@ func ClassifyPreflightStreamError(err error) error {
 	var rejected *UpstreamRequestRejectedError
 	switch {
 	case errors.Is(err, ErrStreamFirstContentTimeout),
+		errors.Is(err, ErrUpstreamStreamFailure),
+		errors.Is(err, ErrStreamReadFailure),
 		errors.Is(err, ErrStreamStalled),
 		errors.Is(err, ErrEmptyStreamResponse),
 		errors.Is(err, ErrInvalidResponseBody),
@@ -557,7 +597,7 @@ func ClassifyPreflightStreamError(err error) error {
 		errors.As(err, &rejected):
 		return err
 	}
-	return fmt.Errorf("%w: %v", ErrEmptyStreamResponse, err)
+	return fmt.Errorf("%w: %v", ErrStreamReadFailure, err)
 }
 
 // truncateMsg 截断消息（最多200字符）

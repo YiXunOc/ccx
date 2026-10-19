@@ -1,13 +1,34 @@
 package observability
 
 import (
+	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestReadErrorFiniteCategories(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{io.ErrUnexpectedEOF, "unexpected_eof"},
+		{context.Canceled, "cancelled"},
+		{context.DeadlineExceeded, "timeout"},
+		{&net.OpError{Op: "read", Err: errors.New("PRIVATE")}, "network_error"},
+		{errors.New("PRIVATE"), "read_error"},
+	} {
+		o := NewObserver("summary", Context{}, nil)
+		o.ReadEnd(tc.err)
+		if got := o.Snapshot().ReadError; got != tc.want {
+			t.Errorf("%v: got %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}
 
 func TestObserverModesUnknownAndReadBoundaries(t *testing.T) {
 	for _, mode := range []string{"off", "summary", "failed", "all"} {

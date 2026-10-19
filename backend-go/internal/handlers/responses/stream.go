@@ -293,6 +293,10 @@ func handleStreamSuccess(
 			common.ObservePayloadSSELine(c, sl.text)
 			if !sl.ok {
 				common.PayloadObserver(c).ReadEnd(sl.err)
+				if sl.err != nil {
+					stopScan()
+					return nil, common.ClassifyPreflightStreamError(sl.err)
+				}
 				scanErr = sl.err
 				// scanner 结束
 				if preflightHasNonTextContent {
@@ -381,7 +385,7 @@ func handleStreamSuccess(
 						return nil, &common.ErrBlacklistKey{Reason: r, Message: m, RecoverAt: utils.ExtractQuotaRecoverAt(m)}
 					}
 					common.RequestLogf(c, "[Responses-UpstreamError] %s，触发重试", preflightDiagnostic)
-					return nil, fmt.Errorf("%w: %s", common.ErrEmptyStreamResponse, preflightDiagnostic)
+					return nil, common.NewUpstreamStreamFailure(currentSSEEventName, upstreamErr.Type, upstreamErr.Code, upstreamErr.Message)
 				}
 				if !validResponsesToolCompletion(event, preflightToolNames) {
 					preflightEmpty = true

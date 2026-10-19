@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -125,6 +126,10 @@ func (o *Observer) snapshot() Summary {
 	for k, v := range o.summary.EventCounts {
 		s.EventCounts[k] = v
 	}
+	s.DownstreamEventCounts = make(map[string]int, len(o.summary.DownstreamEventCounts))
+	for k, v := range o.summary.DownstreamEventCounts {
+		s.DownstreamEventCounts[k] = v
+	}
 	return s
 }
 func (o *Observer) TransportStart() string {
@@ -159,7 +164,21 @@ func (o *Observer) ReadEnd(err error) {
 	if err == nil || errors.Is(err, io.EOF) {
 		o.summary.EOF = true
 	} else {
-		o.summary.ReadError = "read_error"
+		switch {
+		case errors.Is(err, context.Canceled):
+			o.summary.ReadError = "cancelled"
+		case errors.Is(err, context.DeadlineExceeded):
+			o.summary.ReadError = "timeout"
+		case errors.Is(err, io.ErrUnexpectedEOF):
+			o.summary.ReadError = "unexpected_eof"
+		default:
+			var netErr *net.OpError
+			if errors.As(err, &netErr) {
+				o.summary.ReadError = "network_error"
+			} else {
+				o.summary.ReadError = "read_error"
+			}
+		}
 	}
 }
 func (o *Observer) Event(kind string) {
@@ -219,6 +238,43 @@ func (o *Observer) Data(data string) {
 	}
 	o.Event(kind)
 }
+
+// DownstreamData observes a client-facing SSE data field separately from upstream evidence.
+func (o *Observer) DownstreamData(data string) {
+	if o == nil {
+		return
+	}
+	data = strings.TrimSpace(data)
+	kind := "other"
+	if data == "[DONE]" {
+		kind = "done"
+	} else {
+		var v struct {
+			Type    string          `json:"type"`
+			Error   json.RawMessage `json:"error"`
+			Choices json.RawMessage `json:"choices"`
+		}
+		if json.Unmarshal([]byte(data), &v) == nil {
+			if v.Type != "" {
+				kind = v.Type
+			} else if len(v.Error) > 0 && string(v.Error) != "null" {
+				kind = "error"
+			} else if len(v.Choices) > 0 {
+				kind = "chat.chunk"
+			}
+		}
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.summary.DownstreamEventCounts[kind] < 10000 {
+		o.summary.DownstreamEventCounts[kind]++
+	}
+	switch kind {
+	case "done", "message_stop", "response.completed", "response.failed", "response.incomplete", "error":
+		o.summary.DownstreamTerminal = kind
+	}
+}
+
 func (o *Observer) Emitter() {
 	if o == nil {
 		return

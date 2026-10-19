@@ -1276,8 +1276,7 @@ func (e *responsesFoldHTTPEmitter) emit(event map[string]interface{}) (emitErr e
 		if r, m := detectResponsesErrorBlacklist(upstreamErr); r != "" {
 			return &common.ErrBlacklistKey{Reason: r, Message: m, RecoverAt: utils.ExtractQuotaRecoverAt(m)}
 		}
-		diagnostic := formatResponsesErrorDiagnostic(upstreamErr)
-		return fmt.Errorf("%w: %s", common.ErrEmptyStreamResponse, diagnostic)
+		return common.NewUpstreamStreamFailure(eventType, upstreamErr.Type, upstreamErr.Code, upstreamErr.Message)
 	}
 
 	if e.budget.exceeded {

@@ -1818,7 +1818,16 @@ func TryUpstreamWithAllKeys(
 			c.Set("ccx.stream_observation_attempt", logRequestID)
 			c.Set("ccx.stream_observation_channel", upstream.ChannelUID)
 			payloadObserver.Response(resp.StatusCode)
+			if isStream && kind != scheduler.ChannelKindResponses {
+				resp.Body = ObserveUpstreamSSEBody(resp.Body, payloadObserver)
+			}
+			if isStream {
+				c.Writer = ObserveDownstreamSSEWriter(c.Writer, payloadObserver)
+			}
 			usage, err = handleSuccess(c, resp, upstreamCopy, apiKey, attemptBody)
+			if downstream, ok := c.Writer.(*downstreamWriter); ok {
+				c.Writer = downstream.ResponseWriter
+			}
 			finishPayloadAttempt(c, payloadObserver, err, resp.StatusCode, payloadWriteBefore)
 			channelLogStore.UpdateUsage(metricsKey, logRequestID, usage)
 			// 上下文窗口自学习（放宽侧）：2xx 完成即实证该渠道×协议×模型可承载本次输入，
@@ -1905,7 +1914,7 @@ func TryUpstreamWithAllKeys(
 					// handled=true 的「已向客户端写回响应」契约，避免终态错误空 200。
 					RespondUpstreamRequestRejected(c, apiType, rejected)
 					return true, "", 0, nil, usage, err
-				} else if errors.Is(err, ErrEmptyStreamResponse) || errors.Is(err, ErrInvalidResponseBody) || errors.Is(err, ErrEmptyNonStreamResponse) || errors.Is(err, ErrStreamFirstContentTimeout) || errors.Is(err, ErrStreamStalled) {
+				} else if errors.Is(err, ErrEmptyStreamResponse) || errors.Is(err, ErrUpstreamStreamFailure) || errors.Is(err, ErrStreamReadFailure) || errors.Is(err, ErrInvalidResponseBody) || errors.Is(err, ErrEmptyNonStreamResponse) || errors.Is(err, ErrStreamFirstContentTimeout) || errors.Is(err, ErrStreamStalled) {
 					// 空响应（流式 / 非流式）或无效响应体（如 HTML）或流式首字超时/断流：Header 未发送，可安全 failover
 					retryKey := currentBaseURL + "|" + apiKey
 					elapsed := time.Since(attemptStartedAt)

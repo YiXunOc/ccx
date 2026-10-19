@@ -203,11 +203,8 @@ data: {"type":"response.failed","response":{"id":"resp_1","status":"failed","err
 		[]byte(`{"model":"gpt-5","stream":true}`),
 		common.StreamPreflightTimeouts{},
 	)
-	if !errors.Is(err, common.ErrEmptyStreamResponse) {
-		t.Fatalf("handleStreamSuccess() err = %v, want ErrEmptyStreamResponse", err)
-	}
-	if !strings.Contains(err.Error(), "server_is_overloaded") {
-		t.Fatalf("expected diagnostic to include server_is_overloaded, got %v", err)
+	if !errors.Is(err, common.ErrUpstreamStreamFailure) || errors.Is(err, common.ErrEmptyStreamResponse) {
+		t.Fatalf("handleStreamSuccess() err = %v, want explicit SSE failure", err)
 	}
 	if w.Body.Len() != 0 {
 		t.Fatalf("preflight error should not commit response body, got %q", w.Body.String())
@@ -367,11 +364,8 @@ data: {"type":"error","error":{"code":"provider_error","message":"upstream provi
 		[]byte(`{"model":"gpt-5","stream":true}`),
 		common.StreamPreflightTimeouts{},
 	)
-	if !errors.Is(err, common.ErrEmptyStreamResponse) {
-		t.Fatalf("handleStreamSuccess() err = %v, want ErrEmptyStreamResponse (non-listed error must trigger failover)", err)
-	}
-	if !strings.Contains(err.Error(), "provider_error") {
-		t.Fatalf("expected diagnostic to include provider_error, got %v", err)
+	if !errors.Is(err, common.ErrUpstreamStreamFailure) || errors.Is(err, common.ErrEmptyStreamResponse) {
+		t.Fatalf("handleStreamSuccess() err = %v, want explicit SSE failure", err)
 	}
 	if w.Body.Len() != 0 {
 		t.Fatalf("preflight error should not commit response body, got %q", w.Body.String())

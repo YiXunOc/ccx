@@ -6,7 +6,9 @@ import (
 	"github.com/BenedictKing/ccx/internal/config"
 	"github.com/BenedictKing/ccx/internal/observability"
 	"github.com/gin-gonic/gin"
+	"io"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -56,6 +58,95 @@ func ObservePayloadSSELine(c *gin.Context, line string) {
 		PayloadObserver(c).Data(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 	}
 }
+
+// ObserveDownstreamSSEWriter records client-facing SSE without touching upstream event counts.
+func ObserveDownstreamSSEWriter(w gin.ResponseWriter, observer *observability.Observer) gin.ResponseWriter {
+	if observer == nil {
+		return w
+	}
+	return &downstreamWriter{ResponseWriter: w, observer: observer}
+}
+
+type downstreamWriter struct {
+	gin.ResponseWriter
+	observer *observability.Observer
+	pending  string
+}
+
+func (w *downstreamWriter) WriteString(s string) (int, error) { return w.Write([]byte(s)) }
+func (w *downstreamWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	w.pending += string(p[:n])
+	for {
+		i := strings.IndexByte(w.pending, '\n')
+		if i < 0 {
+			break
+		}
+		line := strings.TrimRight(w.pending[:i], "\r")
+		w.pending = w.pending[i+1:]
+		if strings.HasPrefix(line, "data:") {
+			w.observer.DownstreamData(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if len(w.pending) > 64*1024 {
+		w.pending = ""
+	}
+	return n, err
+}
+
+// ObserveUpstreamSSEBody records upstream frames and read termination without
+// changing bytes handed to the existing protocol parser.
+func ObserveUpstreamSSEBody(body io.ReadCloser, observer *observability.Observer) io.ReadCloser {
+	if observer == nil || body == nil {
+		return body
+	}
+	return &observedSSEBody{ReadCloser: body, observer: observer}
+}
+
+type observedSSEBody struct {
+	io.ReadCloser
+	observer *observability.Observer
+	pending  string
+}
+
+func (r *observedSSEBody) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	if n > 0 {
+		r.pending += string(p[:n])
+		for {
+			index := strings.IndexByte(r.pending, '\n')
+			if index < 0 {
+				break
+			}
+			line := strings.TrimRight(r.pending[:index], "\r")
+			r.pending = r.pending[index+1:]
+			if strings.HasPrefix(line, "data:") {
+				r.observer.Data(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
+		}
+		if len(r.pending) > 64*1024 {
+			r.pending = ""
+		}
+	}
+	if err != nil {
+		r.observer.ReadEnd(err)
+	}
+	return n, err
+}
+
+var streamObservationToken = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+func streamObservationID(c *gin.Context, key string) string {
+	if c != nil {
+		if value, ok := c.Get(key); ok {
+			if id, ok := value.(string); ok && streamObservationToken.MatchString(id) {
+				return id
+			}
+		}
+	}
+	return "-"
+}
+
 func ObservePayloadEmitter(c *gin.Context) { PayloadObserver(c).Emitter() }
 func finishPayloadAttempt(c *gin.Context, o *observability.Observer, err error, status int, before int) {
 	outcome := "success"
@@ -63,6 +154,10 @@ func finishPayloadAttempt(c *gin.Context, o *observability.Observer, err error, 
 		outcome = "handler_error"
 		if errors.Is(err, context.Canceled) {
 			outcome = "cancelled"
+		} else if errors.Is(err, ErrUpstreamStreamFailure) {
+			outcome = "upstream_terminal_failure"
+		} else if errors.Is(err, ErrStreamReadFailure) {
+			outcome = "upstream_read_error"
 		} else if errors.Is(err, ErrEmptyStreamResponse) {
 			outcome = "empty_stream"
 		}
@@ -77,6 +172,20 @@ func finishPayloadAttempt(c *gin.Context, o *observability.Observer, err error, 
 		written -= before
 	}
 	o.Finish(outcome, err != nil || status < 200 || status >= 300, c.Writer.Written(), written)
+	if status >= 200 && status < 300 && (err != nil || o.Snapshot().Terminal == "response.failed" || o.Snapshot().Terminal == "response.incomplete" || o.Snapshot().Terminal == "error") {
+		s := o.Snapshot()
+		terminal := s.Terminal
+		if terminal == "" {
+			terminal = "-"
+		}
+		readError := s.ReadError
+		if readError == "" {
+			readError = "-"
+		}
+		RequestLogf(c, "[StreamAttemptOutcome] correlation=%s attempt=%s channel=%s upstreamTerminal=%s readError=%s downstreamCommitted=%t clientWriteBytes=%d outcome=%s",
+			streamObservationID(c, "ccx.request_correlation_id"), streamObservationID(c, "ccx.stream_observation_attempt"),
+			streamObservationID(c, "ccx.stream_observation_channel"), terminal, readError, c.Writer.Written(), written, s.Outcome)
+	}
 }
 
 // RecordPayloadAttemptSummary supports diagnostic callers without consuming live bodies.

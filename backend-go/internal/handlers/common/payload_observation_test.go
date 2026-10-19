@@ -14,6 +14,58 @@ import (
 	"testing"
 )
 
+func TestObservedSSEBodyReadAndTerminal(t *testing.T) {
+	o := observability.NewObserver("summary", observability.Context{}, nil)
+	body := ObserveUpstreamSSEBody(io.NopCloser(strings.NewReader("event: error\ndata: {\"type\":\"error\",\"message\":\"PRIVATE\"}\n\n")), o)
+	if _, err := io.Copy(io.Discard, body); err != nil {
+		t.Fatal(err)
+	}
+	s := o.Snapshot()
+	if s.Terminal != "error" || s.EventCounts["error"] != 1 || !s.EOF {
+		t.Fatalf("missing upstream evidence: %+v", s)
+	}
+}
+
+func TestDownstreamTerminalObservationIndependentOfUpstream(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	o := observability.NewObserver("summary", observability.Context{}, nil)
+	c.Writer = ObserveDownstreamSSEWriter(c.Writer, o)
+	_, _ = c.Writer.Write([]byte("data: {\"type\":\"response.completed\"}\n\n"))
+	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	s := o.Snapshot()
+	if s.Terminal != "" || s.EventCounts["response.completed"] != 0 || s.DownstreamTerminal != "done" || s.DownstreamEventCounts["response.completed"] != 1 || w.Body.Len() == 0 {
+		t.Fatalf("upstream counts duplicated or downstream missing: %+v", s)
+	}
+}
+
+func TestStreamAttemptTerminalObservation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+	c.Set("ccx.request_correlation_id", "corr-123")
+	c.Set("ccx.stream_observation_attempt", "attempt-123")
+	c.Set("ccx.stream_observation_channel", "channel-123")
+	o := observability.NewObserver("summary", observability.Context{}, nil)
+	c.Request = observability.Bind(c.Request, o)
+	o.Data(`{"type":"response.failed","response":{"error":{"message":"PRIVATE"}}}`)
+	o.ReadEnd(io.ErrUnexpectedEOF)
+	var out bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&out)
+	defer log.SetOutput(old)
+	finishPayloadAttempt(c, o, ErrUpstreamStreamFailure, 200, 0)
+	got := out.String()
+	for _, want := range []string{"[StreamAttemptOutcome]", "correlation=corr-123", "attempt=attempt-123", "channel=channel-123", "upstreamTerminal=response.failed", "readError=unexpected_eof", "downstreamCommitted=false", "outcome=upstream_terminal_failure"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %s: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "PRIVATE") {
+		t.Fatalf("raw payload leaked: %s", got)
+	}
+}
+
 func TestPayloadSummaryHonestBoundaries(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

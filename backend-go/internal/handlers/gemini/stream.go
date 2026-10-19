@@ -249,7 +249,7 @@ func preflightGeminiStream(resp *http.Response, upstreamType string, timeouts co
 				if rejected := common.RequestSideStreamError(jsonData); rejected != nil {
 					return nil, chunkChan, bodyErrChan, rejected
 				}
-				return nil, chunkChan, bodyErrChan, fmt.Errorf("%w: %s", common.ErrEmptyStreamResponse, msg)
+				return nil, chunkChan, bodyErrChan, common.StreamFailureFromData(jsonData)
 			}
 		}
 

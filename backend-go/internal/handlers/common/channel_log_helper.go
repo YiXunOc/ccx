@@ -447,6 +447,10 @@ func normalizeChannelLogErrorInfo(errorInfo string) string {
 	switch {
 	case strings.HasPrefix(trimmed, racingLostErrorPrefix):
 		return "竞速败出：另一渠道分支更快交付有效响应，本分支已取消（真实上游消耗照常发生，不计入渠道失败）"
+	case strings.HasPrefix(trimmed, ErrUpstreamStreamFailure.Error()):
+		return "流内错误：上游 HTTP 200 返回显式 SSE 失败事件" + strings.TrimPrefix(trimmed, ErrUpstreamStreamFailure.Error())
+	case strings.HasPrefix(trimmed, ErrStreamReadFailure.Error()):
+		return "流读取失败：上游 SSE 在客户端提交前中断"
 	case strings.HasPrefix(trimmed, ErrEmptyStreamResponse.Error()):
 		diagnostic := strings.TrimSpace(strings.TrimPrefix(trimmed, ErrEmptyStreamResponse.Error()))
 		diagnostic = strings.TrimSpace(strings.TrimPrefix(diagnostic, ":"))

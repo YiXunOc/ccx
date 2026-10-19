@@ -23,6 +23,13 @@ import (
 // 空响应定义：OutputTokens == 0 或 OutputTokens == 1 且内容仅为 "{"
 var ErrEmptyStreamResponse = errors.New("upstream returned empty stream response")
 
+// ErrUpstreamStreamFailure denotes an explicit HTTP 200 SSE failure, not clean EOF.
+// Before client commit it can fail over, but must not take the short-empty retry path.
+var ErrUpstreamStreamFailure = errors.New("upstream returned stream failure event")
+
+// ErrStreamReadFailure marks an interrupted upstream read before client commit.
+var ErrStreamReadFailure = errors.New("upstream stream read failure")
+
 // ErrStreamFirstContentTimeout 上游返回 HTTP 200 后，在指定时间内没有首个有效内容
 // Header 未发送，可安全 failover 到下一个 Key/BaseURL/渠道
 var ErrStreamFirstContentTimeout = errors.New("stream first content timeout")
@@ -285,6 +292,23 @@ func PreflightStreamEventsWithOptions(eventChan <-chan string, errChan <-chan er
 			}
 			seenEvent = true
 			result.BufferedEvents = append(result.BufferedEvents, event)
+			for _, line := range strings.Split(event, "\n") {
+				if !strings.HasPrefix(line, "data:") {
+					continue
+				}
+				data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				if _, _, _, explicit := DetectStreamDataError(data); explicit {
+					if reason, msg := DetectStreamBlacklistError(event); reason != "" {
+						result.BlacklistReason, result.BlacklistMessage = reason, msg
+					}
+					if rejected := RequestSideStreamError(data); rejected != nil {
+						result.HasError, result.Error = true, rejected
+					} else {
+						result.HasError, result.Error = true, StreamFailureFromData(data)
+					}
+					return result
+				}
+			}
 
 			// 检测 SSE error 事件中的拉黑条件（认证/余额错误）
 			if result.BlacklistReason == "" {

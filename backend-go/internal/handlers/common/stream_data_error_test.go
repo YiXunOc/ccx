@@ -3,8 +3,69 @@ package common
 import (
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"testing"
 )
+
+func TestPreflightMessagesRequestRejection(t *testing.T) {
+	events := make(chan string, 1)
+	errs := make(chan error)
+	events <- "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad input\"}}\n\n"
+	close(events)
+	close(errs)
+	result := PreflightStreamEvents(events, errs, StreamPreflightTimeouts{})
+	var rejected *UpstreamRequestRejectedError
+	if !errors.As(result.Error, &rejected) || !result.HasError {
+		t.Fatalf("request rejection replayed: %+v", result)
+	}
+}
+
+func TestPreflightExplicitMessagesError(t *testing.T) {
+	events := make(chan string, 1)
+	errs := make(chan error)
+	events <- `event: error` + "\n" + `data: {"type":"error","error":{"type":"overloaded_error","message":"PRIVATE"}}` + "\n\n"
+	close(events)
+	close(errs)
+	result := PreflightStreamEvents(events, errs, StreamPreflightTimeouts{})
+	if !result.HasError || !errors.Is(result.Error, ErrUpstreamStreamFailure) || result.IsEmpty {
+		t.Fatalf("explicit error classified as empty: %+v", result)
+	}
+	var failure *UpstreamStreamFailureError
+	if !errors.As(result.Error, &failure) || failure.Event != "error" || failure.Type != "overloaded_error" || failure.Message != "PRIVATE" {
+		t.Fatalf("lost structured upstream failure: %+v", result.Error)
+	}
+}
+
+func TestExplicitFailureSanitizesDiagnostic(t *testing.T) {
+	err := StreamFailureFromData(`{"type":"response.failed","response":{"error":{"type":"server_error\nSECRET","code":"overloaded","message":"first\nSECRET ` + strings.Repeat("x", 600) + `"}}}`)
+	var failure *UpstreamStreamFailureError
+	if !errors.As(err, &failure) || failure.Event != "response.failed" || failure.Code != "overloaded" || len(failure.Message) > 256 || !errors.Is(err, ErrUpstreamStreamFailure) {
+		t.Fatalf("unsafe failure: %#v", err)
+	}
+	if failure.Type == "server_error\nSECRET" || errors.Is(err, ErrEmptyStreamResponse) {
+		t.Fatalf("unbounded or collapsed failure: %v", err)
+	}
+}
+
+func TestExplicitSSEErrorIsNotEmpty(t *testing.T) {
+	if got := ClassifyPreflightStreamError(io.ErrUnexpectedEOF); errors.Is(got, ErrEmptyStreamResponse) || !errors.Is(got, ErrStreamReadFailure) {
+		t.Fatalf("read failure collapsed to empty: %v", got)
+	}
+	for _, data := range []string{
+		`{"type":"error"}`,
+		`{"error":{}}`,
+		`{"type":"response.failed","response":{"error":{"code":"server_error"}}}`,
+	} {
+		_, _, _, detected := DetectStreamDataError(data)
+		if !detected {
+			t.Errorf("explicit failure not detected: %s", data)
+		}
+	}
+	if got := ClassifyPreflightStreamError(ErrUpstreamStreamFailure); errors.Is(got, ErrEmptyStreamResponse) || !errors.Is(got, ErrUpstreamStreamFailure) {
+		t.Fatalf("explicit SSE failure lost in failover classification: %v", got)
+	}
+}
 
 func TestDetectStreamDataError(t *testing.T) {
 	tests := []struct {
@@ -115,7 +176,7 @@ func TestClassifyPreflightStreamError(t *testing.T) {
 	tests := []struct {
 		name     string
 		err      error
-		wantWrap bool // 期望被包装为 ErrEmptyStreamResponse
+		wantWrap bool // 期望被包装为 ErrStreamReadFailure
 		wantSame bool // 期望原样返回
 	}{
 		{name: "nil", err: nil, wantSame: true},
@@ -139,8 +200,8 @@ func TestClassifyPreflightStreamError(t *testing.T) {
 				}
 			}
 			if tt.wantWrap {
-				if !errors.Is(got, ErrEmptyStreamResponse) {
-					t.Fatalf("expected wrapped ErrEmptyStreamResponse, got %v", got)
+				if !errors.Is(got, ErrStreamReadFailure) {
+					t.Fatalf("expected wrapped ErrStreamReadFailure, got %v", got)
 				}
 			}
 		})
@@ -248,7 +309,7 @@ func TestClassifyPreflightStreamErrorKeepsRequestRejectedTerminal(t *testing.T) 
 
 	// 裸错误仍归入 failover 家族，保持 a6074e2c 的行为
 	plain := ClassifyPreflightStreamError(errors.New("read: connection reset by peer"))
-	if !errors.Is(plain, ErrEmptyStreamResponse) {
-		t.Fatalf("裸传输错误应归入空响应家族，got %v", plain)
+	if !errors.Is(plain, ErrStreamReadFailure) {
+		t.Fatalf("裸传输错误应归入读取失败家族，got %v", plain)
 	}
 }

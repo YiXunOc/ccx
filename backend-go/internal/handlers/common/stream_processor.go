@@ -1365,6 +1365,9 @@ func HandleStreamResponse(
 		} else if errors.Is(preflight.Error, ErrStreamStalled) {
 			RequestLogf(c, "[Messages-StreamStalled] 流式断流: 首字后 %dms 无活动，触发重试", timeouts.InactivityTimeoutMs)
 		}
+		if preflight.BlacklistReason != "" {
+			return nil, &ErrBlacklistKey{Reason: preflight.BlacklistReason, Message: preflight.BlacklistMessage, RecoverAt: utils.ExtractQuotaRecoverAt(preflight.BlacklistMessage)}
+		}
 		return nil, ClassifyPreflightStreamError(preflight.Error)
 	}
 

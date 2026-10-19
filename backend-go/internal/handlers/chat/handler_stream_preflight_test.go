@@ -236,8 +236,12 @@ func TestPreflightChatStream_StreamDataErrorNonBlacklistFailsOver(t *testing.T) 
 	writeSSELine(t, writer, `{"error":{"code":503,"message":"The model is overloaded"}}`)
 
 	result := waitForPreflight(t, resultCh, 300*time.Millisecond)
-	if !errors.Is(result.err, common.ErrEmptyStreamResponse) {
-		t.Fatalf("expected ErrEmptyStreamResponse, got %v", result.err)
+	if !errors.Is(result.err, common.ErrUpstreamStreamFailure) || errors.Is(result.err, common.ErrEmptyStreamResponse) {
+		t.Fatalf("expected explicit upstream failure, got %v", result.err)
+	}
+	var failure *common.UpstreamStreamFailureError
+	if !errors.As(result.err, &failure) || failure.Code != "503" || failure.Message != "The model is overloaded" {
+		t.Fatalf("lost chat error details: %v", result.err)
 	}
 }
 

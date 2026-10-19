@@ -80,7 +80,11 @@ func TestHandleStreamSuccess_EmptyEndRemainsUncommitted(t *testing.T) {
 			}
 			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(reader)}
 			_, err := handleStreamSuccess(c, resp, "responses", &config.EnvConfig{}, nil, time.Now(), &types.ResponsesRequest{Model: "gpt-5", Stream: true}, raw, common.StreamPreflightTimeouts{})
-			if !errors.Is(err, common.ErrEmptyStreamResponse) || w.Body.Len() != 0 || c.Writer.Written() {
+			want := common.ErrEmptyStreamResponse
+			if readError {
+				want = common.ErrStreamReadFailure
+			}
+			if !errors.Is(err, want) || w.Body.Len() != 0 || c.Writer.Written() {
 				t.Fatalf("empty stream committed: err=%v body=%q", err, w.Body.String())
 			}
 		})
@@ -407,7 +411,11 @@ func TestHandleStreamSuccess_ChatMalformedIdentity(t *testing.T) {
 						usage, err := handleStreamSuccess(c, resp, "chat", &config.EnvConfig{}, nil, time.Now(), &types.ResponsesRequest{Model: "m", Stream: true}, raw, common.StreamPreflightTimeouts{InactivityTimeoutMs: timeout})
 						body := w.Body.String()
 						if content == "" {
-							if !errors.Is(err, common.ErrEmptyStreamResponse) || c.Writer.Written() || body != "" {
+							want := common.ErrEmptyStreamResponse
+							if ending == "read_error" {
+								want = common.ErrStreamReadFailure
+							}
+							if !errors.Is(err, want) || c.Writer.Written() || body != "" {
 								t.Fatalf("empty malformed stream committed: err=%v body=%s", err, body)
 							}
 							return

@@ -74,8 +74,12 @@ func TestPreflightGeminiStream_DataErrorNonBlacklistFailsOver(t *testing.T) {
 	writeGeminiSSELine(t, writer, `{"error":{"code":503,"message":"The model is overloaded","status":"UNAVAILABLE"}}`)
 
 	err := waitForGeminiPreflight(t, resultCh, 300*time.Millisecond)
-	if !errors.Is(err, common.ErrEmptyStreamResponse) {
-		t.Fatalf("expected ErrEmptyStreamResponse, got %v", err)
+	if !errors.Is(err, common.ErrUpstreamStreamFailure) || errors.Is(err, common.ErrEmptyStreamResponse) {
+		t.Fatalf("expected explicit upstream failure, got %v", err)
+	}
+	var failure *common.UpstreamStreamFailureError
+	if !errors.As(err, &failure) || failure.Code != "503" {
+		t.Fatalf("lost Gemini failure code: %v", err)
 	}
 }
 

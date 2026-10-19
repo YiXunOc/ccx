@@ -26,8 +26,12 @@ func TestNativeFoldPayloadObservationFailedZeroClientBytes(t *testing.T) {
 	raw := "data: {\"type\":\"response.metadata\"}\n\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"upstream_error\",\"message\":\"PRIVATE\"}}}\n\n"
 	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(raw)), Request: c.Request}
 	_, err := handleFoldedResponsesStreamSuccess(c, resp, &providers.ResponsesProvider{}, &config.UpstreamConfig{ServiceType: "responses"}, "test-key", &config.EnvConfig{PayloadCaptureMode: "summary"}, nil, &types.ResponsesRequest{}, []byte(`{"model":"test","input":"PRIVATE","stream":true}`))
-	if !errors.Is(err, common.ErrEmptyStreamResponse) {
+	if !errors.Is(err, common.ErrUpstreamStreamFailure) || errors.Is(err, common.ErrEmptyStreamResponse) {
 		t.Fatalf("err=%v", err)
+	}
+	var failure *common.UpstreamStreamFailureError
+	if !errors.As(err, &failure) || failure.Event != "response.failed" || failure.Code != "upstream_error" || failure.Message != "PRIVATE" {
+		t.Fatalf("fold lost error details: %v", err)
 	}
 	if recorder.Body.Len() != 0 || c.Writer.Written() {
 		t.Fatal("failed preflight wrote client bytes")

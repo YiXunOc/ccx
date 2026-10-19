@@ -248,6 +248,19 @@ func TestForceStreamRequestBody(t *testing.T) {
 	})
 }
 
+func TestBridgeExplicitSSEFailureIsNotSynthesized(t *testing.T) {
+	for _, kind := range []string{"openai", "claude", "responses"} {
+		t.Run(kind, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			resp := &http.Response{Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"PRIVATE\"}}\n\n"))}
+			_, err := ReadUpstreamNonStreamBody(c, resp, kind)
+			if !errors.Is(err, ErrUpstreamStreamFailure) {
+				t.Fatalf("kind=%s error=%v", kind, err)
+			}
+		})
+	}
+}
+
 func TestStreamBridgeSupportedKind(t *testing.T) {
 	for _, kind := range []string{"messages", "chat", "responses"} {
 		if !StreamBridgeSupportedKind(kind) {
