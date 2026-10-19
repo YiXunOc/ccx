@@ -194,12 +194,9 @@ func streamPassthrough(
 				if json.Unmarshal([]byte(jsonData), &parsed) == nil {
 					traceToolDownstream(c, []byte(jsonData))
 					if u, ok := parsed["usage"].(map[string]interface{}); ok {
-						promptTokens, _ := u["prompt_tokens"].(float64)
-						completionTokens, _ := u["completion_tokens"].(float64)
-						totalUsage = &types.Usage{
-							InputTokens:  int(promptTokens),
-							OutputTokens: int(completionTokens),
-						}
+						totalUsage = chatUsageFromOpenAI(u)
+					} else if u, ok := parsed["usageMetadata"].(map[string]interface{}); ok {
+						totalUsage = chatUsageFromGemini(u)
 					}
 					if chatFeedRepetitionFromChatChunk(repetitionScanner, parsed) {
 						return nil, chatAbortRepetitionLoop(c, flusher, progress, repetitionScanner)
@@ -591,7 +588,7 @@ func streamResponsesToChat(
 						return totalUsage, err
 					}
 
-				case "response.completed":
+				case "response.completed", "response.incomplete":
 					if response, ok := event["response"].(map[string]interface{}); ok {
 						output, _ := response["output"].([]interface{})
 						for index, raw := range output {
@@ -606,19 +603,24 @@ func streamResponsesToChat(
 					if err := validateTools(); err != nil {
 						return totalUsage, err
 					}
-					// 提取 usage
-					if usage, ok := event["usage"].(map[string]interface{}); ok {
-						inputTokens, _ := usage["input_tokens"].(float64)
-						outputTokens, _ := usage["output_tokens"].(float64)
-						totalUsage = &types.Usage{
-							InputTokens:  int(inputTokens),
-							OutputTokens: int(outputTokens),
+					// Official Responses usage is nested under response in the terminal event.
+					if response, ok := event["response"].(map[string]interface{}); ok {
+						if usage, ok := response["usage"].(map[string]interface{}); ok {
+							totalUsage = chatUsageFromResponses(usage)
+						}
+					}
+					if totalUsage == nil {
+						if usage, ok := event["usage"].(map[string]interface{}); ok {
+							totalUsage = chatUsageFromResponses(usage)
 						}
 					}
 					// 最终 chunk: 设置 finish_reason
 					finishReason := "stop"
 					if len(tools) > 0 {
 						finishReason = "tool_calls"
+					}
+					if evtType == "response.incomplete" {
+						finishReason = "length"
 					}
 					// 检查 incomplete 状态
 					if respObj, ok := event["response"].(map[string]interface{}); ok {
@@ -638,6 +640,12 @@ func streamResponsesToChat(
 						}},
 					}
 					writeChatSSEChunk(c, flusher, finalChunk)
+					if totalUsage != nil && chatStreamUsageRequested(c) {
+						writeChatSSEChunk(c, flusher, map[string]interface{}{
+							"id": chunkID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
+							"choices": []interface{}{}, "usage": chatWireUsage(totalUsage),
+						})
+					}
 					// 发送 [DONE]
 					_, _ = fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
 					if flusher != nil {
@@ -765,14 +773,20 @@ func processClaudeChatStreamLine(c *gin.Context, flusher http.Flusher, model str
 			}},
 		}
 		if usage, ok := event["usage"].(map[string]interface{}); ok {
-			inputTokens, _ := usage["input_tokens"].(float64)
-			outputTokens, _ := usage["output_tokens"].(float64)
-			*totalUsage = &types.Usage{InputTokens: int(inputTokens), OutputTokens: int(outputTokens)}
-			stopChunk["usage"] = map[string]interface{}{
-				"prompt_tokens":     int(inputTokens),
-				"completion_tokens": int(outputTokens),
-				"total_tokens":      int(inputTokens + outputTokens),
+			final := chatUsageFromClaude(usage)
+			if *totalUsage != nil {
+				if _, has := usage["input_tokens"]; !has {
+					final.InputTokens = (*totalUsage).InputTokens
+				}
+				if _, has := usage["cache_read_input_tokens"]; !has {
+					final.CacheReadInputTokens = (*totalUsage).CacheReadInputTokens
+				}
+				if _, has := usage["cache_creation_input_tokens"]; !has {
+					final.CacheCreationInputTokens = (*totalUsage).CacheCreationInputTokens
+				}
 			}
+			*totalUsage = final
+			stopChunk["usage"] = chatWireUsage(final)
 		}
 		chunkBytes, _ := json.Marshal(stopChunk)
 		_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
@@ -782,8 +796,7 @@ func processClaudeChatStreamLine(c *gin.Context, flusher http.Flusher, model str
 	case "message_start":
 		if msg, ok := event["message"].(map[string]interface{}); ok {
 			if usage, ok := msg["usage"].(map[string]interface{}); ok {
-				inputTokens, _ := usage["input_tokens"].(float64)
-				*totalUsage = &types.Usage{InputTokens: int(inputTokens), OutputTokens: 0}
+				*totalUsage = chatUsageFromClaude(usage)
 			}
 		}
 	}

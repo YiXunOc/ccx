@@ -709,8 +709,9 @@ func handleSuccess(
 	var usage *types.Usage
 	if geminiResp.UsageMetadata != nil {
 		usage = &types.Usage{
-			InputTokens:  geminiResp.UsageMetadata.PromptTokenCount - geminiResp.UsageMetadata.CachedContentTokenCount,
-			OutputTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
+			InputTokens:          geminiResp.UsageMetadata.PromptTokenCount - geminiResp.UsageMetadata.CachedContentTokenCount,
+			OutputTokens:         geminiResp.UsageMetadata.CandidatesTokenCount,
+			CacheReadInputTokens: geminiResp.UsageMetadata.CachedContentTokenCount,
 		}
 	}
 

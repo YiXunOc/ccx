@@ -253,16 +253,18 @@ func ResponsesResponseToGemini(responsesResp map[string]interface{}) (*types.Gem
 		inputTokens, _ := getIntFromMap(usageRaw, "input_tokens")
 		outputTokens, _ := getIntFromMap(usageRaw, "output_tokens")
 		cachedTokens, _ := getIntFromMap(usageRaw, "cache_read_input_tokens")
-		if cachedTokens == 0 {
-			if details, ok := usageRaw["input_tokens_details"].(map[string]interface{}); ok {
-				cachedTokens, _ = getIntFromMap(details, "cached_tokens")
+		promptTokens := inputTokens + cachedTokens // Claude-style split buckets.
+		if details, ok := usageRaw["input_tokens_details"].(map[string]interface{}); ok {
+			if cached, present := getIntFromMap(details, "cached_tokens"); present {
+				cachedTokens = cached
+				promptTokens = inputTokens // OpenAI Responses total includes cache.
 			}
 		}
 
 		geminiResp.UsageMetadata = &types.GeminiUsageMetadata{
-			PromptTokenCount:        inputTokens + cachedTokens,
+			PromptTokenCount:        promptTokens,
 			CandidatesTokenCount:    outputTokens,
-			TotalTokenCount:         inputTokens + cachedTokens + outputTokens,
+			TotalTokenCount:         promptTokens + outputTokens,
 			CachedContentTokenCount: cachedTokens,
 		}
 	}
@@ -447,12 +449,17 @@ func buildGeminiFinalChunk(text string, functionCalls []*types.GeminiFunctionCal
 	if usage := completedEvent.Get("response.usage"); usage.Exists() {
 		inputTokens := usage.Get("input_tokens").Int()
 		outputTokens := usage.Get("output_tokens").Int()
-		cachedTokens := usage.Get("input_tokens_details.cached_tokens").Int()
-
+		readDetails := usage.Get("input_tokens_details.cached_tokens")
+		cachedTokens := readDetails.Int()
+		promptTokens := inputTokens
+		if !readDetails.Exists() {
+			cachedTokens = usage.Get("cache_read_input_tokens").Int()
+			promptTokens += cachedTokens
+		}
 		usageMetadata := map[string]interface{}{
-			"promptTokenCount":        inputTokens + cachedTokens,
+			"promptTokenCount":        promptTokens,
 			"candidatesTokenCount":    outputTokens,
-			"totalTokenCount":         inputTokens + cachedTokens + outputTokens,
+			"totalTokenCount":         promptTokens + outputTokens,
 			"cachedContentTokenCount": cachedTokens,
 		}
 		chunk, _ = sjson.Set(chunk, "usageMetadata", usageMetadata)

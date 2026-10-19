@@ -84,12 +84,7 @@ func handleSuccess(
 		// 提取 usage
 		var usage *types.Usage
 		if u, ok := claudeResp["usage"].(map[string]interface{}); ok {
-			inputTokens, _ := u["input_tokens"].(float64)
-			outputTokens, _ := u["output_tokens"].(float64)
-			usage = &types.Usage{
-				InputTokens:  int(inputTokens),
-				OutputTokens: int(outputTokens),
-			}
+			usage = chatUsageFromClaude(u)
 		}
 		return usage, nil
 
@@ -111,12 +106,7 @@ func handleSuccess(
 		var respMap map[string]interface{}
 		if err := json.Unmarshal(bodyBytes, &respMap); err == nil {
 			if u, ok := respMap["usage"].(map[string]interface{}); ok {
-				inputTokens, _ := u["input_tokens"].(float64)
-				outputTokens, _ := u["output_tokens"].(float64)
-				usage = &types.Usage{
-					InputTokens:  int(inputTokens),
-					OutputTokens: int(outputTokens),
-				}
+				usage = chatUsageFromResponses(u)
 			}
 		}
 		return usage, nil
@@ -150,20 +140,10 @@ func handleSuccess(
 		utils.ForwardResponseHeaders(resp.Header, c.Writer)
 		c.Data(resp.StatusCode, "application/json", bodyBytes)
 		if u, ok := respMap["usage"].(map[string]interface{}); ok {
-			promptTokens, _ := u["prompt_tokens"].(float64)
-			completionTokens, _ := u["completion_tokens"].(float64)
-			return &types.Usage{
-				InputTokens:  int(promptTokens),
-				OutputTokens: int(completionTokens),
-			}, nil
+			return chatUsageFromOpenAI(u), nil
 		}
 		if u, ok := respMap["usageMetadata"].(map[string]interface{}); ok {
-			promptTokens, _ := u["promptTokenCount"].(float64)
-			completionTokens, _ := u["candidatesTokenCount"].(float64)
-			return &types.Usage{
-				InputTokens:  int(promptTokens),
-				OutputTokens: int(completionTokens),
-			}, nil
+			return chatUsageFromGemini(u), nil
 		}
 		return nil, nil
 	}
@@ -263,13 +243,7 @@ func convertClaudeResponseToChat(claudeResp map[string]interface{}, model string
 
 	// 转换 usage
 	if u, ok := claudeResp["usage"].(map[string]interface{}); ok {
-		inputTokens, _ := u["input_tokens"].(float64)
-		outputTokens, _ := u["output_tokens"].(float64)
-		result["usage"] = map[string]interface{}{
-			"prompt_tokens":     int(inputTokens),
-			"completion_tokens": int(outputTokens),
-			"total_tokens":      int(inputTokens + outputTokens),
-		}
+		result["usage"] = chatWireUsage(chatUsageFromClaude(u))
 	}
 
 	return result

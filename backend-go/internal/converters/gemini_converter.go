@@ -341,11 +341,21 @@ func OpenAIResponseToGemini(openaiResp map[string]interface{}) (*types.GeminiRes
 	if usageRaw, ok := openaiResp["usage"].(map[string]interface{}); ok {
 		promptTokens, _ := getIntFromMap(usageRaw, "prompt_tokens")
 		completionTokens, _ := getIntFromMap(usageRaw, "completion_tokens")
+		cacheRead := 0
+		if value, ok := getIntFromMap(usageRaw, "prompt_cache_hit_tokens"); ok {
+			cacheRead = value
+		}
+		if details, ok := usageRaw["prompt_tokens_details"].(map[string]interface{}); ok {
+			if value, ok := getIntFromMap(details, "cached_tokens"); ok {
+				cacheRead = value
+			}
+		}
 
 		geminiResp.UsageMetadata = &types.GeminiUsageMetadata{
-			PromptTokenCount:     promptTokens,
-			CandidatesTokenCount: completionTokens,
-			TotalTokenCount:      promptTokens + completionTokens,
+			PromptTokenCount:        promptTokens,
+			CandidatesTokenCount:    completionTokens,
+			TotalTokenCount:         promptTokens + completionTokens,
+			CachedContentTokenCount: cacheRead,
 		}
 	}
 

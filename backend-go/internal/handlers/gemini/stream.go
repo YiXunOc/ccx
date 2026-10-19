@@ -636,8 +636,9 @@ func streamGeminiToGemini(
 			if err := json.Unmarshal([]byte(jsonData), &chunk); err == nil {
 				if chunk.UsageMetadata != nil {
 					totalUsage = &types.Usage{
-						InputTokens:  chunk.UsageMetadata.PromptTokenCount - chunk.UsageMetadata.CachedContentTokenCount,
-						OutputTokens: chunk.UsageMetadata.CandidatesTokenCount,
+						InputTokens:          chunk.UsageMetadata.PromptTokenCount - chunk.UsageMetadata.CachedContentTokenCount,
+						OutputTokens:         chunk.UsageMetadata.CandidatesTokenCount,
+						CacheReadInputTokens: chunk.UsageMetadata.CachedContentTokenCount,
 					}
 				}
 				if geminiFeedRepetitionFromChunk(repetitionScanner, &chunk) {
@@ -775,6 +776,21 @@ func streamClaudeToGemini(
 				}
 			}
 
+		case "message_start":
+			if message, ok := event["message"].(map[string]interface{}); ok {
+				if usage, ok := message["usage"].(map[string]interface{}); ok {
+					totalUsage = &types.Usage{}
+					if input, ok := usage["input_tokens"].(float64); ok {
+						totalUsage.InputTokens = int(input)
+					}
+					if cached, ok := usage["cache_read_input_tokens"].(float64); ok {
+						totalUsage.CacheReadInputTokens = int(cached)
+					}
+					if created, ok := usage["cache_creation_input_tokens"].(float64); ok {
+						totalUsage.CacheCreationInputTokens = int(created)
+					}
+				}
+			}
 		case "message_delta":
 			// 消息完成，包含 usage
 			if usage, ok := event["usage"].(map[string]interface{}); ok {
@@ -786,9 +802,30 @@ func streamClaudeToGemini(
 				if v, ok := usage["output_tokens"].(float64); ok {
 					outputTokens = int(v)
 				}
+				cached := 0
+				if value, ok := usage["cache_read_input_tokens"].(float64); ok {
+					cached = int(value)
+				}
+				if totalUsage != nil {
+					if _, ok := usage["input_tokens"]; !ok {
+						inputTokens = totalUsage.InputTokens
+					}
+					if _, ok := usage["cache_read_input_tokens"]; !ok {
+						cached = totalUsage.CacheReadInputTokens
+					}
+				}
+				created := 0
+				if totalUsage != nil {
+					created = totalUsage.CacheCreationInputTokens
+				}
+				if value, ok := usage["cache_creation_input_tokens"].(float64); ok {
+					created = int(value)
+				}
 				totalUsage = &types.Usage{
-					InputTokens:  inputTokens,
-					OutputTokens: outputTokens,
+					InputTokens:              inputTokens,
+					OutputTokens:             outputTokens,
+					CacheReadInputTokens:     cached,
+					CacheCreationInputTokens: created,
 				}
 
 				// 发送带 finishReason 和 usage 的最终块
@@ -799,9 +836,10 @@ func streamClaudeToGemini(
 						},
 					},
 					UsageMetadata: &types.GeminiUsageMetadata{
-						PromptTokenCount:     inputTokens,
-						CandidatesTokenCount: outputTokens,
-						TotalTokenCount:      inputTokens + outputTokens,
+						PromptTokenCount:        inputTokens + cached + created,
+						CandidatesTokenCount:    outputTokens,
+						TotalTokenCount:         inputTokens + cached + created + outputTokens,
+						CachedContentTokenCount: cached,
 					},
 				}
 				chunkBytes, _ := json.Marshal(geminiChunk)
@@ -879,17 +917,29 @@ func streamOpenAIToGemini(
 				if v, ok := usage["completion_tokens"].(float64); ok {
 					completionTokens = int(v)
 				}
+				cached := 0
+				if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
+					if value, ok := details["cached_tokens"].(float64); ok {
+						cached = int(value)
+					}
+				}
+				if cached == 0 {
+					if value, ok := usage["prompt_cache_hit_tokens"].(float64); ok {
+						cached = int(value)
+					}
+				}
 				totalUsage = &types.Usage{
-					InputTokens:  promptTokens,
-					OutputTokens: completionTokens,
+					InputTokens: promptTokens, PromptTokensTotal: promptTokens,
+					OutputTokens: completionTokens, CacheReadInputTokens: cached,
 				}
 
 				// 发送带 usage 的最终块
 				geminiChunk := types.GeminiStreamChunk{
 					UsageMetadata: &types.GeminiUsageMetadata{
-						PromptTokenCount:     promptTokens,
-						CandidatesTokenCount: completionTokens,
-						TotalTokenCount:      promptTokens + completionTokens,
+						PromptTokenCount:        promptTokens,
+						CandidatesTokenCount:    completionTokens,
+						TotalTokenCount:         promptTokens + completionTokens,
+						CachedContentTokenCount: cached,
 					},
 				}
 				chunkBytes, _ := json.Marshal(geminiChunk)
@@ -1081,8 +1131,9 @@ func streamResponsesToGemini(
 				if err := json.Unmarshal([]byte(jsonData), &chunk); err == nil {
 					if chunk.UsageMetadata != nil {
 						totalUsage = &types.Usage{
-							InputTokens:  chunk.UsageMetadata.PromptTokenCount - chunk.UsageMetadata.CachedContentTokenCount,
-							OutputTokens: chunk.UsageMetadata.CandidatesTokenCount,
+							InputTokens:          chunk.UsageMetadata.PromptTokenCount - chunk.UsageMetadata.CachedContentTokenCount,
+							OutputTokens:         chunk.UsageMetadata.CandidatesTokenCount,
+							CacheReadInputTokens: chunk.UsageMetadata.CachedContentTokenCount,
 						}
 					}
 					if geminiFeedRepetitionFromChunk(repetitionScanner, &chunk) {

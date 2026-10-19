@@ -178,6 +178,9 @@ func TestGeminiHandleStreamResponse_CachedContentTokenCountReducesInputTokens(t 
 	if int(outputTokens) != 5 {
 		t.Fatalf("expected output_tokens=5, got %v", outputTokens)
 	}
+	if usage["cache_read_input_tokens"] != float64(80) {
+		t.Fatalf("cache read missing: %v", usage)
+	}
 }
 
 func TestGeminiHandleStreamResponse_SafetyFinishReasonMapsToEndTurn(t *testing.T) {

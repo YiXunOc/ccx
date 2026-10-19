@@ -476,6 +476,13 @@ func (p *GeminiProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 		if candidatesTokens, ok := usageMetadata["candidatesTokenCount"].(float64); ok {
 			usage.OutputTokens = int(candidatesTokens)
 		}
+		if cached, ok := usageMetadata["cachedContentTokenCount"].(float64); ok {
+			usage.CacheReadInputTokens = int(cached)
+			usage.InputTokens -= int(cached)
+			if usage.InputTokens < 0 {
+				usage.InputTokens = 0
+			}
+		}
 		claudeResp.Usage = usage
 	}
 
@@ -502,6 +509,8 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 		stopReason := ""
 		hasToolUse := false
 		latestInputTokens := 0
+		latestCacheReadTokens := 0
+		latestPromptTokens := 0
 		latestOutputTokens := 0
 
 		// 文本块状态跟踪
@@ -530,15 +539,17 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 			// Gemini 可能在无 candidates 的 chunk 中返回 usageMetadata（通常出现在流末尾）
 			// 这里必须先提取 usage，避免被后续 candidates 判断提前跳过。
 			if usageMetadata, ok := chunk["usageMetadata"].(map[string]interface{}); ok {
-				inputTokens := latestInputTokens
+				inputTokens := latestPromptTokens
 				outputTokens := latestOutputTokens
 
 				if promptTokens, ok := usageMetadata["promptTokenCount"].(float64); ok {
 					inputTokens = int(promptTokens)
+					latestPromptTokens = inputTokens
 				}
 				if cachedTokens, ok := usageMetadata["cachedContentTokenCount"].(float64); ok {
-					inputTokens -= int(cachedTokens)
+					latestCacheReadTokens = int(cachedTokens)
 				}
+				inputTokens -= latestCacheReadTokens
 				if candidatesTokens, ok := usageMetadata["candidatesTokenCount"].(float64); ok {
 					outputTokens = int(candidatesTokens)
 				}
@@ -550,9 +561,7 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 					outputTokens = 0
 				}
 
-				// usageMetadata 可能多次出现：
-				// - inputTokens: 直接覆盖，因为后续 chunk 可能包含 cachedContentTokenCount 使值变小
-				// - outputTokens: 保持单调递增，因为输出 token 只会累加
+				// inputTokens 从累计 prompt 总量减去累计缓存读取量；输出保持单调。
 				latestInputTokens = inputTokens
 				if outputTokens > latestOutputTokens {
 					latestOutputTokens = outputTokens
@@ -702,8 +711,9 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 					"stop_details": nil,
 				},
 				"usage": map[string]int{
-					"input_tokens":  latestInputTokens,
-					"output_tokens": latestOutputTokens,
+					"input_tokens":            latestInputTokens,
+					"output_tokens":           latestOutputTokens,
+					"cache_read_input_tokens": latestCacheReadTokens,
 				},
 			}
 			deltaJSON, _ := json.Marshal(deltaEvent)

@@ -843,6 +843,13 @@ func ConvertResponsesResponseToChatResponse(responsesBody []byte, model string) 
 		out, _ = sjson.Set(out, "usage.prompt_tokens", inputTokens)
 		out, _ = sjson.Set(out, "usage.completion_tokens", outputTokens)
 		out, _ = sjson.Set(out, "usage.total_tokens", totalTokens)
+		cacheRead := usage.Get("cache_read_input_tokens")
+		if !cacheRead.Exists() {
+			cacheRead = usage.Get("input_tokens_details.cached_tokens")
+		}
+		if cacheRead.Int() > 0 {
+			out, _ = sjson.Set(out, "usage.prompt_tokens_details.cached_tokens", cacheRead.Int())
+		}
 	}
 
 	return []byte(out)

@@ -13,6 +13,8 @@ func TestChannelLogUpdateUsage(t *testing.T) {
 	}{
 		{"messages", &types.Usage{InputTokens: 100, OutputTokens: 20, CacheReadInputTokens: 40, CacheCreationInputTokens: 10}, 150, 20, 40},
 		{"responses", &types.Usage{InputTokens: 140, PromptTokensTotal: 140, OutputTokens: 20, CacheReadInputTokens: 40}, 140, 20, 40},
+		{"chat inclusive", &types.Usage{InputTokens: 100, PromptTokensTotal: 100, OutputTokens: 5, CacheReadInputTokens: 70}, 100, 5, 70},
+		{"gemini disjoint", &types.Usage{InputTokens: 30, OutputTokens: 5, CacheReadInputTokens: 70}, 100, 5, 70},
 		{"zero", &types.Usage{}, 0, 0, 0},
 		{"missing", nil, 0, 0, 0},
 	} {
