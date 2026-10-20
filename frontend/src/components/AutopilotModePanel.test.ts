@@ -27,7 +27,9 @@ const VSwitchStub = defineComponent({
         ? 'kill-switch-control'
         : props.label.includes('channelPreference')
           ? 'channel-preference-control'
-          : 'racing-control',
+          : props.label.includes('rateLimitDiscovery')
+            ? 'rate-limit-control'
+            : 'racing-control',
       disabled: props.disabled,
       'data-model': String(props.modelValue),
       onClick: () => emit('update:modelValue', !props.modelValue),
@@ -79,6 +81,7 @@ function config(overrides: Partial<SmartRoutingConfig> = {}): SmartRoutingConfig
     scenario: 'auto',
     racingEnabled: true,
     channelPreferenceEnabled: true,
+    rateLimitDiscoveryEnabled: true,
     ...overrides,
   }
 }
@@ -212,6 +215,30 @@ describe('AutopilotModePanel KillSwitch', () => {
     await wrapper.get('.channel-preference-control').trigger('click')
     await wrapper.get('.reset-button').trigger('click')
     expect(wrapper.get('.channel-preference-control').attributes('data-model')).toBe('false')
+  })
+
+  it('限流开关读取 false，切换后随保存提交且重置可恢复', async () => {
+    const wrapper = mountPanel(config({ rateLimitDiscoveryEnabled: false }))
+    const toggle = wrapper.get('.rate-limit-control')
+    expect(toggle.attributes('data-model')).toBe('false')
+    expect(wrapper.get('.save-button').attributes('disabled')).toBeDefined()
+    await toggle.trigger('click')
+    expect(wrapper.emitted('update:config')).toBeUndefined()
+    expect(wrapper.get('.save-button').attributes('disabled')).toBeUndefined()
+    await wrapper.get('.reset-button').trigger('click')
+    expect(toggle.attributes('data-model')).toBe('false')
+    await toggle.trigger('click')
+    await wrapper.get('.save-button').trigger('click')
+    expect(wrapper.emitted<SmartRoutingConfig[]>('update:config')?.[0]?.[0].rateLimitDiscoveryEnabled).toBe(true)
+    await wrapper.setProps({ config: config({ rateLimitDiscoveryEnabled: true }) })
+    expect(toggle.attributes('data-model')).toBe('true')
+  })
+
+  it('限流开关文案在三种语言中存在', () => {
+    for (const messages of [zhCN, en, id]) {
+      expect(messages['autopilot.modePanel.rateLimitDiscovery']).toBeTruthy()
+      expect(messages['autopilot.modePanel.rateLimitDiscoveryHint']).toBeTruthy()
+    }
   })
 
   it('三种语言包含渠道偏好文案并说明环境变量强制来源', () => {

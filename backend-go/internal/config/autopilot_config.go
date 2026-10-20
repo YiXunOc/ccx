@@ -280,7 +280,7 @@ type FastDecayRoutingConfig struct {
 
 // RateLimitDiscoveryConfig 自动限速发现配置。
 type RateLimitDiscoveryConfig struct {
-	Enabled                 bool    `json:"enabled,omitempty"`
+	Enabled                 bool    `json:"enabled"`
 	ApplyOnlyWhenUnset      bool    `json:"applyOnlyWhenUnset,omitempty"`
 	PreferHeaders           bool    `json:"preferHeaders,omitempty"`
 	PassiveAimdEnabled      bool    `json:"passiveAimdEnabled,omitempty"`
@@ -1027,6 +1027,21 @@ func (cm *ConfigManager) SetAutopilotKillSwitch(enabled bool) error {
 		return err
 	}
 	log.Printf("[Config-Autopilot] KillSwitch 已更新: enabled=%v", enabled)
+	cm.fireConfigChangeCallbacks()
+	return nil
+}
+
+// SetRateLimitDiscoveryEnabled 更新自动发现限流开关并持久化。
+func (cm *ConfigManager) SetRateLimitDiscoveryEnabled(enabled bool) error {
+	cm.mu.Lock()
+	previous := cm.config.AutopilotRouting.deepCopy()
+	cm.config.AutopilotRouting.RateLimitDiscovery.Enabled = enabled
+	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.AutopilotRouting = previous
+		cm.mu.Unlock()
+		return err
+	}
+	log.Printf("[Config-Autopilot] RateLimitDiscovery.Enabled 已更新: enabled=%v", enabled)
 	cm.fireConfigChangeCallbacks()
 	return nil
 }

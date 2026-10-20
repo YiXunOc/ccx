@@ -123,6 +123,17 @@
           <div class="text-caption text-medium-emphasis mt-1">
             {{ t('autopilot.modePanel.channelPreferenceHint') }}
           </div>
+          <v-switch
+            v-model="localConfig.rateLimitDiscoveryEnabled"
+            :label="t('autopilot.modePanel.rateLimitDiscovery')"
+            color="primary"
+            density="compact"
+            hide-details
+            class="mt-3"
+          />
+          <div class="text-caption text-medium-emphasis mt-1">
+            {{ t('autopilot.modePanel.rateLimitDiscoveryHint') }}
+          </div>
         </div>
 
         <!-- 保存按钮 -->
@@ -179,6 +190,7 @@ watch(() => props.config, (newCfg) => {
   localConfig.l2ProbeEnabled = newCfg.l2ProbeEnabled
   localConfig.racingEnabled = newCfg.racingEnabled ?? false
   localConfig.channelPreferenceEnabled = newCfg.channelPreferenceEnabled ?? true
+  localConfig.rateLimitDiscoveryEnabled = newCfg.rateLimitDiscoveryEnabled
 }, { deep: true })
 
 // 场景模式选项
@@ -241,6 +253,7 @@ const hasChanges = computed(() => {
     || (localConfig.scenario ?? 'auto') !== (props.config.scenario ?? 'auto')
     || (localConfig.racingEnabled ?? false) !== (props.config.racingEnabled ?? false)
     || (localConfig.channelPreferenceEnabled ?? true) !== (props.config.channelPreferenceEnabled ?? true)
+    || localConfig.rateLimitDiscoveryEnabled !== props.config.rateLimitDiscoveryEnabled
 })
 
 // 保存普通配置
@@ -257,6 +270,7 @@ function resetConfig() {
   localConfig.scenario = props.config.scenario ?? 'auto'
   localConfig.racingEnabled = props.config.racingEnabled ?? false
   localConfig.channelPreferenceEnabled = props.config.channelPreferenceEnabled ?? true
+  localConfig.rateLimitDiscoveryEnabled = props.config.rateLimitDiscoveryEnabled
 }
 
 // 深拷贝配置（只拷贝前端需要的字段）
@@ -271,6 +285,7 @@ function cloneConfig(src: SmartRoutingConfig): SmartRoutingConfig {
     l2ProbeEnabled: src.l2ProbeEnabled,
     racingEnabled: src.racingEnabled,
     channelPreferenceEnabled: src.channelPreferenceEnabled ?? true,
+    rateLimitDiscoveryEnabled: src.rateLimitDiscoveryEnabled,
   }
 }
 </script>

@@ -156,6 +156,9 @@ async function handleConfigUpdate(updated: SmartRoutingConfig) {
     if ((updated.channelPreferenceEnabled ?? true) !== (current.channelPreferenceEnabled ?? true)) {
       payload.channelPreferenceEnabled = updated.channelPreferenceEnabled ?? true
     }
+    if (updated.rateLimitDiscoveryEnabled !== current.rateLimitDiscoveryEnabled) {
+      payload.rateLimitDiscoveryEnabled = updated.rateLimitDiscoveryEnabled
+    }
     if (
       current.killSwitchForced === false
       && typeof current.killSwitchConfigured === 'boolean'

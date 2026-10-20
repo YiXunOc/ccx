@@ -1745,6 +1745,7 @@ export interface SmartRoutingConfig {
   l2ProbeEnabled?: boolean
   racingEnabled?: boolean
   channelPreferenceEnabled?: boolean
+  rateLimitDiscoveryEnabled: boolean
 }
 
 /** PUT /smart-routing/config 请求体，只包含允许持久化的配置字段。 */
@@ -1754,6 +1755,7 @@ export interface SmartRoutingConfigUpdate {
   scenario?: RoutingScenario
   racingEnabled?: boolean
   channelPreferenceEnabled?: boolean
+  rateLimitDiscoveryEnabled?: boolean
 }
 
 export interface CandidateScore {

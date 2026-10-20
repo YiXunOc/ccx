@@ -63,6 +63,98 @@ func decodeRoutingConfigResponse(t *testing.T, recorder *httptest.ResponseRecord
 	return response
 }
 
+func TestPutRoutingConfigPersistsRateLimitDiscoveryToggle(t *testing.T) {
+	manager, configFile := newRoutingConfigTestManager(t, false)
+	router := setupRoutingConfigRouter(&RoutingConfigDeps{CfgManager: manager})
+	for _, enabled := range []bool{false, true} {
+		body := `{"rateLimitDiscoveryEnabled":false}`
+		if enabled {
+			body = `{"rateLimitDiscoveryEnabled":true}`
+		}
+		recorder := performRoutingConfigRequest(router, http.MethodPut, body)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("PUT %v status=%d body=%s", enabled, recorder.Code, recorder.Body.String())
+		}
+		if got := decodeRoutingConfigResponse(t, recorder).RateLimitDiscoveryEnabled; got != enabled {
+			t.Fatalf("PUT response=%v want=%v", got, enabled)
+		}
+		data, err := os.ReadFile(configFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var root map[string]any
+		if err := json.Unmarshal(data, &root); err != nil {
+			t.Fatal(err)
+		}
+		autopilot := root["autopilot"].(map[string]any)
+		discovery := autopilot["rateLimitDiscovery"].(map[string]any)
+		if value, ok := discovery["enabled"]; !ok || value != enabled {
+			t.Fatalf("disk enabled=%v present=%v want=%v", value, ok, enabled)
+		}
+		if got := decodeRoutingConfigResponse(t, performRoutingConfigRequest(router, http.MethodGet, "")).RateLimitDiscoveryEnabled; got != enabled {
+			t.Fatalf("GET enabled=%v want=%v", got, enabled)
+		}
+		if err := manager.Close(); err != nil {
+			t.Fatal(err)
+		}
+		reloaded, err := config.NewConfigManager(configFile, filepath.Join(filepath.Dir(configFile), "backups"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := reloaded.GetPersistedAutopilotRouting().RateLimitDiscovery.Enabled; got != enabled {
+			t.Fatalf("reload enabled=%v want=%v", got, enabled)
+		}
+		manager = reloaded
+		router = setupRoutingConfigRouter(&RoutingConfigDeps{CfgManager: manager})
+	}
+	defer manager.Close()
+}
+
+func TestPutRoutingConfigUnrelatedUpdatePreservesDisabledRateLimit(t *testing.T) {
+	manager, configFile := newRoutingConfigTestManager(t, false)
+	router := setupRoutingConfigRouter(&RoutingConfigDeps{CfgManager: manager})
+	for _, body := range []string{`{"rateLimitDiscoveryEnabled":false}`, `{"channelPreferenceEnabled":false}`} {
+		response := performRoutingConfigRequest(router, http.MethodPut, body)
+		if response.Code != http.StatusOK {
+			t.Fatalf("PUT status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	if decodeRoutingConfigResponse(t, performRoutingConfigRequest(router, http.MethodGet, "")).RateLimitDiscoveryEnabled {
+		t.Fatal("unrelated update enabled rate limit")
+	}
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved config.Config
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.AutopilotRouting.RateLimitDiscovery.Enabled {
+		t.Fatal("disk enabled rate limit")
+	}
+}
+
+func TestPutRoutingConfigRateLimitSaveFailureKeepsMemory(t *testing.T) {
+	manager, configFile := newRoutingConfigTestManager(t, false)
+	defer manager.Close()
+	router := setupRoutingConfigRouter(&RoutingConfigDeps{CfgManager: manager})
+	// Force save failure regardless of user privileges: replace config file with a directory.
+	if err := os.Remove(configFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(configFile, 0700); err != nil {
+		t.Fatal(err)
+	}
+	response := performRoutingConfigRequest(router, http.MethodPut, `{"rateLimitDiscoveryEnabled":false}`)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("PUT status=%d want=500", response.Code)
+	}
+	if !manager.GetPersistedAutopilotRouting().RateLimitDiscovery.Enabled {
+		t.Fatal("save failure changed memory")
+	}
+}
+
 func TestGetRoutingConfig_DefaultMode(t *testing.T) {
 	cfg := config.DefaultAutopilotRoutingConfig()
 	if cfg.EffectiveRoutingMode() != config.AutopilotModeAuto {
