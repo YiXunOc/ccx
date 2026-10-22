@@ -301,6 +301,8 @@
   "addChannel.enterApiKey": "Masukkan setidaknya satu API Key",
   "addChannel.channelName": "Nama channel",
   "addChannel.channelType": "Tipe channel",
+  "addChannel.skipPreflight": "Lewati pemeriksaan awal (hanya channel kustom baru)",
+  "addChannel.skipPreflightWarning": "Dibuat dengan protokol {kind} saat ini tanpa memeriksa koneksi atau key. Berhasil dibuat bukan berarti dapat digunakan. Provider dikenal dan URL duplikat tidak dapat melewati pemeriksaan.",
   "copilotOAuth.description": "Gunakan GitHub OAuth untuk mengotorisasi Copilot. Setelah berhasil, token GitHub OAuth akan ditambahkan sebagai key channel ini. Token ini hanya digunakan untuk berkomunikasi dengan GitHub; CCX akan menukarnya secara otomatis dengan token Copilot jangka pendek.",
   "copilotOAuth.button": "Masuk dengan GitHub Copilot",
   "copilotOAuth.userCode": "Kode pengguna",

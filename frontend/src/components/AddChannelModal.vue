@@ -82,6 +82,16 @@
             density="compact"
             :disabled="!standardProxyUrl.trim()"
           />
+          <v-switch
+            v-if="!isCopilotQuickAdd"
+            v-model="skipPreflight"
+            :label="t('addChannel.skipPreflight')"
+            color="warning"
+            density="compact"
+          />
+          <v-alert v-if="skipPreflight && !isCopilotQuickAdd" color="warning" variant="tonal" density="compact">
+            {{ t('addChannel.skipPreflightWarning', { kind: channelType }) }}
+          </v-alert>
 
           <v-card variant="outlined" class="detection-status-card" rounded="lg">
             <v-card-text class="pa-4">
@@ -253,10 +263,9 @@ import { useAuthStore } from '../stores/auth'
 import { useChannelStore } from '../stores/channel'
 import { usePreferencesStore } from '../stores/preferences'
 import {
-  autoAddChannel,
-  discoverFast,
   extractAutoAddErrorMessage,
-  preloadProviderTemplates
+  preloadProviderTemplates,
+  submitCustomAutoAdd
 } from '../services/autopilot-api'
 import QuickAddChannelForm from './QuickAddChannelForm.vue'
 
@@ -293,6 +302,7 @@ const quickInput = ref('')
 const standardProxyUrl = ref('')
 // 直连优先：配置代理后先直连，失败自动回退代理
 const standardProxyPreferDirect = ref(false)
+const skipPreflight = ref(false)
 const detectedBaseUrl = ref('')
 const detectedBaseUrls = ref<string[]>([])
 const detectedApiKeys = ref<string[]>([])
@@ -448,6 +458,7 @@ function resetQuickState() {
   quickInput.value = ''
   standardProxyUrl.value = ''
   standardProxyPreferDirect.value = false
+  skipPreflight.value = false
   detectedBaseUrl.value = ''
   detectedBaseUrls.value = []
   detectedApiKeys.value = []
@@ -482,28 +493,20 @@ async function handleQuickSubmit() {
   standardSubmitting.value = true
   standardSubmitError.value = ''
   try {
-    const routeDiscovery = await discoverFast(props.channelType, detectedBaseUrls.value, detectedApiKeys.value, {
-      proxyUrl: standardProxyUrl.value.trim() || undefined,
-      proxyPreferDirect: standardProxyPreferDirect.value || undefined
-    })
-    if (!routeDiscovery) {
-      throw new Error(t('autopilot.quickAdd.discoveryFailed'))
-    }
-    const targetChannelType = routeDiscovery.primaryKind
-    const result = await autoAddChannel(targetChannelType, {
+    const { targetChannelType, result } = await submitCustomAutoAdd(props.channelType, {
       name: generatedChannelName.value,
       baseUrls: detectedBaseUrls.value,
       apiKeys: detectedApiKeys.value,
-      routes: routeDiscovery.routes,
-      rateLimitHint: routeDiscovery.rateLimitHint,
       proxyUrl: standardProxyUrl.value.trim() || undefined,
       proxyPreferDirect: standardProxyPreferDirect.value || undefined,
       placement: placement.value
-    })
+    }, skipPreflight.value)
     const currentChannel = result.channels?.find(channel => channel.channelKind === targetChannelType)
     onQuickAddSuccess(currentChannel?.index ?? result.index)
   } catch (err) {
-    standardSubmitError.value = extractAutoAddErrorMessage(err)
+    standardSubmitError.value = err instanceof Error && err.message === 'autopilot.quickAdd.discoveryFailed'
+      ? t('autopilot.quickAdd.discoveryFailed')
+      : extractAutoAddErrorMessage(err)
     console.error('[StandardAdd-Submit] 自动添加渠道失败:', err)
   } finally {
     standardSubmitting.value = false

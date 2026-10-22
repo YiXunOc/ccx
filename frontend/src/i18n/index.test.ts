@@ -140,15 +140,16 @@ describe('channel naming constraints', () => {
   })
 })
 
-describe('mandatory automatic channel discovery', () => {
-  it('标准与结构化添加均走自动探测，且不再提供自动托管开关', () => {
+describe('optional preflight for custom channel creation', () => {
+  it('标准与自定义结构化添加提供主动跳过选择，默认仍走探测', () => {
     const addModal = readFileSync(resolve(__dirname, '../components/AddChannelModal.vue'), 'utf8')
     const quickAdd = readFileSync(resolve(__dirname, '../components/QuickAddChannelForm.vue'), 'utf8')
-
-    expect(addModal).toContain('await discoverFast(')
-    expect(addModal).toContain('await autoAddChannel(targetChannelType')
-    expect(quickAdd).toContain('recognizedBaseUrls[idx]')
+    for (const form of [addModal, quickAdd]) {
+      expect(form).toContain('skipPreflight')
+      expect(form).toContain('submitCustomAutoAdd(')
+      expect(form).toContain("t('addChannel.skipPreflightWarning', { kind: channelType })")
+    }
+    expect(quickAdd).toContain('v-if="!isProviderMode"')
     expect(quickAdd).not.toContain('v-model="autoManaged"')
-    expect(quickAdd).not.toContain("t('autopilot.quickAdd.autoManagedHint')")
   })
 })

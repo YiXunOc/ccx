@@ -301,6 +301,8 @@
   "addChannel.enterApiKey": "Enter at least one API key",
   "addChannel.channelName": "Channel name",
   "addChannel.channelType": "Channel type",
+  "addChannel.skipPreflight": "Skip pre-creation probe (new custom channels only)",
+  "addChannel.skipPreflightWarning": "Creates under the current {kind} protocol without verifying connectivity or keys. Creation does not mean it works. Known providers and duplicate URLs cannot skip checks.",
   "copilotOAuth.description": "Use GitHub OAuth to authorize Copilot. After authorization, the GitHub OAuth token is added as a key for this channel. This token is only used to communicate with GitHub; CCX automatically exchanges it for a short-lived Copilot token.",
   "copilotOAuth.button": "Sign in with GitHub Copilot",
   "copilotOAuth.userCode": "User code",

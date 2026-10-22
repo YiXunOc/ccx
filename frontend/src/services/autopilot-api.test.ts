@@ -192,3 +192,41 @@ describe('fast discovery', () => {
     expect(discoverFast).not.toHaveBeenCalled()
   })
 })
+
+describe('custom auto-add without preflight', () => {
+  beforeEach(() => { vi.resetModules(); vi.clearAllMocks() })
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('默认探测并按探测结果创建', async () => {
+    const apiModule = await import('./api')
+    vi.mocked(apiModule.default.discoverChannelConfigFast).mockResolvedValue({
+      primaryKind: 'chat', testedModel: 'test', streamingSupported: true,
+      testedKeyHash: 'hash', rateLimit: { initialRpm: 60, effectiveRpm: 60, rateLimited: false }
+    })
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ index: 0 }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const { submitCustomAutoAdd } = await import('./autopilot-api')
+    await submitCustomAutoAdd('messages', { name: 'relay', baseUrls: ['https://relay.example'], apiKeys: ['sk-test'] })
+    expect(apiModule.default.discoverChannelConfigFast).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/chat/channels/auto-add')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ routes: [{ channelKind: 'chat' }] })
+  })
+
+  it('主动跳过时不探测，按所选协议新建且不发送探测速率或路由', async () => {
+    const apiModule = await import('./api')
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ index: 0, discoveryStarted: false }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const { submitCustomAutoAdd } = await import('./autopilot-api')
+    const result = await submitCustomAutoAdd('messages', {
+      name: 'relay', baseUrls: ['https://relay.example'], apiKeys: ['sk-test'],
+      proxyUrl: 'http://proxy.example', placement: 'back'
+    }, true)
+    expect(apiModule.default.discoverChannelConfigFast).not.toHaveBeenCalled()
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/messages/channels/auto-add')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      name: 'relay', baseUrls: ['https://relay.example'], apiKeys: ['sk-test'],
+      proxyUrl: 'http://proxy.example', placement: 'back', createWithoutProbe: true
+    })
+    expect(result.targetChannelType).toBe('messages')
+  })
+})

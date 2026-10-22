@@ -637,6 +637,74 @@ func TestKindToDefaultServiceType(t *testing.T) {
 	}
 }
 
+func TestUnprobedCustomAutoAddCreatesNewRouteWithoutUpstreamProbe(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	data := `{"upstream":[],"chatUpstream":[],"responsesUpstream":[],"geminiUpstream":[],"imagesUpstream":[],"vectorsUpstream":[]}`
+	if err := os.WriteFile(configPath, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := config.NewConfigManager(configPath, filepath.Join(dir, "backups"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	router := setupAutoManagedRouter(&AutoManagedDeps{CfgManager: manager})
+	body := `{"name":"relay","baseUrls":["https://relay.example/v1"],"apiKeys":["sk-new"],"createWithoutProbe":true,"placement":"back"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/channels/auto-add", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var response AutoAddResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Channels) != 1 || response.Channels[0].ChannelKind != "chat" {
+		t.Fatalf("unexpected channels: %+v", response.Channels)
+	}
+	cfg := manager.GetConfig()
+	if len(cfg.ChatUpstream) != 1 || len(cfg.Upstream) != 0 || cfg.ChatUpstream[0].ServiceType != "openai" {
+		t.Fatalf("unprobed route persisted under wrong kind: %+v", cfg.ChatUpstream)
+	}
+}
+
+func TestUnprobedCustomAutoAddRejectsProviderAndExistingChannel(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	data := `{"upstream":[],"chatUpstream":[{"channelUid":"ch_existing","name":"existing","serviceType":"openai","baseUrl":"https://relay.example/v1","apiKeys":["sk-old"],"status":"active"}],"responsesUpstream":[],"geminiUpstream":[],"imagesUpstream":[],"vectorsUpstream":[]}`
+	if err := os.WriteFile(configPath, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := config.NewConfigManager(configPath, filepath.Join(dir, "backups"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	router := setupAutoManagedRouter(&AutoManagedDeps{CfgManager: manager})
+	for _, tc := range []struct{ name, body string }{
+		{"known provider URL", `{"baseUrls":["https://open.bigmodel.cn/api/anthropic"],"apiKeys":["sk-test"],"createWithoutProbe":true}`},
+		{"mixed known and custom URLs", `{"baseUrls":["https://open.bigmodel.cn/api/anthropic","https://relay.example/other"],"apiKeys":["sk-test"],"createWithoutProbe":true}`},
+		{"explicit provider", `{"providerId":"glm","apiKeys":["sk-test"],"createWithoutProbe":true}`},
+		{"existing custom", `{"baseUrls":["https://relay.example/v1"],"apiKeys":["sk-new"],"createWithoutProbe":true}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/chat/channels/auto-add", bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+	if got := manager.GetConfig().ChatUpstream[0].APIKeys; !slices.Equal(got, []string{"sk-old"}) {
+		t.Fatalf("existing keys modified: %v", got)
+	}
+}
+
 func TestCustomAutoAddResponseIncludesActualRoute(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")

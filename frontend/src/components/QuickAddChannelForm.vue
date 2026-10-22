@@ -179,6 +179,13 @@
       </div>
     </div>
 
+    <div v-if="!isProviderMode">
+      <v-switch v-model="skipPreflight" :label="t('addChannel.skipPreflight')" color="warning" density="compact" />
+      <v-alert v-if="skipPreflight" color="warning" variant="tonal" density="compact">
+        {{ t('addChannel.skipPreflightWarning', { kind: channelType }) }}
+      </v-alert>
+    </div>
+
     <!-- 故障转移位置（与 desktop 一致：API Keys 下方开关） -->
     <div
       class="d-flex align-center ga-3 pa-3 rounded-lg placement-card"
@@ -224,9 +231,9 @@ import { useI18n } from '../i18n'
 import type { Channel } from '../services/api'
 import {
   autoAddChannel,
-  discoverFast,
   extractAutoAddErrorMessage,
-  getProviderTemplates
+  getProviderTemplates,
+  submitCustomAutoAdd
 } from '../services/autopilot-api'
 import type { ProviderTemplate } from '../services/autopilot-api'
 import type { NewApiProvisionResponse } from '../services/api-types'
@@ -270,6 +277,7 @@ const proxyPreferDirect = ref(false)
 const showKeys = ref<boolean[]>([false])
 const submitting = ref(false)
 const submitError = ref('')
+const skipPreflight = ref(false)
 
 // ---- Provider 模板状态 ----
 // '' 表示自定义模式（手填 baseURL）；非空表示选中某已知 provider（模板化添加）。
@@ -431,17 +439,6 @@ function getGeneratedName(): string {
   return generatedChannelName.value || buildQuickAddChannelName('', generateRandomSuffix())
 }
 
-async function discoverCustomRoutes(baseUrls: string[], apiKeys: string[]) {
-  const discovery = await discoverFast(props.channelType, baseUrls, apiKeys, {
-    proxyUrl: proxyUrl.value.trim() || undefined,
-    proxyPreferDirect: proxyPreferDirect.value || undefined
-  })
-  if (!discovery) {
-    throw new Error(t('autopilot.quickAdd.discoveryFailed'))
-  }
-  return discovery
-}
-
 async function handleSubmit() {
   // new-api 模式：主操作由内嵌表单按当前步骤决定（未验证→验证，已验证→接入）
   if (isNewApiMode.value) {
@@ -458,31 +455,29 @@ async function handleSubmit() {
     const filteredApiKeys = getFilteredApiKeys()
     apiKeys.value = [...filteredApiKeys]
     showKeys.value = filteredApiKeys.map(() => false)
-    const routeDiscovery = isProviderMode.value ? null : await discoverCustomRoutes(filteredBaseUrls, filteredApiKeys)
     // provider 模式：用 provider.channelKind 提交（自动创建该 provider 支持的全部渠道），
     // 避免当前 tab 与 provider 支持范围不匹配导致 400
-    const targetChannelType = isProviderMode.value
-      ? ((selectedProvider.value?.channelKind as ChannelType | undefined) ?? props.channelType)
-      : (routeDiscovery?.primaryKind ?? props.channelType)
-    const result = await autoAddChannel(
-      targetChannelType,
-      isProviderMode.value
-        ? {
-            providerId: effectiveProviderId.value,
-            apiKeys: filteredApiKeys,
-            placement: props.placement
-          }
-        : {
-            name: getGeneratedName(),
-            baseUrls: filteredBaseUrls,
-            apiKeys: filteredApiKeys,
-            routes: routeDiscovery?.routes,
-            rateLimitHint: routeDiscovery?.rateLimitHint,
-            proxyUrl: proxyUrl.value.trim() || undefined,
-            proxyPreferDirect: proxyPreferDirect.value || undefined,
-            placement: props.placement
-          }
-    )
+    let targetChannelType: ChannelType
+    let result
+    if (isProviderMode.value) {
+      targetChannelType = (selectedProvider.value?.channelKind as ChannelType | undefined) ?? props.channelType
+      result = await autoAddChannel(targetChannelType, {
+        providerId: effectiveProviderId.value,
+        apiKeys: filteredApiKeys,
+        placement: props.placement
+      })
+    } else {
+      const created = await submitCustomAutoAdd(props.channelType, {
+        name: getGeneratedName(),
+        baseUrls: filteredBaseUrls,
+        apiKeys: filteredApiKeys,
+        proxyUrl: proxyUrl.value.trim() || undefined,
+        proxyPreferDirect: proxyPreferDirect.value || undefined,
+        placement: props.placement
+      }, skipPreflight.value)
+      targetChannelType = created.targetChannelType
+      result = created.result
+    }
 
     const currentChannel = result.channels?.find(ch => ch.channelKind === targetChannelType)
     const currentIndex = currentChannel?.index ?? result.index
@@ -491,7 +486,9 @@ async function handleSubmit() {
   } catch (err) {
     submitting.value = false
     // provider 模式下后端会对无效 key 返回 400（含明确原因），提取给用户
-    submitError.value = extractAutoAddErrorMessage(err)
+    submitError.value = err instanceof Error && err.message === 'autopilot.quickAdd.discoveryFailed'
+      ? t('autopilot.quickAdd.discoveryFailed')
+      : extractAutoAddErrorMessage(err)
     console.error('[QuickAdd-Submit] 自动添加渠道失败:', err)
   }
 }
@@ -505,6 +502,7 @@ function resetForm() {
   showKeys.value = [false]
   submitting.value = false
   submitError.value = ''
+  skipPreflight.value = false
 }
 
 // ---- 生命周期 ----

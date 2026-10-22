@@ -301,6 +301,8 @@
   "addChannel.enterApiKey": "请输入至少一个 API Key",
   "addChannel.channelName": "渠道名称",
   "addChannel.channelType": "渠道类型",
+  "addChannel.skipPreflight": "跳过创建前探测（仅新建自定义渠道）",
+  "addChannel.skipPreflightWarning": "将按当前 {kind} 协议创建，连通性与 Key 尚未验证；创建成功不代表可用。已知服务商或重复地址不可跳过。",
   "copilotOAuth.description": "使用 GitHub OAuth 获取 Copilot 授权，授权成功后会把 GitHub OAuth token 添加为本渠道密钥。该 token 仅用于与 GitHub 交互，CCX 会自动换成短期 Copilot token。",
   "copilotOAuth.button": "使用 GitHub Copilot 登录",
   "copilotOAuth.userCode": "授权码",

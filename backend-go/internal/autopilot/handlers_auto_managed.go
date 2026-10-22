@@ -26,13 +26,14 @@ import (
 //   - provider 模板模式：带 ProviderID + APIKeys，系统自动判别 baseURL（按 key 前缀探测验证），无需填 BaseURLs
 //   - 自定义模式：带 BaseURLs + APIKeys；可通过 Routes 原子创建探测成功的多协议路由
 type AutoAddRequest struct {
-	Name            string                `json:"name,omitempty"`
-	ProviderID      string                `json:"providerId,omitempty"`
-	BaseURLs        []string              `json:"baseUrls"`
-	APIKeys         []string              `json:"apiKeys"`
-	Routes          []AutoAddRouteRequest `json:"routes,omitempty"`
-	RateLimitHint   *AutoAddRateLimitHint `json:"rateLimitHint,omitempty"`
-	SubscriptionUID string                `json:"subscriptionUid,omitempty"`
+	Name               string                `json:"name,omitempty"`
+	CreateWithoutProbe bool                  `json:"createWithoutProbe,omitempty"`
+	ProviderID         string                `json:"providerId,omitempty"`
+	BaseURLs           []string              `json:"baseUrls"`
+	APIKeys            []string              `json:"apiKeys"`
+	Routes             []AutoAddRouteRequest `json:"routes,omitempty"`
+	RateLimitHint      *AutoAddRateLimitHint `json:"rateLimitHint,omitempty"`
+	SubscriptionUID    string                `json:"subscriptionUid,omitempty"`
 	// ProxyURL 渠道级代理（HTTP/HTTPS/SOCKS5）：发现/探活与后续上游请求经代理访问，
 	// 用于添加直连不可达的境外上游。
 	ProxyURL string `json:"proxyUrl,omitempty"`
@@ -1967,6 +1968,18 @@ func handleAutoAdd(deps *AutoManagedDeps) gin.HandlerFunc {
 		if req.ProviderID == "" {
 			req.ProviderID = inferAutoAddProviderID(req.BaseURLs, req.APIKeys)
 		}
+		if req.CreateWithoutProbe {
+			for _, baseURL := range req.BaseURLs {
+				if _, known := config.InferProviderIDFromBaseURL(baseURL); known {
+					c.JSON(http.StatusConflict, gin.H{"error": "包含已知 Provider 地址，请使用正常验证接入"})
+					return
+				}
+			}
+			if req.ProviderID != "" {
+				c.JSON(http.StatusConflict, gin.H{"error": "已识别为 Provider 渠道，请使用正常验证接入"})
+				return
+			}
+		}
 		// provider 模板模式无需 baseUrls（由模板判定）；自定义模式必须带 baseUrls
 		if req.ProviderID == "" && len(req.BaseURLs) == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "baseUrls 不能为空"})
@@ -2027,6 +2040,10 @@ func handleCustomAutoAdd(c *gin.Context, deps *AutoManagedDeps, requestKind stri
 
 	cfg := deps.CfgManager.GetConfig()
 	if duplicates := findExistingAutoAddChannels(cfg, baseURLs); len(duplicates) > 0 {
+		if req.CreateWithoutProbe {
+			c.JSON(http.StatusConflict, gin.H{"error": "已有相同地址的渠道，请通过正常验证流程追加 Key"})
+			return
+		}
 		handleExistingCustomAutoAdd(c, deps, requestKind, req, routes, duplicates)
 		return
 	}

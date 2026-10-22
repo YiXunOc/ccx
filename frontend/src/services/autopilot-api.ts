@@ -25,6 +25,8 @@ export interface AutoAddChannelRequest {
   proxyPreferDirect?: boolean
   /** 故障转移位置：front（首位）| back（末尾，默认） */
   placement?: ChannelPlacement
+  /** 仅用于用户主动免探测创建新的自定义渠道；后端拒绝 Provider 与已有地址。 */
+  createWithoutProbe?: boolean
 }
 
 export interface AutoAddRouteRequest {
@@ -366,6 +368,29 @@ export async function discoverFast(
   const primaryKind = normalizeDiscoveredChannelKind(fast.primaryKind)
   if (!primaryKind) return null
   return { primaryKind, routes: [{ channelKind: primaryKind }], rateLimitHint: fast.rateLimit }
+}
+
+/** 两种自定义输入共用的提交路径；默认保留创建前探测。 */
+export async function submitCustomAutoAdd(
+  kind: ChannelKind,
+  request: AutoAddChannelRequest,
+  createWithoutProbe = false
+): Promise<{ targetChannelType: ChannelKind; result: AutoAddChannelResponse }> {
+  if (createWithoutProbe) {
+    const result = await autoAddChannel(kind, { ...request, createWithoutProbe: true })
+    return { targetChannelType: kind, result }
+  }
+  const discovery = await discoverFast(kind, request.baseUrls ?? [], request.apiKeys, {
+    proxyUrl: request.proxyUrl,
+    proxyPreferDirect: request.proxyPreferDirect
+  })
+  if (!discovery) throw new Error('autopilot.quickAdd.discoveryFailed')
+  const result = await autoAddChannel(discovery.primaryKind, {
+    ...request,
+    routes: discovery.routes,
+    rateLimitHint: discovery.rateLimitHint
+  })
+  return { targetChannelType: discovery.primaryKind, result }
 }
 
 export function extractAutoAddErrorMessage(err: unknown): string {
