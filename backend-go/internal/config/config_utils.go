@@ -727,6 +727,12 @@ func (u *UpstreamConfig) Clone() *UpstreamConfig {
 		cloned.SupportedModels = make([]string, len(u.SupportedModels))
 		copy(cloned.SupportedModels, u.SupportedModels)
 	}
+	if u.ModelMapping != nil {
+		cloned.ModelMapping = make(map[string]string, len(u.ModelMapping))
+		for source, target := range u.ModelMapping {
+			cloned.ModelMapping[source] = target
+		}
+	}
 	if u.DisabledAPIKeys != nil {
 		cloned.DisabledAPIKeys = make([]DisabledKeyInfo, len(u.DisabledAPIKeys))
 		for i, dk := range u.DisabledAPIKeys {

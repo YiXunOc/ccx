@@ -156,8 +156,10 @@ async function saveChannel(
           website: payload.website,
           baseUrls: payload.baseUrls ?? (payload.baseUrl ? [payload.baseUrl] : undefined),
           tags: payload.tags,
+          modelMapping: payload.modelMapping ?? {},
         },
       })
+      // One mapping is stored on every protocol route by the logical-channel update.
       await refreshChannels(channelType)
       return { success: true, messageKey: 'channelEditor.toast.updated' }
     }

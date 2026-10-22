@@ -1733,6 +1733,16 @@ func (r *SmartRouter) resolveChannelModel(
 	}
 
 	upstream = config.RuntimeUpstreamForAutoManagedProvider(upstream)
+	if target := upstream.ManualModel(requestModel); target != "" {
+		if supported, _ := upstream.ExplainModelSupport(requestModel); supported {
+			resolution.ActualModel = target
+			resolution.MappedModel = target
+			resolution.MappingSource = "manual_mapping"
+			resolution.MappingReason = "matched physical channel model mapping"
+			resolution.Supported = true
+		}
+		return resolution
+	}
 	supported, _ := upstream.ExplainModelSupport(requestModel)
 	hasExplicitModelRules := len(upstream.SupportedModels) > 0
 	if supported && (!upstream.AutoManaged || hasExplicitModelRules) {
@@ -1817,6 +1827,13 @@ func (r *SmartRouter) resolveChannelModels(
 	channelUID := upstream.ChannelUID
 	requestModel := profile.Model
 	upstream = config.RuntimeUpstreamForAutoManagedProvider(upstream)
+	if target := upstream.ManualModel(requestModel); target != "" {
+		if supported, _ := upstream.ExplainModelSupport(requestModel); supported {
+			return []channelModelResolution{{ActualModel: target, MappedModel: target, Supported: true,
+				CandidateKey: routingCandidateKey(channelUID, target), MappingSource: "manual_mapping", MappingReason: "matched physical channel model mapping"}}
+		}
+		return nil
+	}
 	floor := BuildCapabilityFloorFromRequestProfile(profile)
 
 	// ── AutoManaged 渠道：枚举全部满足能力下界的已探测模型，按质量排序后截断 top N。

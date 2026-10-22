@@ -43,6 +43,7 @@ type LogicalChannelSettings struct {
 	AutoBlacklistBalance        *bool                `json:"autoBlacklistBalance,omitempty"`
 	NormalizeMetadataUserID     *bool                `json:"normalizeMetadataUserId,omitempty"`
 	CustomHeaders               map[string]string    `json:"customHeaders,omitempty"`
+	ModelMapping                map[string]string    `json:"modelMapping,omitempty"`
 	ProxyURL                    string               `json:"proxyUrl,omitempty"`
 	ProxyPreferDirect           bool                 `json:"proxyPreferDirect,omitempty"`
 	RequestTimeoutMs            int                  `json:"requestTimeoutMs,omitempty"`

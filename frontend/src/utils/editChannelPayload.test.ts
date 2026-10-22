@@ -3,6 +3,10 @@ import type { Channel } from '../services/api'
 import { extractEditChannelPayloadFields } from './editChannelPayload'
 
 describe('extractEditChannelPayloadFields', () => {
+  it('retains physical model mapping when extracting editable fields', () => {
+    const mapping = { 'Model-A': 'Upstream-B' }
+    expect(extractEditChannelPayloadFields({ modelMapping: mapping } as unknown as Channel).modelMapping).toEqual(mapping)
+  })
   it('保留 apiKeyConfigs 的完整服务端元数据与扩展字段', () => {
     const apiKeyConfigs = [{
       key: 'key-a',

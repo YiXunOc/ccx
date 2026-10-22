@@ -25,6 +25,7 @@ import { useEditChannelSectionNav } from './useEditChannelSectionNav'
 import { useTargetModelFetch } from './useTargetModelFetch'
 import { useEditChannelOptions } from '../utils/editChannelOptions'
 import { defaultStripBillingHeader, isValidUrl, normalizeModelCapabilities } from '../utils/editChannelHelpers'
+import { formatModelMapping, parseModelMapping } from '../utils/modelMapping'
 import { isOfficialProviderChannel } from '../utils/providerDisplay'
 import { getManagedProviderWebsiteLinks } from '../utils/channelWebsite'
 import { useChannelStore } from '../stores/channel'
@@ -149,6 +150,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     rateLimitAutoFromHeaders: true,
     routePrefix: '',
     supportedModels: [] as string[],
+    modelMappingText: '',
     autoBlacklistBalance: true,
     normalizeMetadataUserId: defaultNormalizeMetadataUserId(),
     stripBillingHeader: false,
@@ -280,6 +282,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
   const { headerClasses, avatarColor, headerIconStyle, subtitleClasses } = useChannelEditorHeaderState(theme)
 
   const isFormValid = computed(() => {
+    try { parseModelMapping(form.modelMappingText) } catch { return false }
     const draftUrls = draftBaseUrls()
     const hasValidBaseUrl = form.serviceType === 'copilot'
       || (isEditableBaseUrlsChannel.value && draftUrls.length > 0 && draftUrls.every(isValidUrl))
@@ -291,7 +294,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
   })
 
   const buildSubmitPayload = () => {
-    const payload = buildChannelPayload(form, { channelType: props.channelType })
+    const payload = buildChannelPayload({ ...form, modelMapping: parseModelMapping(form.modelMappingText) }, { channelType: props.channelType })
     if (!props.channel) {
       // 清理未启用的流式超时字段
       if (!form.streamFirstContentTimeoutEnabled) {
@@ -474,6 +477,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     form.rateLimitAutoFromHeaders = true
     form.routePrefix = ''
     form.supportedModels = []
+    form.modelMappingText = ''
     form.autoBlacklistBalance = true
     form.normalizeMetadataUserId = defaultNormalizeMetadataUserId()
     form.stripBillingHeader = false
@@ -568,6 +572,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
     form.routePrefix = channel.routePrefix || ''
     const { validPatterns } = filterValidSupportedModelPatterns(channel.supportedModels || [])
     form.supportedModels = validPatterns
+    form.modelMappingText = formatModelMapping(channel.modelMapping)
     form.autoBlacklistBalance = channel.autoBlacklistBalance ?? true
     form.normalizeMetadataUserId = channel.normalizeMetadataUserId ?? true
     form.stripBillingHeader = channel.stripBillingHeader ?? false
@@ -677,6 +682,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
 
   const handleSubmit = async () => {
     if (submitting.value || !formRef.value) return
+    try { parseModelMapping(form.modelMappingText) } catch { return }
 
     submitting.value = true
     let saveStarted = false

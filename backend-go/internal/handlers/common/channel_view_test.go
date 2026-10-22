@@ -10,6 +10,15 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
+func TestBuildChannelViewExposesPhysicalModelMapping(t *testing.T) {
+	up := config.UpstreamConfig{ModelMapping: map[string]string{"Model-A": "Upstream-B", "model-a": "upstream-b"}}
+	view := BuildChannelView(up, 0)
+	got, ok := view["modelMapping"].(map[string]string)
+	if !ok || !reflect.DeepEqual(got, up.ModelMapping) {
+		t.Fatalf("modelMapping missing or changed in channel view: %v", view["modelMapping"])
+	}
+}
+
 func TestBuildChannelView_TuningBenchFields(t *testing.T) {
 	up := config.UpstreamConfig{
 		Name:                        "test-channel",

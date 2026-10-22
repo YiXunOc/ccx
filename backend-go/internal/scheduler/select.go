@@ -172,7 +172,14 @@ func (s *ChannelScheduler) federateDefaultCandidates(ctx context.Context, reques
 				continue
 			}
 			actualModel := model
-			if s.modelSupportResolverFunc != nil {
+			if upstream.ManualModel(model) != "" {
+				supported, resolvedModel, reason := s.resolveModelSupportWithActual(ctx, kind, upstream, model)
+				if !supported {
+					trace.skipChannel(sibling, "protocol_federation", "unsupported_model", reason)
+					continue
+				}
+				actualModel = resolvedModel
+			} else if s.modelSupportResolverFunc != nil {
 				supported, resolvedModel, _, _ := s.modelSupportResolverFunc(ctx, kind, upstream, model)
 				if !supported {
 					trace.skipChannel(sibling, "protocol_federation", "unsupported_model", model)
@@ -1662,6 +1669,10 @@ func (s *ChannelScheduler) resolveModelSupportWithActual(ctx context.Context, ki
 	resolver := s.modelSupportResolverFunc
 	s.mu.RUnlock()
 
+	if target := upstream.ManualModel(model); target != "" {
+		supported, reason := upstream.ExplainModelSupport(model)
+		return supported, target, reason
+	}
 	if resolver != nil {
 		supported, actual, source, reason := resolver(ctx, kind, upstream, model)
 		if supported {

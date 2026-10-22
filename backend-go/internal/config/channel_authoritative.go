@@ -144,6 +144,7 @@ func cloneLogicalChannelSettings(input *LogicalChannelSettings) *LogicalChannelS
 	}
 	out := *input
 	out.CustomHeaders = cloneStringMap(input.CustomHeaders)
+	out.ModelMapping = cloneStringMap(input.ModelMapping)
 	out.AutoBlacklistBalance = cloneBoolPtr(input.AutoBlacklistBalance)
 	out.NormalizeMetadataUserID = cloneBoolPtr(input.NormalizeMetadataUserID)
 	out.CostMultiplier = cloneFloatPtr(input.CostMultiplier)

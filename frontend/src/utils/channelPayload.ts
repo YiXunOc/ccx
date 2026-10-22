@@ -95,6 +95,7 @@ export interface ChannelFormLike {
   rateLimitAutoFromHeaders?: boolean
   routePrefix: string
   supportedModels: string[]
+  modelMapping?: Record<string, string>
   autoBlacklistBalance: boolean
   normalizeMetadataUserId: boolean
   stripBillingHeader?: boolean
@@ -558,6 +559,7 @@ export function buildChannelPayload(
     proxyUrl: form.proxyUrl.trim(),
     routePrefix: form.routePrefix.trim(),
     supportedModels: form.supportedModels,
+    modelMapping: form.modelMapping || {},
     autoBlacklistBalance: form.autoBlacklistBalance,
     normalizeMetadataUserId,
     stripBillingHeader: !!form.stripBillingHeader,

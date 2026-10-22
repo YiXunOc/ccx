@@ -7,6 +7,35 @@ import (
 	"testing"
 )
 
+func TestLegacyPhysicalMappingSurvivesAuthoritativeReload(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cm, err := NewConfigManager(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm.config.Upstream = []UpstreamConfig{{ChannelUID: "m", LogicalChannelUID: "lc", BaseURL: "https://example.com", ServiceType: "claude", ModelMapping: map[string]string{"haiku-hindsight": "glm-5.3-flash"}}}
+	cm.config.ChatUpstream = []UpstreamConfig{{ChannelUID: "c", LogicalChannelUID: "lc", BaseURL: "https://example.com", ServiceType: "openai"}}
+	cm.config.LogicalChannels = []LogicalChannel{{LogicalChannelUID: "lc", Name: "group", Kind: LogicalChannelKindLLM, BaseURLs: []string{"https://example.com"}, Protocols: []LogicalChannelProtocol{
+		{Kind: "messages", ChannelUID: "m"}, {Kind: "chat", ChannelUID: "c"},
+	}, Settings: &LogicalChannelSettings{}}}
+	if err := cm.SaveConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewConfigManager(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Close()
+	cfg := reloaded.GetConfig()
+	if len(cfg.Upstream) != 1 || len(cfg.ChatUpstream) != 1 || cfg.Upstream[0].ManualModel("haiku-hindsight") != "glm-5.3-flash" || cfg.ChatUpstream[0].ManualModel("haiku-hindsight") != "glm-5.3-flash" {
+		t.Fatalf("reload mapping: messages=%+v chat=%+v", cfg.Upstream, cfg.ChatUpstream)
+	}
+}
+
 // TestAuthoritativeLogicalMetadataRoundTrip 验证 C 阶段的单一持久化真源：
 // LogicalChannel 元数据与 Settings 写入 ChannelsV3，磁盘不再重复写 logicalChannels，
 // 纯 V3 重载后管理 API 仍能得到完整逻辑渠道视图。

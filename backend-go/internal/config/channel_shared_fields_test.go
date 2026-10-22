@@ -5,6 +5,143 @@ import (
 	"testing"
 )
 
+func TestConvergeMappingDoesNotCrossStaleLogicalUIDAcrossSites(t *testing.T) {
+	cfg := Config{
+		Upstream:     []UpstreamConfig{{ChannelUID: "m", LogicalChannelUID: "stale", BaseURL: "https://one.example.com", AccountUID: "acct-one", ModelMapping: map[string]string{"A": "B"}}},
+		ChatUpstream: []UpstreamConfig{{ChannelUID: "c", LogicalChannelUID: "stale", BaseURL: "https://two.example.com", AccountUID: "acct-two", ModelMapping: map[string]string{"A": "C"}}},
+	}
+	convergeSharedChannelFields(&cfg)
+	if cfg.ChatUpstream[0].ManualModel("A") != "C" {
+		t.Fatalf("stale UID contaminated another site: %v", cfg.ChatUpstream[0].ModelMapping)
+	}
+}
+
+func TestModelMappingUpdateDoesNotTouchOtherLogicalGroup(t *testing.T) {
+	cm := &ConfigManager{configFile: filepath.Join(t.TempDir(), "config.json"), config: Config{
+		Upstream: []UpstreamConfig{{ChannelUID: "m", LogicalChannelUID: "lc", BaseURL: "https://one.example.com", ServiceType: "claude"}},
+		ChatUpstream: []UpstreamConfig{
+			{ChannelUID: "c", LogicalChannelUID: "lc", BaseURL: "https://one.example.com", ServiceType: "openai"},
+			{ChannelUID: "other", LogicalChannelUID: "other-lc", BaseURL: "https://two.example.com", ServiceType: "openai", ModelMapping: map[string]string{"A": "Other"}},
+		},
+	}}
+	if _, err := UpdateUpstreamByKind(cm, ChannelLocation{Kind: ChannelKindMessages, Index: 0}, UpstreamUpdate{ModelMapping: map[string]string{"A": "B"}}); err != nil {
+		t.Fatal(err)
+	}
+	if cm.config.ChatUpstream[0].ManualModel("A") != "B" || cm.config.ChatUpstream[1].ManualModel("A") != "Other" {
+		t.Fatalf("mapping crossed groups: %+v", cm.config.ChatUpstream)
+	}
+}
+
+func TestLegacySiblingMappingSurvivesEmptyPrimaryOnLoad(t *testing.T) {
+	cfg := Config{
+		Upstream:        []UpstreamConfig{{ChannelUID: "m", LogicalChannelUID: "lc", BaseURL: "https://example.com", ServiceType: "claude"}},
+		ChatUpstream:    []UpstreamConfig{{ChannelUID: "c", LogicalChannelUID: "lc", BaseURL: "https://example.com", ServiceType: "openai", ModelMapping: map[string]string{"A": "B"}}},
+		LogicalChannels: []LogicalChannel{{LogicalChannelUID: "lc", Protocols: []LogicalChannelProtocol{{Kind: "messages", ChannelUID: "m"}, {Kind: "chat", ChannelUID: "c"}}, Settings: &LogicalChannelSettings{}}},
+	}
+	if !convergeSharedChannelFields(&cfg) {
+		t.Fatal("expected old sibling mapping to converge")
+	}
+	if !syncLogicalChannelSettings(&cfg) {
+		t.Fatal("expected old Settings to gain mapping")
+	}
+	if cfg.Upstream[0].ManualModel("A") != "B" || cfg.ChatUpstream[0].ManualModel("A") != "B" {
+		t.Fatalf("mapping lost: messages=%v chat=%v", cfg.Upstream[0].ModelMapping, cfg.ChatUpstream[0].ModelMapping)
+	}
+}
+
+func TestCreateLogicalChannelWithSharedModelMapping(t *testing.T) {
+	cm := newLogicalTestCM(t, nil)
+	logical, err := cm.CreateLogicalChannel(CreateLogicalChannelInput{
+		Name: "mapped-site", Kind: LogicalChannelKindLLM, BaseURLs: []string{"https://mapped.example.com"},
+		ModelMapping: map[string]string{"haiku-hindsight": "glm-5.3-flash"},
+		Protocols:    []CreateLogicalChannelProtocol{{Kind: "messages", ServiceType: "claude", APIKeys: []string{"key"}}, {Kind: "chat", ServiceType: "openai", APIKeys: []string{"key"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := cm.GetConfig()
+	if logical.Settings == nil || logical.Settings.ModelMapping["haiku-hindsight"] != "glm-5.3-flash" || len(cfg.Upstream) != 1 || len(cfg.ChatUpstream) != 1 || cfg.Upstream[0].ManualModel("haiku-hindsight") != "glm-5.3-flash" || cfg.ChatUpstream[0].ManualModel("haiku-hindsight") != "glm-5.3-flash" {
+		t.Fatalf("mapping not created on all routes: logical=%+v", logical)
+	}
+}
+
+func TestNewProtocolInheritsLogicalModelMapping(t *testing.T) {
+	cm := &ConfigManager{configFile: filepath.Join(t.TempDir(), "config.json"), config: Config{
+		Upstream:        []UpstreamConfig{{ChannelUID: "m", LogicalChannelUID: "lc", BaseURL: "https://example.com", ServiceType: "claude", ModelMapping: map[string]string{"A": "B"}}},
+		LogicalChannels: []LogicalChannel{{LogicalChannelUID: "lc", Name: "group", Kind: LogicalChannelKindLLM, BaseURLs: []string{"https://example.com"}, Settings: &LogicalChannelSettings{ModelMapping: map[string]string{"A": "B"}}, Protocols: []LogicalChannelProtocol{{Kind: "messages", ChannelUID: "m"}}}},
+	}}
+	_, err := cm.UpdateLogicalChannel(UpdateLogicalChannelInput{LogicalChannelUID: "lc", Protocols: []UpdateLogicalChannelProtocol{{Kind: "chat", ServiceType: "openai", BaseURL: "https://example.com", APIKeys: []string{"key"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cm.config.ChatUpstream) != 1 || cm.config.ChatUpstream[0].ManualModel("A") != "B" {
+		t.Fatalf("new route did not inherit shared mapping: %+v", cm.config.ChatUpstream)
+	}
+}
+
+func TestUpdateLogicalChannelCommonModelMappingProjectsToAllProtocols(t *testing.T) {
+	cm := &ConfigManager{configFile: filepath.Join(t.TempDir(), "config.json"), config: Config{
+		Upstream:     []UpstreamConfig{{ChannelUID: "m", LogicalChannelUID: "lc", ModelMapping: map[string]string{"A": "B"}}},
+		ChatUpstream: []UpstreamConfig{{ChannelUID: "c", LogicalChannelUID: "lc"}},
+		LogicalChannels: []LogicalChannel{{LogicalChannelUID: "lc", Name: "test", Protocols: []LogicalChannelProtocol{
+			{Kind: "messages", ChannelUID: "m"}, {Kind: "chat", ChannelUID: "c"},
+		}}},
+	}}
+	mapping := map[string]string{"haiku-hindsight": "glm-5.3-flash"}
+	if _, err := cm.UpdateLogicalChannel(UpdateLogicalChannelInput{LogicalChannelUID: "lc", Common: &UpdateLogicalChannelCommon{ModelMapping: mapping}}); err != nil {
+		t.Fatal(err)
+	}
+	if cm.config.Upstream[0].ManualModel("haiku-hindsight") != "glm-5.3-flash" || cm.config.ChatUpstream[0].ManualModel("haiku-hindsight") != "glm-5.3-flash" {
+		t.Fatalf("not projected: %+v %+v", cm.config.Upstream[0].ModelMapping, cm.config.ChatUpstream[0].ModelMapping)
+	}
+}
+
+func TestSyncLogicalChannelSettingsPreservesSharedMappingAfterReload(t *testing.T) {
+	cfg := Config{
+		Upstream:     []UpstreamConfig{{ChannelUID: "m", LogicalChannelUID: "lc", ModelMapping: map[string]string{"haiku-hindsight": "glm-5.3-flash"}}},
+		ChatUpstream: []UpstreamConfig{{ChannelUID: "c", LogicalChannelUID: "lc"}},
+		LogicalChannels: []LogicalChannel{{LogicalChannelUID: "lc", Protocols: []LogicalChannelProtocol{
+			{Kind: "messages", ChannelUID: "m"}, {Kind: "chat", ChannelUID: "c"},
+		}, Settings: &LogicalChannelSettings{}}},
+	}
+	if !syncLogicalChannelSettings(&cfg) {
+		t.Fatal("expected mapping projection")
+	}
+	if got := cfg.ChatUpstream[0].ManualModel("haiku-hindsight"); got != "glm-5.3-flash" {
+		t.Fatalf("chat mapping = %q", got)
+	}
+	refreshLogicalChannelSettingsFromRoutes(&cfg)
+	if got := cfg.LogicalChannels[0].Settings.ModelMapping["haiku-hindsight"]; got != "glm-5.3-flash" {
+		t.Fatalf("settings mapping = %q", got)
+	}
+}
+
+func TestModelMappingSharedAcrossLogicalRoutes(t *testing.T) {
+	cm := &ConfigManager{configFile: filepath.Join(t.TempDir(), "config.json"), config: Config{
+		Upstream:          []UpstreamConfig{{ChannelUID: "m", LogicalChannelUID: "lc", ModelMapping: map[string]string{"A": "B"}}},
+		ChatUpstream:      []UpstreamConfig{{ChannelUID: "c", LogicalChannelUID: "lc"}},
+		ResponsesUpstream: []UpstreamConfig{{ChannelUID: "r", LogicalChannelUID: "lc", ModelMapping: map[string]string{"old": "target"}}},
+		GeminiUpstream:    []UpstreamConfig{{ChannelUID: "g", LogicalChannelUID: "lc"}},
+	}}
+	mapping := map[string]string{"haiku-hindsight": "glm-5.3-flash"}
+	if _, err := UpdateUpstreamByKind(cm, ChannelLocation{Kind: ChannelKindMessages, Index: 0}, UpstreamUpdate{ModelMapping: mapping}); err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []UpstreamConfig{cm.config.Upstream[0], cm.config.ChatUpstream[0], cm.config.ResponsesUpstream[0], cm.config.GeminiUpstream[0]} {
+		if route.ManualModel("haiku-hindsight") != "glm-5.3-flash" || route.ManualModel("old") != "" {
+			t.Fatalf("sibling not synchronized: %+v", route.ModelMapping)
+		}
+	}
+	if _, err := UpdateUpstreamByKind(cm, ChannelLocation{Kind: ChannelKindMessages, Index: 0}, UpstreamUpdate{ModelMapping: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []UpstreamConfig{cm.config.Upstream[0], cm.config.ChatUpstream[0], cm.config.ResponsesUpstream[0], cm.config.GeminiUpstream[0]} {
+		if len(route.ModelMapping) != 0 {
+			t.Fatalf("clear not synchronized: %+v", route.ModelMapping)
+		}
+	}
+}
+
 func TestSharedChannelUpdateProjectsToSiblingRoutes(t *testing.T) {
 	cm := &ConfigManager{configFile: filepath.Join(t.TempDir(), "config.json"), config: Config{
 		ChatUpstream: []UpstreamConfig{{

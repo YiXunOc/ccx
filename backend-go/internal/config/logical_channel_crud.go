@@ -23,6 +23,7 @@ func remarkRuneCount(s string) int {
 // 调用方负责收集并校验以下字段；CreateLogicalChannel 不会再做大幅度语义推断。
 type CreateLogicalChannelInput struct {
 	ProtocolModelPreferences ProtocolModelPreferences
+	ModelMapping             map[string]string
 	Name                     string // 用户可见名（必填）
 	Remark                   string
 	Description              string
@@ -58,6 +59,9 @@ type CreateLogicalChannelProtocol struct {
 // 内部使用 sync.Mutex (cm.mu) 保证原子性，失败时回滚已创建的物理渠道。
 func (cm *ConfigManager) CreateLogicalChannel(in CreateLogicalChannelInput) (*LogicalChannel, error) {
 	if err := in.ProtocolModelPreferences.Validate(); err != nil {
+		return nil, err
+	}
+	if err := validateChannelModelMapping(in.ModelMapping); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(in.Name) == "" {
@@ -106,6 +110,7 @@ func (cm *ConfigManager) CreateLogicalChannel(in CreateLogicalChannelInput) (*Lo
 	uid := pickFreshUID(logicalUIDSet(cm.config))
 	logical := &LogicalChannel{
 		ProtocolModelPreferences: in.ProtocolModelPreferences.Clone(),
+		Settings:                 &LogicalChannelSettings{ModelMapping: cloneStringMap(in.ModelMapping)},
 		LogicalChannelUID:        uid,
 		AccountUID:               strings.TrimSpace(in.AccountUID),
 		ProviderID:               strings.TrimSpace(in.ProviderID),
@@ -175,6 +180,7 @@ func (cm *ConfigManager) createPhysicalChannelForLogicalLocked(in CreateLogicalC
 		RoutePrefix:       p.RoutePrefix,
 		SupportedModels:   append([]string(nil), p.SupportedModels...),
 		CustomHeaders:     p.CustomHeaders,
+		ModelMapping:      cloneStringMap(in.ModelMapping),
 		ProxyURL:          p.ProxyURL,
 		ProxyPreferDirect: p.ProxyPreferDirect,
 		LogicalChannelUID: logicalUID,
@@ -291,6 +297,7 @@ type UpdateLogicalChannelInput struct {
 // UpdateLogicalChannelCommon 跨协议共享字段。
 type UpdateLogicalChannelCommon struct {
 	ProtocolModelPreferences *ProtocolModelPreferences
+	ModelMapping             map[string]string
 	Name                     *string
 	Remark                   *string
 	Description              *string
@@ -322,6 +329,11 @@ type UpdateLogicalChannelProtocol struct {
 func (cm *ConfigManager) UpdateLogicalChannel(in UpdateLogicalChannelInput) (*LogicalChannel, error) {
 	if in.Common != nil && in.Common.ProtocolModelPreferences != nil {
 		if err := (*in.Common.ProtocolModelPreferences).Validate(); err != nil {
+			return nil, err
+		}
+	}
+	if in.Common != nil && in.Common.ModelMapping != nil {
+		if err := validateChannelModelMapping(in.Common.ModelMapping); err != nil {
 			return nil, err
 		}
 	}
@@ -486,6 +498,11 @@ func (cm *ConfigManager) UpdateLogicalChannel(in UpdateLogicalChannelInput) (*Lo
 				cm.config.LogicalChannels[idx] = backupLogical
 				return nil, fmt.Errorf("新增协议 %s 失败: %w", kind, err)
 			}
+			if logical.Settings != nil {
+				if route := getChannelByUID(&cm.config, kind, up.ChannelUID); route != nil {
+					route.ModelMapping = cloneStringMap(logical.Settings.ModelMapping)
+				}
+			}
 			// 同步 protocols 列表
 			enabled := strings.EqualFold(strings.TrimSpace(up.Status), "active")
 			entry := LogicalChannelProtocol{
@@ -503,6 +520,18 @@ func (cm *ConfigManager) UpdateLogicalChannel(in UpdateLogicalChannelInput) (*Lo
 
 	if in.Common != nil && in.Common.ProtocolModelPreferences != nil {
 		logical.ProtocolModelPreferences = (*in.Common.ProtocolModelPreferences).Clone()
+	}
+	if in.Common != nil && in.Common.ModelMapping != nil {
+		mapping := cloneStringMap(in.Common.ModelMapping)
+		for _, protocol := range logical.Protocols {
+			if route := getChannelByUID(&cm.config, protocol.Kind, protocol.ChannelUID); route != nil {
+				route.ModelMapping = cloneStringMap(mapping)
+			}
+		}
+		if logical.Settings == nil {
+			logical.Settings = &LogicalChannelSettings{}
+		}
+		logical.Settings.ModelMapping = cloneStringMap(mapping)
 	}
 	logical.UpdatedAt = time.Now().UTC()
 	if err := cm.saveConfigLocked(cm.config); err != nil {

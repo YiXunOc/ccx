@@ -39,6 +39,7 @@ type ListResponse struct {
 // CreateRequestBody POST 入参。
 type CreateRequestBody struct {
 	ProtocolModelPreferences config.ProtocolModelPreferences `json:"protocolModelPreferences"`
+	ModelMapping             map[string]string               `json:"modelMapping"`
 	Name                     string                          `json:"name"`
 	Remark                   string                          `json:"remark"`
 	Description              string                          `json:"description"`
@@ -82,6 +83,7 @@ type UpdateRequestBody struct {
 // UpdateRequestBodyCommon 跨协议共享字段更新。
 type UpdateRequestBodyCommon struct {
 	ProtocolModelPreferences *config.ProtocolModelPreferences `json:"protocolModelPreferences"`
+	ModelMapping             map[string]string                `json:"modelMapping"`
 	Name                     *string                          `json:"name"`
 	Remark                   *string                          `json:"remark"`
 	Description              *string                          `json:"description"`
@@ -274,20 +276,23 @@ func buildLogicalProtocolRoutes(cfg config.Config, lc config.LogicalChannel) []g
 			up, idx := findPhysicalChannel(cfg, p.Kind, p.ChannelUID)
 			name := p.Kind
 			apiKeys := []string{}
+			var modelMapping map[string]string
 			var disabledGroupModels []config.DisabledGroupModelInfo
 			if up != nil {
 				name = up.Name
 				apiKeys = up.APIKeys
+				modelMapping = up.Clone().ModelMapping
 				disabledGroupModels = up.DisabledGroupModels
 			}
 			out = append(out, gin.H{
-				"kind":        p.Kind,
-				"index":       idx,
-				"name":        name,
-				"serviceType": p.ServiceType,
-				"channelUid":  p.ChannelUID,
-				"status":      p.Status,
-				"apiKeys":     apiKeys,
+				"kind":         p.Kind,
+				"index":        idx,
+				"name":         name,
+				"serviceType":  p.ServiceType,
+				"channelUid":   p.ChannelUID,
+				"status":       p.Status,
+				"apiKeys":      apiKeys,
+				"modelMapping": modelMapping,
 				// 分组模型限制记录按路由下发：聚合视图是各协议路由的并集，客户端必须能在
 				// 路由粒度上看到并定位到真正持有该限制的路由（否则只能展示/清理主路由那一份，
 				// 其它协议会残留，Web 侧已按 unifiedChannels 并集处理）。
@@ -389,6 +394,7 @@ func (h *Handler) Create(c *gin.Context) {
 	}
 	in := config.CreateLogicalChannelInput{
 		ProtocolModelPreferences: body.ProtocolModelPreferences,
+		ModelMapping:             body.ModelMapping,
 		Name:                     body.Name,
 		Remark:                   body.Remark,
 		Description:              body.Description,
@@ -452,6 +458,7 @@ func (h *Handler) Update(c *gin.Context) {
 	if body.Common != nil {
 		in.Common = &config.UpdateLogicalChannelCommon{
 			ProtocolModelPreferences: body.Common.ProtocolModelPreferences,
+			ModelMapping:             body.Common.ModelMapping,
 			Name:                     body.Common.Name,
 			Remark:                   body.Common.Remark,
 			Description:              body.Common.Description,

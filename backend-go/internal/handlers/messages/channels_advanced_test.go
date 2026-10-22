@@ -10,6 +10,34 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestGetUpstreams_RoundTripsSavedPhysicalModelMapping(t *testing.T) {
+	cm := setupTestConfigManager(t, []config.UpstreamConfig{{
+		Name: "mapping-channel", BaseURL: "https://api.example.com", APIKeys: []string{"test-key"},
+	}})
+	if _, err := cm.UpdateUpstream(0, config.UpstreamUpdate{ModelMapping: map[string]string{"Model-A": "Upstream-B"}}); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/messages/channels", GetUpstreams(cm))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/messages/channels", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var resp struct {
+		Channels []struct {
+			ModelMapping map[string]string `json:"modelMapping"`
+		} `json:"channels"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Channels) != 1 || resp.Channels[0].ModelMapping["Model-A"] != "Upstream-B" {
+		t.Fatalf("saved mapping missing from channel list: %s", w.Body.String())
+	}
+}
+
 func TestGetUpstreams_IncludesAdvancedOptionFields(t *testing.T) {
 	cm := setupTestConfigManager(t, []config.UpstreamConfig{{
 		Name:          "msg-ch",

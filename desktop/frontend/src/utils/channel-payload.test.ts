@@ -3,6 +3,19 @@ import type { APIKeyConfig } from '@/services/admin-api'
 import { buildChannelPayload } from './channel-payload'
 
 describe('buildChannelPayload', () => {
+  it('preserves physical model mapping separately from supported model filters', () => {
+    const payload = buildChannelPayload({
+      name: 'physical', serviceType: 'openai', baseUrl: 'https://example.com', baseUrls: [], website: '',
+      insecureSkipVerify: false, lowQuality: false, injectDummyThoughtSignature: false, stripThoughtSignature: false,
+      description: '', apiKeys: [], reasoningParamStyle: 'reasoning', textVerbosity: '', fastMode: false,
+      customHeaders: {}, proxyUrl: '', routePrefix: '', supportedModels: ['Model-A'],
+      modelMapping: { 'Model-A': 'Upstream-B', 'model-a': 'upstream-b' },
+      autoBlacklistBalance: true, normalizeMetadataUserId: true, normalizeSystemRoleToTopLevel: false,
+      codexToolCompat: false, noVision: false,
+    })
+    expect(payload.modelMapping).toEqual({ 'Model-A': 'Upstream-B', 'model-a': 'upstream-b' })
+    expect(payload.supportedModels).toEqual(['Model-A'])
+  })
   it('Copilot 渠道省略 Base URL 时应写入默认上游地址', () => {
     const result = buildChannelPayload({
       name: 'copilot-channel',

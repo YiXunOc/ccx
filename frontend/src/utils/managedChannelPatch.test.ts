@@ -18,6 +18,24 @@ const baseChannel = {
 } as unknown as Channel
 
 describe('buildManagedChannelPatch', () => {
+  it('主卡映射未变但兄弟路由分叉时仍提交同组映射以修复分叉', () => {
+    const original = { ...baseChannel, modelMapping: { A: 'B' }, protocolRoutes: [
+      { kind: 'messages', index: 0, modelMapping: { A: 'B' } },
+      { kind: 'chat', index: 0, modelMapping: {} },
+    ] } as unknown as Channel
+    expect(buildManagedChannelPatch(original, { ...original, modelMapping: { A: 'B' } }))
+      .toEqual({ modelMapping: { A: 'B' } })
+  })
+
+  it('托管渠道的物理模型映射新增及清空走单卡 patch，不丢弃', () => {
+    const original = { ...baseChannel, modelMapping: { A: 'B' } } as Channel
+    expect(buildManagedChannelPatch(original, { ...original, modelMapping: { A: 'C' } }))
+      .toEqual({ modelMapping: { A: 'C' } })
+    expect(buildManagedChannelPatch(original, { ...original, modelMapping: {} }))
+      .toEqual({ modelMapping: {} })
+    expect(listDroppedManagedChannelFields(original, { ...original, modelMapping: {} })).toEqual([])
+  })
+
   it('无变化时返回空对象', () => {
     expect(buildManagedChannelPatch(baseChannel, { ...baseChannel })).toEqual({})
   })

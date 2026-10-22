@@ -30,6 +30,7 @@ const CHANNEL_PATCH_NORMALIZERS: Readonly<Record<string, (value: unknown) => unk
   channelCreditAmount: normalizePositiveOrZero,
   proxyUrl: normalizeTrimmed,
   customHeaders: normalizeHeaders,
+  modelMapping: normalizeHeaders,
 }
 
 /** 账号接口（凭证池/名称/地址）或独立特例（website/remark）已承载的字段，不参与丢弃检测。 */
@@ -49,7 +50,10 @@ export function buildManagedChannelPatch(
   for (const [field, normalize] of Object.entries(CHANNEL_PATCH_NORMALIZERS)) {
     const before = normalize(originalRecord[field])
     const after = normalize(next[field])
-    if (!isStructurallyEqual(before, after)) {
+    const siblingMappingDiverged = field === 'modelMapping' && original.protocolRoutes?.some(route =>
+      !isStructurallyEqual(normalizeHeaders(route.modelMapping), after),
+    )
+    if (!isStructurallyEqual(before, after) || siblingMappingDiverged) {
       patch[field] = after
     }
   }

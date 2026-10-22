@@ -134,6 +134,9 @@ func (k ChannelKind) Label() string {
 // addUpstreamCommonLocked 是六类 Add*Upstream 方法的通用实现。
 // 调用方必须已持有 cm.mu 写锁。
 func (cm *ConfigManager) addUpstreamCommonLocked(k ChannelKindConfig, upstream UpstreamConfig, placements ...string) error {
+	if err := validateChannelModelMapping(upstream.ModelMapping); err != nil {
+		return err
+	}
 	if upstream.Status == "" {
 		upstream.Status = "active"
 	}
@@ -499,6 +502,12 @@ func applyUpstreamUpdateFields(upstream *UpstreamConfig, updates UpstreamUpdate)
 	}
 	if updates.SupportedModels != nil {
 		upstream.SupportedModels = updates.SupportedModels
+	}
+	if updates.ModelMapping != nil {
+		if err := validateChannelModelMapping(updates.ModelMapping); err != nil {
+			return false, err
+		}
+		upstream.ModelMapping = updates.ModelMapping
 	}
 	if updates.RoutePrefix != nil {
 		upstream.RoutePrefix = *updates.RoutePrefix

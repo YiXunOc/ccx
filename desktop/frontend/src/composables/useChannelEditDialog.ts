@@ -12,6 +12,7 @@ import {
   type ModelCapabilityRow,
 } from '@/utils/channel-payload'
 import { defaultStripBillingHeader } from '@/utils/base-url-semantics'
+import { formatModelMapping, parseModelMapping } from '@/utils/model-mapping'
 import { supportsAdvancedChannelOptions } from '@/utils/channel-advanced-options'
 import { extractChannelNamePrefix, syncBaseUrlsFormState } from '@/utils/channel-dialog-state'
 import type { ManagedChannelType } from '@/utils/channel-type-api'
@@ -201,6 +202,7 @@ const { t } = useLanguage()
     reasoningParamStyle: 'reasoning' as 'reasoning' | 'reasoning_effort' | 'thinking',
     textVerbosity: '' as 'low' | 'medium' | 'high' | '',
     supportedModelsText: '',
+    modelMappingText: '',
     noVision: false,
     historicalImageTurnLimit: 0,
     fastMode: false,
@@ -355,6 +357,7 @@ const { t } = useLanguage()
     form.reasoningParamStyle = 'reasoning'
     form.textVerbosity = ''
     form.supportedModelsText = ''
+    form.modelMappingText = ''
     form.noVision = false
     form.historicalImageTurnLimit = 0
     form.fastMode = false
@@ -443,6 +446,8 @@ const { t } = useLanguage()
     form.reasoningParamStyle = ch.reasoningParamStyle || 'reasoning'
     form.textVerbosity = ch.textVerbosity || ''
     form.supportedModelsText = (ch.supportedModels || []).join('\n')
+    const physicalRoute = ch.protocolRoutes?.find(route => route.kind === props.channelType)
+    form.modelMappingText = formatModelMapping(physicalRoute ? physicalRoute.modelMapping : ch.modelMapping)
     form.noVision = ch.noVision ?? false
     form.historicalImageTurnLimit = ch.historicalImageTurnLimit ?? 0
     form.fastMode = ch.fastMode ?? false
@@ -536,6 +541,9 @@ const { t } = useLanguage()
     }
     if (modelCapabilityRowsToRecord(modelCapabilityRows.value) === null) {
       errs.modelCapabilitiesText = t('addChannel.modelCapabilitiesRowsInvalid')
+    }
+    try { parseModelMapping(form.modelMappingText) } catch {
+      errs.modelMapping = t('channelEditor.modelMapping.invalid')
     }
     if (embeddingCapabilitiesError.value) {
       errs.embeddingCapabilities = embeddingCapabilitiesError.value
@@ -765,6 +773,7 @@ const { t } = useLanguage()
           rateLimitWindowMinutes: form.rateLimitWindowMinutes,
           routePrefix: form.routePrefix,
           supportedModels: normalizedSupportedModelState.value.validPatterns,
+          modelMapping: parseModelMapping(form.modelMappingText),
           autoBlacklistBalance: form.autoBlacklistBalance,
           normalizeMetadataUserId: form.normalizeMetadataUserId,
           stripBillingHeader: form.stripBillingHeader,
@@ -1044,6 +1053,7 @@ const { t } = useLanguage()
       rateLimitAutoFromHeaders: form.rateLimitAutoFromHeaders,
       routePrefix: form.routePrefix,
       supportedModels: normalizedSupportedModelState.value.validPatterns,
+      modelMapping: parseModelMapping(form.modelMappingText),
       autoBlacklistBalance: form.autoBlacklistBalance,
       normalizeMetadataUserId: form.normalizeMetadataUserId,
       stripBillingHeader: form.stripBillingHeader,

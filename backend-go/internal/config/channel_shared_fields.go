@@ -19,6 +19,7 @@ func sharedChannelUpdate(update UpstreamUpdate) *UpstreamUpdate {
 		AutoBlacklistBalance:        update.AutoBlacklistBalance,
 		NormalizeMetadataUserID:     update.NormalizeMetadataUserID,
 		CustomHeaders:               update.CustomHeaders,
+		ModelMapping:                update.ModelMapping,
 		ProxyURL:                    update.ProxyURL,
 		ProxyPreferDirect:           update.ProxyPreferDirect,
 		RequestTimeoutMs:            update.RequestTimeoutMs,
@@ -52,6 +53,7 @@ func sharedChannelUpdateFromRoute(route UpstreamConfig) UpstreamUpdate {
 		AutoBlacklistBalance:        sharedBoolPtr(route.IsAutoBlacklistBalanceEnabled()),
 		NormalizeMetadataUserID:     sharedBoolPtr(route.IsNormalizeMetadataUserIDEnabled()),
 		CustomHeaders:               cloneStringMap(route.CustomHeaders),
+		ModelMapping:                cloneStringMap(route.ModelMapping),
 		ProxyURL:                    sharedStringPtr(route.ProxyURL),
 		ProxyPreferDirect:           sharedBoolPtr(route.ProxyPreferDirect),
 		RequestTimeoutMs:            sharedIntPtr(route.RequestTimeoutMs),
@@ -112,8 +114,29 @@ func convergeSharedChannelFields(cfg *Config) bool {
 			continue
 		}
 		shared := sharedChannelUpdateFromRoute(*routes[0].route)
+		primaryIdentity := logicalChannelGroupKeyFrom(*routes[0].route)
+		mappingSibling := func(route *UpstreamConfig) bool {
+			return shouldGroupLogical(primaryIdentity, logicalChannelGroupKeyFrom(*route))
+		}
+		// 旧版按物理路由存储映射：主路由缺失时保留任一已有规则。
+		// 显式空 map（由新保存接口写入）表示清空，不从兄弟路由回填。
+		if shared.ModelMapping == nil {
+			for _, candidate := range routes[1:] {
+				if mappingSibling(candidate.route) && len(candidate.route.ModelMapping) > 0 {
+					shared.ModelMapping = cloneStringMap(candidate.route.ModelMapping)
+					routes[0].route.ModelMapping = cloneStringMap(shared.ModelMapping)
+					changed = true
+					break
+				}
+			}
+		}
 		for _, sibling := range routes[1:] {
 			before := sharedChannelUpdateFromRoute(*sibling.route)
+			if !mappingSibling(sibling.route) {
+				shared.ModelMapping = before.ModelMapping
+			} else {
+				shared.ModelMapping = cloneStringMap(routes[0].route.ModelMapping)
+			}
 			if reflect.DeepEqual(before, shared) {
 				continue
 			}
@@ -144,6 +167,9 @@ func clearNilSharedChannelFields(route *UpstreamConfig, update UpstreamUpdate) {
 	}
 	if update.CustomHeaders == nil {
 		route.CustomHeaders = nil
+	}
+	if update.ModelMapping == nil {
+		route.ModelMapping = nil
 	}
 	if update.CostMultiplier == nil {
 		route.CostMultiplier = nil
@@ -190,6 +216,7 @@ func logicalSettingsFromRoute(route UpstreamConfig) LogicalChannelSettings {
 		InsecureSkipVerify:          route.InsecureSkipVerify,
 		LowQuality:                  route.LowQuality,
 		CustomHeaders:               cloneStringMap(route.CustomHeaders),
+		ModelMapping:                cloneStringMap(route.ModelMapping),
 		ProxyURL:                    route.ProxyURL,
 		ProxyPreferDirect:           route.ProxyPreferDirect,
 		RequestTimeoutMs:            route.RequestTimeoutMs,
@@ -253,6 +280,7 @@ func logicalSettingsUpdate(settings LogicalChannelSettings) UpstreamUpdate {
 		AutoBlacklistBalance:        cloneBoolPtr(settings.AutoBlacklistBalance),
 		NormalizeMetadataUserID:     cloneBoolPtr(settings.NormalizeMetadataUserID),
 		CustomHeaders:               cloneStringMap(settings.CustomHeaders),
+		ModelMapping:                cloneStringMap(settings.ModelMapping),
 		ProxyURL:                    sharedStringPtr(settings.ProxyURL),
 		ProxyPreferDirect:           sharedBoolPtr(settings.ProxyPreferDirect),
 		RequestTimeoutMs:            sharedIntPtr(settings.RequestTimeoutMs),
@@ -305,6 +333,12 @@ func syncLogicalChannelSettings(cfg *Config) bool {
 			lc.Settings = &settings
 			changed = true
 			continue
+		}
+		// Older Settings records predate modelMapping. Preserve the primary route's
+		// existing mapping instead of projecting a missing field as a clear.
+		if lc.Settings.ModelMapping == nil && len(primary.ModelMapping) > 0 {
+			lc.Settings.ModelMapping = cloneStringMap(primary.ModelMapping)
+			changed = true
 		}
 		update := logicalSettingsUpdate(*lc.Settings)
 		for _, protocol := range lc.Protocols {

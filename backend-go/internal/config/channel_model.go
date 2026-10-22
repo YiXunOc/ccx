@@ -73,14 +73,15 @@ type KeyEndpointBindingView struct {
 
 // ProtocolFacadeView 是 CCX 入口协议 facade（一个 kind 对应一个物理渠道）。
 type ProtocolFacadeView struct {
-	Kind        string `json:"kind"`
-	ServiceType string `json:"serviceType,omitempty"`
-	ChannelUID  string `json:"channelUid,omitempty"`
-	Index       int    `json:"index"`
-	Enabled     bool   `json:"enabled"`
-	Status      string `json:"status,omitempty"`
-	Priority    int    `json:"priority,omitempty"`
-	RoutePrefix string `json:"routePrefix,omitempty"`
+	Kind         string            `json:"kind"`
+	ServiceType  string            `json:"serviceType,omitempty"`
+	ChannelUID   string            `json:"channelUid,omitempty"`
+	Index        int               `json:"index"`
+	Enabled      bool              `json:"enabled"`
+	Status       string            `json:"status,omitempty"`
+	Priority     int               `json:"priority,omitempty"`
+	RoutePrefix  string            `json:"routePrefix,omitempty"`
+	ModelMapping map[string]string `json:"modelMapping,omitempty"`
 }
 
 // NewApiAccountView 是 new-api 渠道的账号侧信息（凭证敏感字段不回显）。

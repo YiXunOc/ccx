@@ -70,6 +70,18 @@
                 @menu-update="onMenuUpdate"
               />
               <LogicalProtocolModels v-if="props.show" :logical-channel-uid="props.channel?.logicalChannelUid" :routes="protocolModelRoutes" :loading="managedModelsLoading" @refreshed="handleProtocolModelsRefreshed" />
+              <div class="mt-4">
+                <v-textarea
+                  v-model="form.modelMappingText"
+                  :label="t('channelEditor.modelMapping.label')"
+                  :placeholder="t('channelEditor.modelMapping.placeholder')"
+                  :hint="t('channelEditor.modelMapping.hint') + ' ' + t('channelEditor.modelMapping.example')"
+                  persistent-hint
+                  rows="3"
+                  variant="outlined"
+                  :rules="[() => isModelMappingValid || t('channelEditor.modelMapping.invalid')]"
+                />
+              </div>
             </section>
 
             <!-- 身份认证 -->
@@ -469,6 +481,7 @@ import { BALANCE_PROVIDER_VALUES, type Channel, type ChannelBalanceView, type Ma
 import { buildNativeProtocolModelRoutes, loadLegacyManagedModelAvailability } from '../utils/channelModelAvailability'
 import { getManagedProviderWebsiteLinks } from '../utils/channelWebsite'
 import { isManagedProviderChannel, isOfficialProviderChannel, managedProviderChannelName, providerDisplayName } from '../utils/providerDisplay'
+import { parseModelMapping } from '../utils/modelMapping'
 import { useChannelStore } from '../stores/channel'
 import { useDialogStore } from '../stores/dialog'
 
@@ -485,6 +498,9 @@ const isOfficialManagedProvider = computed(() => isOfficialProviderChannel(props
 const managedProviderWebsiteLinks = computed(() => props.channel ? getManagedProviderWebsiteLinks(props.channel) : [])
 const managedAccountChannels = ref<ManagedAccountChannel[]>([])
 const managedModelsLoading = ref(false)
+const isModelMappingValid = computed(() => {
+  try { parseModelMapping(form.modelMappingText); return true } catch { return false }
+})
 const managedAccountsApi = new ApiService()
 let managedModelsRequestId = 0
 

@@ -42,6 +42,7 @@ type UpstreamConfig struct {
 	Website               string                             `json:"website,omitempty"`
 	InsecureSkipVerify    bool                               `json:"insecureSkipVerify,omitempty"`
 	ModelCapabilities     map[string]UpstreamModelCapability `json:"modelCapabilities,omitempty"` // 实际模型能力覆盖，key 支持模型通配符
+	ModelMapping          map[string]string                  `json:"modelMapping,omitempty"`
 	EmbeddingCapabilities map[string]EmbeddingCapability     `json:"embeddingCapabilities,omitempty"`
 	DefaultCapability     UpstreamModelCapability            `json:"defaultCapability,omitempty"`   // 渠道默认实际模型能力
 	AllowUnknownContext   bool                               `json:"allowUnknownContext,omitempty"` // 大上下文请求是否允许落到未知能力渠道
@@ -1292,6 +1293,14 @@ func (u *UpstreamConfig) GetEffectiveResponseHeaderTimeoutMs(fallbackMs int) int
 	return fallbackMs
 }
 
+// ManualModel returns the exact, case-sensitive, single-hop target for a physical channel.
+func (u *UpstreamConfig) ManualModel(model string) string {
+	if u == nil {
+		return ""
+	}
+	return u.ModelMapping[model]
+}
+
 // UpstreamUpdate 用于部分更新 UpstreamConfig
 type UpstreamUpdate struct {
 	Name                     *string                            `json:"name"`
@@ -1306,6 +1315,7 @@ type UpstreamUpdate struct {
 	Website                  *string                            `json:"website"`
 	InsecureSkipVerify       *bool                              `json:"insecureSkipVerify"`
 	ModelCapabilities        map[string]UpstreamModelCapability `json:"modelCapabilities"`
+	ModelMapping             map[string]string                  `json:"modelMapping"`
 	EmbeddingCapabilities    map[string]EmbeddingCapability     `json:"embeddingCapabilities"`
 	DefaultCapability        *UpstreamModelCapability           `json:"defaultCapability"`
 	AllowUnknownContext      *bool                              `json:"allowUnknownContext"`

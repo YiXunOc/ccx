@@ -1495,6 +1495,9 @@ func (cm *ConfigManager) saveConfigLocked(config Config) error {
 	if err := RebuildLogicalChannels(&config); err != nil {
 		return err
 	}
+	// A newly grouped physical route must inherit the shared mapping before
+	// ChannelsV3 and LogicalChannel.Settings are persisted.
+	convergeSharedChannelFields(&config)
 	// 物理路由是运行时更新落点，落盘前把共享设置镜像回 LogicalChannel.Settings，
 	// 确保磁盘 Settings 与主路由同代（这是加载期 Settings 投影幂等的前提）。
 	refreshLogicalChannelSettingsFromRoutes(&config)

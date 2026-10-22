@@ -306,6 +306,7 @@ export interface Channel {
   website?: string
   insecureSkipVerify?: boolean
   modelCapabilities?: Record<string, UpstreamModelCapability>
+  modelMapping?: Record<string, string>  // Physical channel exact requested model -> upstream model
   embeddingCapabilities?: Record<string, EmbeddingCapability>
   defaultCapability?: UpstreamModelCapability
   allowUnknownContext?: boolean
@@ -409,6 +410,7 @@ export interface ChannelProtocolRoute {
   disabledKeyModels?: DisabledKeyModelInfo[]
   disabledGroupModels?: DisabledGroupModelInfo[]
   supportedModels?: string[]
+  modelMapping?: Record<string, string>
   modelInventoryKnown?: boolean
   discoveredModels?: string[]
   modelBindings?: ChannelModelBinding[]

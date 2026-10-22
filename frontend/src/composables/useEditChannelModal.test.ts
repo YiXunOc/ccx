@@ -46,6 +46,16 @@ function mountEditor() {
 }
 
 describe('useEditChannelModal staged group model disables', () => {
+  it('loads and edits exact physical model mappings without changing supported models', async () => {
+    const { wrapper, state } = mountEditor()
+    try {
+      await wrapper.setProps({ show: true, channel: { ...channel, modelMapping: { 'Model-A': 'Upstream-B' }, supportedModels: ['Model-A'] } })
+      expect(state.form.modelMappingText).toBe('Model-A => Upstream-B')
+      expect(state.form.supportedModels).toEqual(['Model-A'])
+      state.form.modelMappingText = 'gpt-* => upstream'
+      expect(state.isFormValid.value).toBe(false)
+    } finally { wrapper.unmount() }
+  })
   beforeEach(() => {
     disableGroupModel.mockReset()
     disableGroupModel.mockResolvedValue({ success: true, quotaGroup: '', model: 'model-x', affectedKeyCount: 1 })

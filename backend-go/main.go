@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/ccx/internal/autopilot"
+	"github.com/BenedictKing/ccx/internal/balanceprobe"
 	"github.com/BenedictKing/ccx/internal/config"
 	"github.com/BenedictKing/ccx/internal/conversation"
 	"github.com/BenedictKing/ccx/internal/errutil"
@@ -30,7 +31,6 @@ import (
 	channelsv2 "github.com/BenedictKing/ccx/internal/handlers/channels"
 	"github.com/BenedictKing/ccx/internal/handlers/chat"
 	"github.com/BenedictKing/ccx/internal/handlers/common"
-	"github.com/BenedictKing/ccx/internal/balanceprobe"
 	"github.com/BenedictKing/ccx/internal/handlers/copilot"
 	"github.com/BenedictKing/ccx/internal/handlers/gemini"
 	"github.com/BenedictKing/ccx/internal/handlers/images"
@@ -947,6 +947,9 @@ func main() {
 			return cfgManager.GetAutopilotRouting().Scenario
 		})
 
+		common.SetManualModelAvailabilityProvider(func(channelUID, baseURL, apiKey, target string) bool {
+			return autopilot.ManualTargetAvailable(profileStore, channelUID, baseURL, apiKey, target)
+		})
 		// endpoint policy hook：为每个请求构建 EndpointAttemptPolicy
 		common.SetEndpointPolicyProviderHook(func(c *gin.Context, model string, upstream *config.UpstreamConfig) *autopilot.EndpointAttemptPolicy {
 			autopilotCfg := cfgManager.GetAutopilotRouting()
@@ -1060,6 +1063,9 @@ func main() {
 	// 调度器候选筛选时调用，AutoManaged 渠道 + 三条件门控通过才走 ModelResolver，否则回退 ExplainModelSupport。
 	if autopilotManager != nil {
 		channelScheduler.SetModelSupportResolverProvider(func(ctx context.Context, kind scheduler.ChannelKind, upstream *config.UpstreamConfig, model string) (bool, string, string, string) {
+			if target := upstream.ManualModel(model); target != "" {
+				return true, target, "manual_mapping", ""
+			}
 			if profile, ok := autopilot.RequestProfileFromContext(ctx); ok {
 				profile.Model = model
 				profile.ChannelKind = string(kind)

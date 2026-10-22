@@ -512,6 +512,17 @@ function handleAccountsUpdated() {
                         </template>
                       </div>
 
+                      <section class="space-y-2 rounded-xl border border-primary/20 bg-gradient-to-b from-primary/[0.02] to-transparent p-5 shadow-sm">
+                        <Label class="text-xs font-semibold">{{ t('channelEditor.modelMapping.label') }}</Label>
+                        <Textarea
+                          v-model="form.modelMappingText"
+                          :placeholder="t('channelEditor.modelMapping.placeholder')"
+                          class="w-full min-h-[84px] font-mono text-xs"
+                        />
+                        <p class="text-[10px] leading-4 text-muted-foreground">{{ t('channelEditor.modelMapping.hint') }}</p>
+                        <p class="text-[10px] leading-4 text-muted-foreground">{{ t('channelEditor.modelMapping.example') }}</p>
+                        <p v-if="errors.modelMapping" class="text-xs text-destructive">{{ errors.modelMapping }}</p>
+                      </section>
                       <section
                         v-if="channelType !== 'images' && channelType !== 'vectors'"
                         class="space-y-2 rounded-xl border border-primary/20 bg-gradient-to-b from-primary/[0.02] to-transparent p-5 shadow-sm"

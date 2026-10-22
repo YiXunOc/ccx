@@ -762,6 +762,14 @@ func (m *Manager) ResolveModelSupportWithFloor(
 		return false, "", "invalid_input", "upstream or model is nil/empty"
 	}
 
+	if target := upstream.ManualModel(model); target != "" {
+		if supported, reason := upstream.ExplainModelSupport(model); supported {
+			return true, target, "manual_mapping", ""
+		} else {
+			return false, "", "manual_mapping", reason
+		}
+	}
+
 	// 全渠道统一：显式 SupportedModels 命中时走 fast path。
 	// 空列表的传统语义是“支持全部”，但渠道的实际模型以 endpoint profile 为准，
 	// 不能在这里短路，否则 ModelResolver 永远没有机会运行。

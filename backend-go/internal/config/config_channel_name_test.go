@@ -4,6 +4,30 @@ import (
 	"testing"
 )
 
+func TestAddingMessagesSiblingToChatLedGroupKeepsMapping(t *testing.T) {
+	cm := newTestConfigManager(t, `{"chatUpstream":[{"channelUid":"c","baseUrl":"https://example.com","serviceType":"openai","apiKeys":["k"],"modelMapping":{"A":"B"}}]}`)
+	original := cm.GetConfig().ChatUpstream[0]
+	if err := cm.AddUpstream(UpstreamConfig{ChannelUID: GenerateChannelUID(), AccountUID: original.AccountUID, LogicalChannelUID: original.LogicalChannelUID, BaseURL: "https://example.com", ServiceType: "claude", APIKeys: []string{"k"}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cm.GetConfig()
+	if len(cfg.Upstream) != 1 || cfg.Upstream[0].ManualModel("A") != "B" || cfg.ChatUpstream[0].ManualModel("A") != "B" {
+		t.Fatalf("reverse sibling insertion lost mapping: messages=%v chat=%v", cfg.Upstream[0].ModelMapping, cfg.ChatUpstream[0].ModelMapping)
+	}
+}
+
+func TestAddingSiblingThroughPhysicalCRUDKeepsLogicalMapping(t *testing.T) {
+	cm := newTestConfigManager(t, `{"upstream":[{"channelUid":"m","baseUrl":"https://example.com","serviceType":"claude","apiKeys":["k"],"modelMapping":{"A":"B"}}]}`)
+	original := cm.GetConfig().Upstream[0]
+	if err := cm.AddChatUpstream(UpstreamConfig{ChannelUID: GenerateChannelUID(), AccountUID: original.AccountUID, LogicalChannelUID: original.LogicalChannelUID, BaseURL: "https://example.com", ServiceType: "openai", APIKeys: []string{"k"}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cm.GetConfig()
+	if len(cfg.ChatUpstream) != 1 || cfg.ChatUpstream[0].ManualModel("A") != "B" {
+		t.Fatalf("new physical sibling lost mapping: chat=%+v messages=%+v logical=%+v", cfg.ChatUpstream[0].ModelMapping, cfg.Upstream[0].ModelMapping, cfg.LogicalChannels)
+	}
+}
+
 // TestAddUpstream_AutoDerivedName 验证非托管渠道新增时名称由首个 baseURL 派生，忽略客户端传入的名称。
 func TestAddUpstream_AutoDerivedName(t *testing.T) {
 	cm := newTestConfigManager(t, `{"upstream":[]}`)

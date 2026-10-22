@@ -282,6 +282,7 @@ const buildProtocolRoutes = (channels: Partial<Record<LlmChannelKind, RoutedChan
         ? undefined
         : channel.disabledGroupModels.map(item => ({ ...item })),
       supportedModels: channel.supportedModels == null ? undefined : [...channel.supportedModels],
+      modelMapping: channel.modelMapping == null ? undefined : { ...channel.modelMapping },
     }]
   })
 }

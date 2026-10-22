@@ -900,7 +900,11 @@ func writeEchoMappingHeaders(c *gin.Context, cfgManager *config.ConfigManager, a
 	if echoMapping {
 		c.Header("X-CCX-Mapped-Model", actualAttemptModel)
 		c.Header("X-CCX-Original-Model", model)
-		c.Header("X-CCX-Mapping-Source", "auto_resolve")
+		source := "auto_resolve"
+		if c.GetString("mappingSource") == "manual_mapping" {
+			source = "manual_mapping"
+		}
+		c.Header("X-CCX-Mapping-Source", source)
 	} else {
 		c.Writer.Header().Del("X-CCX-Mapped-Model")
 		c.Writer.Header().Del("X-CCX-Original-Model")

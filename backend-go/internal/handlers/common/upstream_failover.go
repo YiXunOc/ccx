@@ -568,7 +568,9 @@ func TryUpstreamWithAllKeys(
 	// 回显头）以"发生了跨模型改写"为触发条件，改写后 model 已等于
 	// executionModel，直接比较会恒假。
 	originalModel := model
-	if tryOpts.executionModel != "" && tryOpts.executionModel != model {
+	// The source is always the original ingress model, even when federation
+	// has already selected the mapped physical execution model.
+	if tryOpts.executionModel != "" && tryOpts.executionModel != model && upstream.ManualModel(model) == "" {
 		rewritten, rewriteErr := sjson.SetBytes(requestBody, "model", tryOpts.executionModel)
 		if rewriteErr != nil {
 			// 改写失败不得静默更新运行时模型：请求体与能力判断必须使用同一模型，
@@ -620,7 +622,13 @@ func TryUpstreamWithAllKeys(
 	// 溢出重定向）时失败记账按执行模型写入（下方 recordModelCircuitFailure
 	// 传的 model 已是改写后值），读侧闭包若固定原始模型会错放或错杀具体 Key。
 	// 普通请求 model 未被改写，行为与固定原始模型一致。
-	modelCircuit := modelCircuitChecker(metricsManager, model)
+	// Per-key circuit and persistent restrictions must be evaluated against the
+	// model we actually send, not the client's alias.
+	circuitModel := model
+	if target := upstream.ManualModel(originalModel); target != "" {
+		circuitModel = target
+	}
+	modelCircuit := modelCircuitChecker(metricsManager, circuitModel)
 
 	// 五元组调度 pin 的明文 key：身份反查一次（key 已被移除/轮换时为空 = 不锁定）。
 	pinnedAPIKey := autopilot.ResolvePinnedAPIKey(upstream, tryOpts.executionKeyIdentity)
@@ -629,7 +637,14 @@ func TryUpstreamWithAllKeys(
 	// 显式 ModelMapping 已退役，模型承接与映射由 autopilot ModelResolver 画像映射
 	// 在选模阶段统一决策。
 	redirectedModel := model
+	if target := upstream.ManualModel(originalModel); target != "" {
+		redirectedModel = manualAttemptModel(upstream, originalModel)
+		RequestLogf(c, "[%s-ManualModel] channel=%s model %q -> %q", apiType, upstream.ChannelUID, originalModel, target)
+	}
 	capabilityRequestModel := model
+	if target := upstream.ManualModel(originalModel); target != "" {
+		capabilityRequestModel = target
+	}
 
 	// 历史图片轮次限制：替换历史图片为占位符，避免不必要的 vision 回退
 	if kind != scheduler.ChannelKindImages {
@@ -663,6 +678,9 @@ func TryUpstreamWithAllKeys(
 			endpointPolicy = endpointPolicyProviderHook(c, model, upstream)
 		}()
 	}
+	if upstream.ManualModel(originalModel) != "" {
+		endpointPolicy = nil // manual target takes precedence over automatic model/endpoint choices
+	}
 	urlResults = applyPolicyToURLs(endpointPolicy, urlResults, apiType, c)
 
 	for urlIdx, urlResult := range urlResults {
@@ -682,6 +700,7 @@ func TryUpstreamWithAllKeys(
 			c.Set("effortClampedByClient", false)
 			// 自动映射未命中原因同样按 attempt 重置：映射成功的尝试不携带上一轮的失败原因。
 			c.Set("mappingFailReason", "")
+			c.Set("mappingSource", "")
 			// 流式桥接改写标记同样按 attempt 重置：仅对已应用改写的 Key 生效，
 			// 防止上一 attempt 的标记污染无需改写的后续 Key（见 ForceStreamRequestBody）。
 			SetUpstreamStreamBridge(c, false)
@@ -705,6 +724,13 @@ func TryUpstreamWithAllKeys(
 				if clamped, changed := clampMaxTokensInBody(attemptBody, kind, cap.Capability.MaxOutputTokens); changed {
 					attemptBody = clamped
 					RequestLogf(c, "[%s-Clamp] max_tokens 超过模型 %q 上限 %d，已下调", apiType, cap.ActualModel, cap.Capability.MaxOutputTokens)
+				}
+			}
+			if target := upstream.ManualModel(originalModel); target != "" {
+				var rewriteErr error
+				attemptBody, rewriteErr = prepareManualAttemptBody(attemptBody, target)
+				if rewriteErr != nil {
+					return false, "", 0, nil, nil, fmt.Errorf("manual mapping request body rewrite failed: %w", rewriteErr)
 				}
 			}
 			RestoreRequestBody(c, attemptBody)
@@ -742,6 +768,12 @@ func TryUpstreamWithAllKeys(
 			if bound := upstream.BoundBaseURLForKey(apiKey); bound != "" && bound != currentBaseURL {
 				failedKeys[apiKey] = true
 				logSkippedKeyDecision(c, envCfg, executionKind, executionIndex, upstream, selection, apiKey, "endpoint_binding", "bound_endpoint_mismatch")
+				continue
+			}
+			if target := upstream.ManualModel(originalModel); target != "" && manualModelAvailable != nil && !manualModelAvailable(upstream.ChannelUID, currentBaseURL, apiKey, target) {
+				failedKeys[apiKey] = true
+				RequestLogf(c, "[%s-ManualModel] channel=%s target=%q known unavailable for selected key; skipping", apiType, upstream.ChannelUID, target)
+				logSkippedKeyDecision(c, envCfg, executionKind, executionIndex, upstream, selection, apiKey, "manual_mapping", "target_unavailable")
 				continue
 			}
 
@@ -803,7 +835,7 @@ func TryUpstreamWithAllKeys(
 			attemptModel := redirectedModel
 			var appliedMappedModel string
 			var resolvedAttemptTarget *autopilot.ResolvedRouteTarget
-			if endpointPolicy != nil {
+			if endpointPolicy != nil && upstream.ManualModel(originalModel) == "" {
 				keyHash := autopilot.KeyHashFromAPIKey(apiKey)
 				euid := autopilot.GenerateEndpointUID(upstream.ChannelUID, currentBaseURL, keyHash)
 
@@ -1087,6 +1119,14 @@ func TryUpstreamWithAllKeys(
 				RequestLogf(c, "[%s-BuildRequest] 请求构建失败: %v", apiType, err)
 				return false, "", 0, nil, nil, fmt.Errorf("request build failed: %w", err)
 			}
+			if target := upstream.ManualModel(originalModel); target != "" {
+				if err := rewriteManualProviderRequest(req, target); err != nil {
+					return false, "", 0, nil, nil, fmt.Errorf("manual mapping request rewrite failed: %w", err)
+				}
+				attemptModel = target
+				appliedMappedModel = target
+				c.Set("mappingSource", "manual_mapping")
+			}
 			req = WithRequestLogContext(req, c)
 			// 在最终物理协议请求上落 effort，保证实际发送内容与调度决策、日志一致。
 			// 该步骤位于 provider 转换之后，因此跨协议路由不会再丢失 effort。
@@ -1283,6 +1323,9 @@ func TryUpstreamWithAllKeys(
 				switch {
 				case appliedMappedModel != "":
 					mappingNote = "auto_resolve"
+					if upstream.ManualModel(originalModel) != "" {
+						mappingNote = "manual_mapping"
+					}
 				case c.GetString("mappingFailReason") != "":
 					mappingNote = "fail_open:" + c.GetString("mappingFailReason")
 				case attemptModel != model:
@@ -1290,7 +1333,7 @@ func TryUpstreamWithAllKeys(
 				}
 				RequestLogf(c, "[%s-UpstreamAttempt] 渠道=[%d] %s (%s) url=%s 模型 %q -> %q 映射=%s key=%s",
 					apiType, executionIndex, upstream.Name, executionAPIType, currentBaseURL,
-					model, actualAttemptModel, mappingNote, utils.MaskAPIKey(apiKey))
+					originalModel, actualAttemptModel, mappingNote, utils.MaskAPIKey(apiKey))
 			}
 			resp, err := SendRequestWithLifecycleTrace(req, requestUpstream, envCfg, isStream, apiType, lifecycleTrace)
 			if err != nil {
@@ -1320,7 +1363,7 @@ func TryUpstreamWithAllKeys(
 				cfgManager.MarkKeyAsFailed(apiKey, executionAPIType)
 				metricsManager.RecordRequestFinalizeFailureWithClass(currentBaseURL, apiKey, metricsServiceType, requestID, metrics.FailureClassRetryable)
 				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, metricsServiceType, executionKind)
-				recordModelCircuitFailure(c, metricsManager, upstream, apiKey, model, err.Error(), apiType)
+				recordModelCircuitFailure(c, metricsManager, upstream, apiKey, circuitModel, err.Error(), apiType)
 				if markURLFailure != nil {
 					markURLFailure(currentBaseURL)
 				}
@@ -1389,6 +1432,10 @@ func TryUpstreamWithAllKeys(
 				LogUpstreamResponseHeaders(c, resp, envCfg, apiType)
 
 				shouldFailover, isQuotaRelated := ShouldRetryWithNextKeyWithLogTag(resp.StatusCode, respBodyBytes, apiType, RequestLogTag(c))
+				if !shouldFailover && upstream.ManualModel(originalModel) != "" && manualTargetRejected(resp.StatusCode, respBodyBytes) {
+					shouldFailover = true
+					RequestLogf(c, "[%s-ManualModel] target=%q rejected by upstream; fail over without falling back to %q", apiType, attemptModel, originalModel)
+				}
 				isTemporarilyOverloaded := IsUpstreamTemporarilyOverloaded(respBodyBytes)
 				isAccountPoolUnavailable := IsUpstreamAccountPoolUnavailable(respBodyBytes)
 				// 火山账号级 429 (AccountRateLimitExceeded)：精确识别，仅冷却当前 scope
@@ -1682,7 +1729,7 @@ func TryUpstreamWithAllKeys(
 					// 反映的是额度或瞬时负载，已由 cooldown / scope 冷却处理，
 					// 记到模型头上会让限流误伤该模型的可用性。
 					if failureClass == metrics.FailureClassRetryable && !blResult.ShouldBlacklist {
-						recordModelCircuitFailure(c, metricsManager, upstream, apiKey, model,
+						recordModelCircuitFailure(c, metricsManager, upstream, apiKey, circuitModel,
 							errorBodySummaryForLog(apiType, resp.StatusCode, respBodyBytes), apiType)
 					}
 					if markURLFailure != nil {
@@ -1938,7 +1985,7 @@ func TryUpstreamWithAllKeys(
 					metricsManager.RecordRequestFinalizeFailureWithClass(currentBaseURL, apiKey, metricsServiceType, requestID, metrics.FailureClassRetryable)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, metricsServiceType, executionKind)
 					// 空响应 / 无效响应体 / 首字超时 / 断流都是该渠道-模型确实不可用的表现。
-					recordModelCircuitFailure(c, metricsManager, upstream, apiKey, model, err.Error(), apiType)
+					recordModelCircuitFailure(c, metricsManager, upstream, apiKey, circuitModel, err.Error(), apiType)
 					if markURLFailure != nil {
 						markURLFailure(currentBaseURL)
 					}
@@ -1978,25 +2025,25 @@ func TryUpstreamWithAllKeys(
 					if balanceRestricted {
 						sseLogAction = "key model restricted"
 					}
-				CompleteLog(channelLogStore, metricsKey, logRequestID, http.StatusOK, false, fmt.Sprintf("%s: %s - %s", sseLogAction, blErr.Reason, blErr.Message), isRetryAttempt)
-				RequestLogf(c, "[%s-Blacklist] SSE 流内错误触发拉黑 (Key: %s, 原因: %s)，尝试下一个密钥", apiType, utils.MaskAPIKey(apiKey), blErr.Reason)
-				continue
-			} else if errors.Is(err, ErrStreamRepetitionLoop) {
-				// 无限重复循环：post-commit 阶段中止的确定性内容故障。记账与真实
-				// 渠道故障一致（Header 已发送，不换渠道），但熔断走「一次确证即隔离」
-				// ——字节级重复证据无歧义，不等双阈值累积。
-				cfgManager.MarkKeyAsFailed(apiKey, executionAPIType)
-				metricsManager.RecordRequestFinalizeFailureWithClass(currentBaseURL, apiKey, metricsServiceType, requestID, metrics.FailureClassRetryable)
-				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, metricsServiceType, executionKind)
-				recordModelCircuitForcedFailure(c, metricsManager, upstream, apiKey, model, err.Error(), apiType)
-				CompleteLog(channelLogStore, metricsKey, logRequestID, http.StatusOK, false, err.Error(), isRetryAttempt)
-				RequestLogf(c, "[%s-RepetitionLoop] 模型输出无限重复，已中止流并强制隔离该渠道模型 (Key: %s)", apiType, utils.MaskAPIKey(apiKey))
-			} else {
+					CompleteLog(channelLogStore, metricsKey, logRequestID, http.StatusOK, false, fmt.Sprintf("%s: %s - %s", sseLogAction, blErr.Reason, blErr.Message), isRetryAttempt)
+					RequestLogf(c, "[%s-Blacklist] SSE 流内错误触发拉黑 (Key: %s, 原因: %s)，尝试下一个密钥", apiType, utils.MaskAPIKey(apiKey), blErr.Reason)
+					continue
+				} else if errors.Is(err, ErrStreamRepetitionLoop) {
+					// 无限重复循环：post-commit 阶段中止的确定性内容故障。记账与真实
+					// 渠道故障一致（Header 已发送，不换渠道），但熔断走「一次确证即隔离」
+					// ——字节级重复证据无歧义，不等双阈值累积。
+					cfgManager.MarkKeyAsFailed(apiKey, executionAPIType)
+					metricsManager.RecordRequestFinalizeFailureWithClass(currentBaseURL, apiKey, metricsServiceType, requestID, metrics.FailureClassRetryable)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, metricsServiceType, executionKind)
+					recordModelCircuitForcedFailure(c, metricsManager, upstream, apiKey, circuitModel, err.Error(), apiType)
+					CompleteLog(channelLogStore, metricsKey, logRequestID, http.StatusOK, false, err.Error(), isRetryAttempt)
+					RequestLogf(c, "[%s-RepetitionLoop] 模型输出无限重复，已中止流并强制隔离该渠道模型 (Key: %s)", apiType, utils.MaskAPIKey(apiKey))
+				} else {
 					// 真实渠道故障：计入失败指标
 					cfgManager.MarkKeyAsFailed(apiKey, executionAPIType)
 					metricsManager.RecordRequestFinalizeFailureWithClass(currentBaseURL, apiKey, metricsServiceType, requestID, metrics.FailureClassRetryable)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, metricsServiceType, executionKind)
-					recordModelCircuitFailure(c, metricsManager, upstream, apiKey, model, err.Error(), apiType)
+					recordModelCircuitFailure(c, metricsManager, upstream, apiKey, circuitModel, err.Error(), apiType)
 					// 记录渠道日志
 					CompleteLog(channelLogStore, metricsKey, logRequestID, http.StatusOK, false, err.Error(), isRetryAttempt)
 					RequestLogf(c, "[%s-Key] 警告: 响应处理失败: %v", apiType, err)
@@ -2017,7 +2064,7 @@ func TryUpstreamWithAllKeys(
 			channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, metricsServiceType, executionKind)
 			// 成功即解除该渠道-模型的失败累积；若这是熔断到期后放行的探针，
 			// 同时重置退避级别并回收状态条目。
-			recordModelCircuitSuccess(metricsManager, upstream, apiKey, model)
+			recordModelCircuitSuccess(metricsManager, upstream, apiKey, circuitModel)
 
 			// Phase 2: 记录 system header 过滤成功，巩固当前过滤层级。
 			if kind == scheduler.ChannelKindMessages && upstream.ChannelUID != "" {

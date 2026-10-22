@@ -102,6 +102,7 @@ type CreateRequest struct {
 	APIKeys                 []string              `json:"apiKeys"`
 	APIKeyConfigs           []config.APIKeyConfig `json:"apiKeyConfigs"`
 	SupportedModels         []string              `json:"supportedModels"`
+	ModelMapping            map[string]string     `json:"modelMapping"`
 	CustomHeaders           map[string]string     `json:"customHeaders"`
 	ProxyURL                string                `json:"proxyUrl"`
 	ProxyPreferDirect       bool                  `json:"proxyPreferDirect"`
@@ -138,6 +139,7 @@ func (h *Handler) Create(c *gin.Context) {
 		APIKeys:                 req.APIKeys,
 		APIKeyConfigs:           req.APIKeyConfigs,
 		SupportedModels:         req.SupportedModels,
+		ModelMapping:            req.ModelMapping,
 		CustomHeaders:           req.CustomHeaders,
 		ProxyURL:                req.ProxyURL,
 		ProxyPreferDirect:       req.ProxyPreferDirect,
@@ -171,6 +173,7 @@ type UpdateRequest struct {
 	APIKeyConfigs                 []config.APIKeyConfig                     `json:"apiKeyConfigs"`
 	ModelCapabilities             map[string]config.UpstreamModelCapability `json:"modelCapabilities"`
 	SupportedModels               []string                                  `json:"supportedModels"`
+	ModelMapping                  map[string]string                         `json:"modelMapping"`
 	CustomHeaders                 map[string]string                         `json:"customHeaders"`
 	ProxyURL                      *string                                   `json:"proxyUrl"`
 	ProxyPreferDirect             *bool                                     `json:"proxyPreferDirect"`
@@ -245,6 +248,7 @@ func (h *Handler) Update(c *gin.Context) {
 		APIKeyConfigs:                 req.APIKeyConfigs,
 		ModelCapabilities:             req.ModelCapabilities,
 		SupportedModels:               req.SupportedModels,
+		ModelMapping:                  req.ModelMapping,
 		CustomHeaders:                 req.CustomHeaders,
 		ProxyURL:                      req.ProxyURL,
 		ProxyPreferDirect:             req.ProxyPreferDirect,

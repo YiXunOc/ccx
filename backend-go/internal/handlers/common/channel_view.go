@@ -27,6 +27,7 @@ func BuildChannelView(up config.UpstreamConfig, index int) gin.H {
 		"website":                       up.Website,
 		"insecureSkipVerify":            up.InsecureSkipVerify,
 		"modelCapabilities":             up.ModelCapabilities,
+		"modelMapping":                  up.ModelMapping,
 		"embeddingCapabilities":         up.EmbeddingCapabilities,
 		"defaultCapability":             up.DefaultCapability,
 		"allowUnknownContext":           up.AllowUnknownContext,

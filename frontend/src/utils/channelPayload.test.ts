@@ -2,6 +2,20 @@ import { describe, expect, it } from 'vitest'
 import { buildChannelPayload, embeddingCapabilityRowsToRecord, normalizeMaxGroupMultiplier } from './channelPayload'
 
 describe('buildChannelPayload', () => {
+  it('preserves physical model mapping separately from supported model filters', () => {
+    const form = {
+      name: 'physical', serviceType: 'openai', baseUrl: 'https://example.com', baseUrls: [], website: '',
+      insecureSkipVerify: false, lowQuality: false, injectDummyThoughtSignature: false, stripThoughtSignature: false,
+      description: '', apiKeys: [], reasoningParamStyle: 'reasoning', textVerbosity: '', fastMode: false,
+      customHeaders: {}, proxyUrl: '', routePrefix: '', supportedModels: ['Model-A'],
+      modelMapping: { 'Model-A': 'Upstream-B', 'model-a': 'upstream-b' },
+      autoBlacklistBalance: true, normalizeMetadataUserId: true, normalizeSystemRoleToTopLevel: false,
+      codexToolCompat: false, noVision: false,
+    } as const
+    const payload = buildChannelPayload({ ...form, baseUrls: [...form.baseUrls], apiKeys: [...form.apiKeys], supportedModels: [...form.supportedModels] })
+    expect(payload.modelMapping).toEqual(form.modelMapping)
+    expect(payload.supportedModels).toEqual(['Model-A'])
+  })
   it('应序列化渠道级 verbosity/fastMode', () => {
     const result = buildChannelPayload({
       name: '  test-channel  ',
