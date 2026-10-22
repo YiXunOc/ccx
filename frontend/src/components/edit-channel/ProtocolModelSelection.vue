@@ -1,6 +1,6 @@
 <template>
   <div class="protocol-model-selection mt-3">
-    <v-select
+    <v-autocomplete
       v-model="selected"
       :items="options"
       :label="t('channelEditor.protocolModels.selectionLabel')"

@@ -94,7 +94,7 @@ func TestGetChannelDashboard_LLMGroupModelPersistenceAndIdempotency(t *testing.T
 		want := []config.DisabledGroupModelInfo{
 			{Key: "sk-single-a", Model: "model-shared", DisabledAt: before[0].DisabledAt},
 			{Key: "sk-single-b", Model: "model-shared", DisabledAt: before[1].DisabledAt},
-			{QuotaGroup: "coding", Model: "model-group", DisabledAt: before[2].DisabledAt},
+			{Key: "sk-group-a", QuotaGroup: "coding", Model: "model-group", DisabledAt: before[2].DisabledAt},
 		}
 		if !reflect.DeepEqual(before, want) {
 			t.Fatalf("%s rules=%+v, want %+v", kind, before, want)

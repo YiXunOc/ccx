@@ -1038,10 +1038,19 @@ func (u *UpstreamConfig) IsGroupModelDisabled(apiKey, quotaGroup, model string) 
 			continue
 		}
 		disabledGroup := strings.TrimSpace(dm.QuotaGroup)
+		if u.LogicalChannelUID != "" && dm.Key != "" && strings.TrimSpace(dm.Key) == apiKey && disabledGroup != "" {
+			return true
+		}
 		if quotaGroup != "" && disabledGroup == quotaGroup {
 			return true
 		}
 		if quotaGroup == "" && disabledGroup == "" && strings.TrimSpace(dm.Key) == apiKey {
+			return true
+		}
+		// Logical-channel policies carry the originating key even when its
+		// source route has no group. A sibling may assign that same key to a
+		// group; it must not bypass the manual key exclusion.
+		if disabledGroup == "" && quotaGroup != "" && strings.TrimSpace(dm.Key) == apiKey && u.LogicalChannelUID != "" {
 			return true
 		}
 	}
@@ -2916,6 +2925,29 @@ func (cm *ConfigManager) DisableGroupModel(apiType string, channelIndex int, api
 		return "", 0, fmt.Errorf("API Key 不属于该渠道")
 	}
 	affectedKeyCount := countGroupModelAffectedKeys(upstream, apiKey, quotaGroup)
+	if idx := findLogicalChannelIndexLocked(&cm.config, upstream.LogicalChannelUID); idx >= 0 {
+		current := cm.config.LogicalChannels[idx].Settings
+		if current != nil {
+			for _, rule := range current.DisabledGroupModels {
+				if sameDisabledGroupModel(rule, apiKey, quotaGroup, model) {
+					return quotaGroup, affectedKeyCount, nil
+				}
+			}
+		}
+		candidate := cm.config.deepCopy()
+		logical := &candidate.LogicalChannels[idx]
+		if logical.Settings == nil {
+			logical.Settings = &LogicalChannelSettings{}
+		}
+		entry := DisabledGroupModelInfo{Key: apiKey, QuotaGroup: quotaGroup, Model: model, DisabledAt: time.Now().Format(time.RFC3339)}
+		logical.Settings.DisabledGroupModels = append(logical.Settings.DisabledGroupModels, entry)
+		projectLogicalGroupModelPolicy(&candidate, logical)
+		if err := cm.saveConfigLocked(candidate); err != nil {
+			return "", 0, err
+		}
+		log.Printf("[Logical-GroupModel] 已禁用模型 %s (渠道: %s, 来源: %s)", model, logical.LogicalChannelUID, apiType)
+		return quotaGroup, affectedKeyCount, nil
+	}
 
 	for i := range upstream.DisabledGroupModels {
 		dm := &upstream.DisabledGroupModels[i]
@@ -2969,6 +3001,32 @@ func (cm *ConfigManager) RestoreGroupModel(apiType string, channelIndex int, api
 		}
 	}
 	affectedKeyCount := countGroupModelAffectedKeys(upstream, apiKey, quotaGroup)
+	if idx := findLogicalChannelIndexLocked(&cm.config, upstream.LogicalChannelUID); idx >= 0 {
+		current := cm.config.LogicalChannels[idx].Settings
+		if current == nil || len(current.DisabledGroupModels) == 0 {
+			return quotaGroup, affectedKeyCount, nil
+		}
+		next := make([]DisabledGroupModelInfo, 0, len(current.DisabledGroupModels))
+		removed := false
+		for _, rule := range current.DisabledGroupModels {
+			if sameDisabledGroupModel(rule, apiKey, quotaGroup, model) {
+				removed = true
+				continue
+			}
+			next = append(next, rule)
+		}
+		if !removed {
+			return quotaGroup, affectedKeyCount, nil
+		}
+		candidate := cm.config.deepCopy()
+		candidate.LogicalChannels[idx].Settings.DisabledGroupModels = next
+		projectLogicalGroupModelPolicy(&candidate, &candidate.LogicalChannels[idx])
+		if err := cm.saveConfigLocked(candidate); err != nil {
+			return "", 0, err
+		}
+		log.Printf("[Logical-GroupModel] 已恢复模型 %s (渠道: %s, 来源: %s)", model, candidate.LogicalChannels[idx].LogicalChannelUID, apiType)
+		return quotaGroup, affectedKeyCount, nil
+	}
 	previous := upstream.Clone().DisabledGroupModels
 	next := make([]DisabledGroupModelInfo, 0, len(upstream.DisabledGroupModels))
 	removed := false

@@ -73,8 +73,13 @@ func TestGroupModelPatternMappedCrossProtocol(t *testing.T) {
 				if all {
 					rules = append(rules, config.DisabledGroupModelInfo{Key: "sk-b", Model: "*5.2"})
 				}
-				cm, cs, mm, cleanup := newTestFailoverDependencies(t, config.UpstreamConfig{Name: "manual-pattern", ChannelUID: "ch-manual-pattern", BaseURL: server.URL, APIKeys: []string{"sk-a", "sk-b"}, Status: "active", ServiceType: "openai", AutoManaged: true, DisabledGroupModels: rules})
+				cm, cs, mm, cleanup := newTestFailoverDependencies(t, config.UpstreamConfig{Name: "manual-pattern", ChannelUID: "ch-manual-pattern", BaseURL: server.URL, APIKeys: []string{"sk-a", "sk-b"}, Status: "active", ServiceType: "openai", AutoManaged: true})
 				defer cleanup()
+				for _, rule := range rules {
+					if _, _, err := cm.DisableGroupModel("Messages", 0, rule.Key, rule.Model); err != nil {
+						t.Fatal(err)
+					}
+				}
 				w := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(w)
 				body := []byte(`{"model":"claude-opus-4-8","messages":[]}`)

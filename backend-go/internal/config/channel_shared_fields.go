@@ -324,6 +324,10 @@ func syncLogicalChannelSettings(cfg *Config) bool {
 	changed := false
 	for i := range cfg.LogicalChannels {
 		lc := &cfg.LogicalChannels[i]
+		// Logical policy is authoritative; never import old route-only bans.
+		if projectLogicalGroupModelPolicy(cfg, lc) {
+			changed = true
+		}
 		primary := logicalPrimaryRoute(cfg, lc)
 		if primary == nil {
 			continue
@@ -376,6 +380,36 @@ func refreshLogicalChannelSettingsFromRoutes(cfg *Config) {
 			continue
 		}
 		settings := logicalSettingsFromRoute(*primary)
+		if lc.Settings != nil {
+			settings.DisabledGroupModels = append([]DisabledGroupModelInfo(nil), lc.Settings.DisabledGroupModels...)
+		}
 		lc.Settings = &settings
+	}
+}
+
+// projectLogicalGroupModelPolicy supplies the existing runtime filters with
+// physical snapshots of the logical channel's authoritative manual rules.
+func projectLogicalGroupModelPolicy(cfg *Config, lc *LogicalChannel) bool {
+	if cfg == nil || lc == nil {
+		return false
+	}
+	var rules []DisabledGroupModelInfo
+	if lc.Settings != nil {
+		rules = lc.Settings.DisabledGroupModels
+	}
+	changed := false
+	for _, protocol := range lc.Protocols {
+		route := getChannelByUID(cfg, protocol.Kind, protocol.ChannelUID)
+		if route != nil && !reflect.DeepEqual(route.DisabledGroupModels, rules) {
+			route.DisabledGroupModels = append([]DisabledGroupModelInfo(nil), rules...)
+			changed = true
+		}
+	}
+	return changed
+}
+
+func projectAllLogicalGroupModelPolicies(cfg *Config) {
+	for i := range cfg.LogicalChannels {
+		projectLogicalGroupModelPolicy(cfg, &cfg.LogicalChannels[i])
 	}
 }

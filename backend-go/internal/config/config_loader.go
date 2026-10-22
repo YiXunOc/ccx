@@ -1496,6 +1496,7 @@ func (cm *ConfigManager) saveConfigLocked(config Config) error {
 		return err
 	}
 	// A newly grouped physical route must inherit the shared mapping before
+	projectAllLogicalGroupModelPolicies(&config)
 	// ChannelsV3 and LogicalChannel.Settings are persisted.
 	convergeSharedChannelFields(&config)
 	// 物理路由是运行时更新落点，落盘前把共享设置镜像回 LogicalChannel.Settings，
