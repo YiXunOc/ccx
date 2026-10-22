@@ -35,6 +35,7 @@ COPY VERSION ./
 
 # 构建：交叉编译目标平台，利用 Go build cache
 RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
     GOOS=${TARGETOS} GOARCH=${TARGETARCH} CGO_ENABLED=0 GOMAXPROCS=2 \
     GOFLAGS="-buildvcs=false -p=1" VERSION=${VERSION} make build
 
