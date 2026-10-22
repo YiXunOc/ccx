@@ -365,13 +365,16 @@ func (m *MetricsManager) RecordRequestFinalizeOutcome(baseURL, apiKey, serviceTy
 	now := time.Now()
 	metrics.RequestCount++
 	record := &metrics.requestHistory[idx]
+	preReset := metrics.ResetAt != nil && !record.Timestamp.After(*metrics.ResetAt)
 	record.Success = success
 	record.FailureClass = normalizeFailureClass(success, failureClass)
 
 	if success {
 		metrics.SuccessCount++
 		metrics.LastSuccessAt = &now
-		m.handleBreakerSuccessLocked(metrics, now)
+		if !preReset {
+			m.handleBreakerSuccessLocked(metrics, now)
+		}
 
 		inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens := extractUsageTokens(usage)
 		record.InputTokens = inputTokens
@@ -432,7 +435,9 @@ func (m *MetricsManager) RecordRequestFinalizeOutcome(baseURL, apiKey, serviceTy
 	failureClass = normalizeFailureClass(false, failureClass)
 	metrics.FailureCount++
 	metrics.LastFailureAt = &now
-	m.handleBreakerFailureLocked(metrics, failureClass, now)
+	if !preReset {
+		m.handleBreakerFailureLocked(metrics, failureClass, now)
+	}
 	record.InputTokens = 0
 	record.OutputTokens = 0
 	record.CacheCreationInputTokens = 0

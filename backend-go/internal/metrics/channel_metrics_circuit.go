@@ -26,7 +26,7 @@ func (m *MetricsManager) refreshBreakerWindowsLocked(metrics *KeyMetrics, now ti
 		if _, pending := pendingIndexes[idx]; pending {
 			continue
 		}
-		if !record.Timestamp.Before(cutoff) {
+		if !record.Timestamp.Before(cutoff) && (metrics.ResetAt == nil || record.Timestamp.After(*metrics.ResetAt)) {
 			recentRecords = append(recentRecords, record.Success)
 			if isBreakerRelevantFailure(record.Success, record.FailureClass) {
 				breakerRecords = append(breakerRecords, record.Success)
@@ -116,6 +116,7 @@ func (m *MetricsManager) persistCircuitStateLocked(metrics *KeyMetrics) {
 		BackoffLevel:        metrics.BackoffLevel,
 		HalfOpenSuccesses:   metrics.HalfOpenSuccesses,
 		ConsecutiveFailures: metrics.ConsecutiveFailures,
+		ResetAt:             metrics.ResetAt,
 	}); err != nil {
 		log.Printf("[Metrics-Circuit] 警告: 持久化熔断状态失败 (key=%s, state=%s): %v", metrics.KeyMask, metrics.CircuitState.String(), err)
 	}

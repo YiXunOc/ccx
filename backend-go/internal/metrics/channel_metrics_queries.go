@@ -141,7 +141,7 @@ func (m *MetricsManager) channelBreakerSnapshotLocked(baseURLs, activeKeys []str
 			pendingIndexes[idx] = struct{}{}
 		}
 		for idx, record := range metrics.requestHistory {
-			if _, pending := pendingIndexes[idx]; pending || record.Timestamp.Before(cutoff) {
+			if _, pending := pendingIndexes[idx]; pending || record.Timestamp.Before(cutoff) || (metrics.ResetAt != nil && !record.Timestamp.After(*metrics.ResetAt)) {
 				continue
 			}
 			// 模型作用域过滤：只统计当前 routeModel 的记录。
@@ -760,8 +760,9 @@ func (m *MetricsManager) ResetKeyFailureState(baseURL, apiKey, serviceType strin
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	metrics := m.getFirstMatchingMetricsLocked(baseURL, apiKey, serviceType)
-	if metrics != nil {
+	for _, metrics := range m.getMetricsVariantsLocked(baseURL, apiKey, serviceType) {
+		now := time.Now()
+		metrics.ResetAt = &now
 		metrics.recentResults = make([]bool, 0, m.windowSize)
 		m.resetCircuitStateLocked(metrics, true)
 		log.Printf("[Metrics-Reset] Key [%s] (%s) 熔断状态已重置（保留历史统计）", metrics.KeyMask, metrics.BaseURL)

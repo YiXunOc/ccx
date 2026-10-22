@@ -144,6 +144,7 @@ func initSchema(db *sql.DB) error {
 			backoff_level INTEGER NOT NULL DEFAULT 0,
 			half_open_successes INTEGER NOT NULL DEFAULT 0,
 			consecutive_failures INTEGER NOT NULL DEFAULT 0,
+			reset_at_ns INTEGER,
 			updated_at INTEGER NOT NULL,
 			PRIMARY KEY (metrics_key, api_type)
 		);
@@ -350,6 +351,22 @@ func initSchema(db *sql.DB) error {
 			}
 		}
 		log.Printf("[SQLite-Migration] schema 升级: v8 -> v9 (添加 correlation_id 列)")
+	}
+	var resetVersion int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&resetVersion); err != nil {
+		return err
+	}
+	if resetVersion < 10 {
+		// Fresh databases already have reset_at_ns in CREATE TABLE.
+		if _, err := db.Exec("ALTER TABLE circuit_states ADD COLUMN reset_at_ns INTEGER"); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migration v9->v10 failed: %w", err)
+		}
+		if _, err := db.Exec("ALTER TABLE request_records ADD COLUMN timestamp_ns INTEGER"); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migration v9->v10 failed: %w", err)
+		}
+		if _, err := db.Exec("PRAGMA user_version = 10"); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -778,8 +795,8 @@ func (s *SQLiteStore) batchInsertRecords(records []PersistentRecord) error {
 		 channel_uid, route_model, key_uid, subscription_uid, exchange_snapshot_version,
 		 list_cost_usd, effective_cost_usd, effective_cost_available, effective_cost_reason, consumption_policy,
 			 compressed, original_tokens, compressed_tokens, compression_savings_percent, compression_technique, compression_fallback_reason,
-			 correlation_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 correlation_id, timestamp_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -799,7 +816,7 @@ func (s *SQLiteStore) batchInsertRecords(records []PersistentRecord) error {
 			r.ChannelUID, r.RouteModel, r.KeyUID, r.SubscriptionUID, r.ExchangeSnapshotVersion,
 			r.ListCostUSD, r.EffectiveCostUSD, effectiveAvailable, r.EffectiveCostReason, r.ConsumptionPolicy,
 			r.Compressed, r.OriginalTokens, r.CompressedTokens, r.CompressionSavingsPct, r.CompressionTechnique, r.CompressionFallbackReason,
-			r.CorrelationID,
+			r.CorrelationID, r.Timestamp.UnixNano(),
 		)
 		if err != nil {
 			return err
@@ -816,10 +833,10 @@ func (s *SQLiteStore) LoadRecords(since time.Time, apiType string) ([]Persistent
 		       key_uid, subscription_uid, exchange_snapshot_version, list_cost_usd, effective_cost_usd,
 		       effective_cost_available, effective_cost_reason, consumption_policy,
 		       compressed, original_tokens, compressed_tokens, compression_savings_percent, compression_technique, compression_fallback_reason,
-		       correlation_id
+		       correlation_id, timestamp_ns
 		FROM request_records
 		WHERE timestamp >= ? AND api_type = ?
-		ORDER BY timestamp ASC
+		ORDER BY COALESCE(timestamp_ns, timestamp * 1000000000) ASC, id ASC
 	`, since.Unix(), apiType)
 	if err != nil {
 		return nil, err
@@ -829,6 +846,7 @@ func (s *SQLiteStore) LoadRecords(since time.Time, apiType string) ([]Persistent
 	for rows.Next() {
 		var r PersistentRecord
 		var ts int64
+		var tsNano sql.NullInt64
 		var success int
 		var failureClass string
 		var keyUID, subscriptionUID, effectiveReason, consumptionPolicy sql.NullString
@@ -841,12 +859,15 @@ func (s *SQLiteStore) LoadRecords(since time.Time, apiType string) ([]Persistent
 			&r.ChannelUID, &r.RouteModel, &keyUID, &subscriptionUID, &version, &listCost, &effectiveCost,
 			&effectiveAvailable, &effectiveReason, &consumptionPolicy,
 			&r.Compressed, &r.OriginalTokens, &r.CompressedTokens, &r.CompressionSavingsPct, &r.CompressionTechnique, &r.CompressionFallbackReason,
-			&r.CorrelationID,
+			&r.CorrelationID, &tsNano,
 		)
 		if err != nil {
 			return nil, err
 		}
 		r.Timestamp = time.Unix(ts, 0)
+		if tsNano.Valid {
+			r.Timestamp = time.Unix(0, tsNano.Int64)
+		}
 		r.Success = success == 1
 		r.FailureClass = FailureClass(failureClass)
 		r.APIType = apiType
@@ -874,7 +895,7 @@ func (s *SQLiteStore) LoadCircuitStates(apiType string) (map[string]*PersistentC
 	rows, err := s.db.Query(`
 		SELECT metrics_key, base_url, key_mask, circuit_state,
 		       circuit_opened_at, half_open_at, next_retry_at,
-		       backoff_level, half_open_successes, consecutive_failures
+		       backoff_level, half_open_successes, consecutive_failures, reset_at_ns
 		FROM circuit_states
 		WHERE api_type = ?
 	`, apiType)
@@ -886,7 +907,7 @@ func (s *SQLiteStore) LoadCircuitStates(apiType string) (map[string]*PersistentC
 	result := make(map[string]*PersistentCircuitState)
 	for rows.Next() {
 		var state PersistentCircuitState
-		var openedAt, halfOpenAt, nextRetryAt sql.NullInt64
+		var openedAt, halfOpenAt, nextRetryAt, resetAt sql.NullInt64
 		if err := rows.Scan(
 			&state.MetricsKey,
 			&state.BaseURL,
@@ -898,10 +919,15 @@ func (s *SQLiteStore) LoadCircuitStates(apiType string) (map[string]*PersistentC
 			&state.BackoffLevel,
 			&state.HalfOpenSuccesses,
 			&state.ConsecutiveFailures,
+			&resetAt,
 		); err != nil {
 			return nil, err
 		}
 		state.APIType = apiType
+		if resetAt.Valid {
+			t := time.Unix(0, resetAt.Int64)
+			state.ResetAt = &t
+		}
 		if openedAt.Valid {
 			t := time.Unix(openedAt.Int64, 0)
 			state.CircuitOpenedAt = &t
@@ -934,12 +960,16 @@ func (s *SQLiteStore) UpsertCircuitState(state PersistentCircuitState) error {
 	if state.NextRetryAt != nil {
 		nextRetryAt = state.NextRetryAt.Unix()
 	}
+	var resetAt any
+	if state.ResetAt != nil {
+		resetAt = state.ResetAt.UnixNano()
+	}
 	_, err := s.db.Exec(`
 		INSERT INTO circuit_states (
 			metrics_key, api_type, base_url, key_mask, circuit_state,
 			circuit_opened_at, half_open_at, next_retry_at,
-			backoff_level, half_open_successes, consecutive_failures, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			backoff_level, half_open_successes, consecutive_failures, updated_at, reset_at_ns
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(metrics_key, api_type) DO UPDATE SET
 			base_url = excluded.base_url,
 			key_mask = excluded.key_mask,
@@ -950,8 +980,9 @@ func (s *SQLiteStore) UpsertCircuitState(state PersistentCircuitState) error {
 			backoff_level = excluded.backoff_level,
 			half_open_successes = excluded.half_open_successes,
 			consecutive_failures = excluded.consecutive_failures,
+			reset_at_ns = excluded.reset_at_ns,
 			updated_at = excluded.updated_at
-	`, state.MetricsKey, state.APIType, state.BaseURL, state.KeyMask, state.CircuitState, openedAt, halfOpenAt, nextRetryAt, state.BackoffLevel, state.HalfOpenSuccesses, state.ConsecutiveFailures, time.Now().Unix())
+	`, state.MetricsKey, state.APIType, state.BaseURL, state.KeyMask, state.CircuitState, openedAt, halfOpenAt, nextRetryAt, state.BackoffLevel, state.HalfOpenSuccesses, state.ConsecutiveFailures, time.Now().Unix(), resetAt)
 	return err
 }
 

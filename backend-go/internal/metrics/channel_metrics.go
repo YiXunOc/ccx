@@ -147,6 +147,7 @@ type KeyMetrics struct {
 	LastFailureAt       *time.Time   `json:"lastFailureAt,omitempty"`
 	CircuitBrokenAt     *time.Time   `json:"circuitBrokenAt,omitempty"` // breaker 进入 open 的时间（兼容旧字段）
 	CircuitState        CircuitState `json:"-"`
+	ResetAt             *time.Time   `json:"-"` // breaker 统计起点，不影响历史报表
 	HalfOpenAt          *time.Time   `json:"halfOpenAt,omitempty"`
 	NextRetryAt         *time.Time   `json:"nextRetryAt,omitempty"`
 	BackoffLevel        int          `json:"backoffLevel"`
@@ -445,6 +446,7 @@ func (m *MetricsManager) loadFromStore() error {
 			metrics = m.getOrCreateKeyLocked(state.BaseURL, state.MetricsKey, state.KeyMask)
 		}
 		metrics.CircuitState = ParseCircuitState(state.CircuitState)
+		metrics.ResetAt = state.ResetAt
 		metrics.CircuitBrokenAt = state.CircuitOpenedAt
 		metrics.HalfOpenAt = state.HalfOpenAt
 		metrics.NextRetryAt = state.NextRetryAt
@@ -641,6 +643,9 @@ func (m *MetricsManager) mergeKeyMetricsLocked(dst, src *KeyMetrics) {
 	}
 	if src.ProbeInFlight {
 		dst.ProbeInFlight = true
+	}
+	if src.ResetAt != nil && (dst.ResetAt == nil || src.ResetAt.After(*dst.ResetAt)) {
+		dst.ResetAt = src.ResetAt
 	}
 	if src.BackoffLevel > dst.BackoffLevel {
 		dst.BackoffLevel = src.BackoffLevel

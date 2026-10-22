@@ -73,6 +73,7 @@ type PersistentCircuitState struct {
 	BackoffLevel        int
 	HalfOpenSuccesses   int
 	ConsecutiveFailures int64
+	ResetAt             *time.Time // 恢复边界；之前请求仅供历史统计
 }
 
 // PersistentRecord 持久化记录结构
