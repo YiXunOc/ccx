@@ -32,8 +32,8 @@ func protocolPreferenceAllows(cfg *config.Config, route ChannelRouteRef, request
 			actualModel = requestModel
 		}
 		for _, model := range []string{requestModel, actualModel} {
-			bound := cfg.ProtocolForLogicalModel(u.LogicalChannelUID, model)
-			if bound != "" && bound != route.Kind {
+			bound := cfg.ProtocolsForLogicalModel(u.LogicalChannelUID, model)
+			if len(bound) > 0 && !stringListContains(bound, route.Kind) {
 				return false
 			}
 		}
@@ -56,22 +56,10 @@ func filterProtocolPreferences(cfg *config.Config, channels []ChannelInfo, kind 
 // support remains the existing chat/responses execution boundary; each supported
 // client protocol can use it when the corresponding handler conversion exists.
 func (s *ChannelScheduler) addBoundProtocolCandidates(ctx context.Context, cfg *config.Config, kind ChannelKind, model string, channels []ChannelInfo, trace *SelectionTrace) []ChannelInfo {
-	var sources []config.UpstreamConfig
 	switch kind {
-	case ChannelKindMessages:
-		sources = cfg.Upstream
-	case ChannelKindChat:
-		sources = cfg.ChatUpstream
-	case ChannelKindResponses:
-		sources = cfg.ResponsesUpstream
+	case ChannelKindMessages, ChannelKindChat, ChannelKindResponses:
 	default:
 		return channels
-	}
-	logicalSources := map[string]bool{}
-	for _, u := range sources {
-		if u.LogicalChannelUID != "" {
-			logicalSources[u.LogicalChannelUID] = true
-		}
 	}
 	seen := map[ChannelRouteKey]bool{}
 	for _, ch := range channels {
@@ -98,11 +86,12 @@ func (s *ChannelScheduler) addBoundProtocolCandidates(ctx context.Context, cfg *
 			if actual == "" {
 				actual = model
 			}
-			bound := cfg.ProtocolForLogicalModel(u.LogicalChannelUID, actual)
-			if bound == "" {
-				bound = cfg.ProtocolForLogicalModel(u.LogicalChannelUID, model)
+			bound := stringListContains(cfg.ProtocolsForLogicalModel(u.LogicalChannelUID, actual), string(target)) ||
+				stringListContains(cfg.ProtocolsForLogicalModel(u.LogicalChannelUID, model), string(target))
+			if !bound || !protocolPreferenceAllows(cfg, ch.Route, model, actual) || seen[ch.Route.Key()] || ch.Status != "active" || !channelHasSelectableKey(u) {
+				continue
 			}
-			if !logicalSources[u.LogicalChannelUID] || bound != string(target) || seen[ch.Route.Key()] {
+			if supported, _ := s.resolveModelSupport(ctx, target, u, model); !supported {
 				continue
 			}
 			ch.ActualModel = actual

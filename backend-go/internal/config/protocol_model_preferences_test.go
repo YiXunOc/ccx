@@ -15,11 +15,12 @@ func TestProtocolModelPreferencesCopiesAndMerge(t *testing.T) {
 	if p["chat"][0] != "model" {
 		t.Fatal("clone aliases original")
 	}
-	if _, err := mergeProtocolModelPreferences(p, ProtocolModelPreferences{"responses": {"model"}}); err == nil {
-		t.Fatal("convergence conflict accepted")
+	mergedMulti, err := mergeProtocolModelPreferences(p, ProtocolModelPreferences{"responses": {"model"}})
+	if err != nil || len(mergedMulti.ProtocolsForModel("model")) != 2 {
+		t.Fatalf("cross-protocol merge failed: %v %#v", err, mergedMulti)
 	}
 	merged, err := mergeProtocolModelPreferences(p, ProtocolModelPreferences{"responses": {"other"}})
-	if err != nil || merged.ProtocolForModel("other") != "responses" {
+	if err != nil || !merged.HasModelForProtocol("responses", "other") {
 		t.Fatalf("merge lost binding: %v", err)
 	}
 	if err := (ProtocolModelPreferences{"chat": {"model", "model"}}).Validate(); err == nil {
@@ -30,15 +31,15 @@ func TestProtocolModelPreferencesCopiesAndMerge(t *testing.T) {
 func TestProtocolPreferencesRebuildPreservesBindings(t *testing.T) {
 	cfg := Config{Upstream: []UpstreamConfig{mkPhys("acct", "msg", "one", "n", "claude", "active")}, ChatUpstream: []UpstreamConfig{mkPhys("acct", "chat", "two", "n", "openai", "active")}, LogicalChannels: []LogicalChannel{
 		{LogicalChannelUID: "one", AccountUID: "acct", ProtocolModelPreferences: ProtocolModelPreferences{"chat": {"a"}}},
-		{LogicalChannelUID: "two", AccountUID: "acct", ProtocolModelPreferences: ProtocolModelPreferences{"responses": {"b"}}},
+		{LogicalChannelUID: "two", AccountUID: "acct", ProtocolModelPreferences: ProtocolModelPreferences{"responses": {"a", "b"}}},
 	}}
 	RebuildLogicalChannels(&cfg)
-	if len(cfg.LogicalChannels) != 1 || cfg.LogicalChannels[0].ProtocolModelPreferences.ProtocolForModel("b") != "responses" {
+	if len(cfg.LogicalChannels) != 1 || !cfg.LogicalChannels[0].ProtocolModelPreferences.HasModelForProtocol("responses", "b") || !cfg.LogicalChannels[0].ProtocolModelPreferences.HasModelForProtocol("chat", "a") {
 		t.Fatal("rebuild lost binding")
 	}
 	cfg.ResponsesUpstream = append(cfg.ResponsesUpstream, mkPhys("acct", "resp", "", "n", "responses", "active"))
 	RebuildLogicalChannels(&cfg)
-	if cfg.LogicalChannels[0].ProtocolModelPreferences.ProtocolForModel("a") != "chat" {
+	if !cfg.LogicalChannels[0].ProtocolModelPreferences.HasModelForProtocol("chat", "a") {
 		t.Fatal("new route lost binding")
 	}
 }
@@ -51,14 +52,14 @@ func TestProtocolPreferencesCRUDAndPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cm.Close()
-	lc, err := cm.CreateLogicalChannel(CreateLogicalChannelInput{Name: "example", BaseURLs: []string{"https://binding.example"}, Kind: LogicalChannelKindLLM, Protocols: []CreateLogicalChannelProtocol{{Kind: "chat", ServiceType: "openai", APIKeys: []string{"test-key"}}}, ProtocolModelPreferences: ProtocolModelPreferences{"chat": {"model"}}})
+	lc, err := cm.CreateLogicalChannel(CreateLogicalChannelInput{Name: "example", BaseURLs: []string{"https://binding.example"}, Kind: LogicalChannelKindLLM, Protocols: []CreateLogicalChannelProtocol{{Kind: "chat", ServiceType: "openai", APIKeys: []string{"test-key"}}}, ProtocolModelPreferences: ProtocolModelPreferences{"chat": {"model"}, "responses": {"model"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = cm.UpdateLogicalChannel(UpdateLogicalChannelInput{LogicalChannelUID: lc.LogicalChannelUID, Common: &UpdateLogicalChannelCommon{}}); err != nil {
 		t.Fatal(err)
 	}
-	if cm.GetLogicalChannel(lc.LogicalChannelUID).ProtocolModelPreferences.ProtocolForModel("model") != "chat" {
+	if !cm.GetLogicalChannel(lc.LogicalChannelUID).ProtocolModelPreferences.HasModelForProtocol("chat", "model") {
 		t.Fatal("omission cleared binding")
 	}
 	cm.Close()
@@ -67,13 +68,13 @@ func TestProtocolPreferencesCRUDAndPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reloaded.Close()
-	if reloaded.GetLogicalChannel(lc.LogicalChannelUID).ProtocolModelPreferences.ProtocolForModel("model") != "chat" {
+	if !reloaded.GetLogicalChannel(lc.LogicalChannelUID).ProtocolModelPreferences.HasModelForProtocol("chat", "model") {
 		t.Fatal("binding lost across restart")
 	}
 	cm = reloaded
 	snap := cm.GetConfig()
 	snap.LogicalChannels[0].ProtocolModelPreferences["chat"][0] = "changed"
-	if cm.GetLogicalChannel(lc.LogicalChannelUID).ProtocolModelPreferences.ProtocolForModel("model") != "chat" {
+	if !cm.GetLogicalChannel(lc.LogicalChannelUID).ProtocolModelPreferences.HasModelForProtocol("chat", "model") {
 		t.Fatal("snapshot aliases binding")
 	}
 	empty := ProtocolModelPreferences{}
@@ -88,7 +89,7 @@ func TestProtocolPreferencesCRUDAndPersistence(t *testing.T) {
 	if err = json.Unmarshal(raw, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if persisted.ProtocolForLogicalModel(lc.LogicalChannelUID, "model") != "" {
+	if len(persisted.ProtocolsForLogicalModel(lc.LogicalChannelUID, "model")) != 0 {
 		t.Fatal("clear did not persist")
 	}
 }
@@ -144,7 +145,7 @@ func TestProtocolPreferencesDeletedAccountMember(t *testing.T) {
 				t.Fatal("expected existing account convergence")
 			}
 			p := cm.config.LogicalChannels[0].ProtocolModelPreferences
-			if p.ProtocolForModel("model") != "chat" || p.ProtocolForModel("other") != "responses" {
+			if !p.HasModelForProtocol("chat", "model") || !p.HasModelForProtocol("responses", "other") {
 				t.Fatal("deleted member lost bindings")
 			}
 		})
@@ -252,7 +253,7 @@ func normalizedBindingConflictFixture() Config {
 	}
 	return Config{Upstream: []UpstreamConfig{a}, ChatUpstream: []UpstreamConfig{b}, LogicalChannels: []LogicalChannel{
 		{LogicalChannelUID: "one", ProtocolModelPreferences: ProtocolModelPreferences{"chat": {"model"}}},
-		{LogicalChannelUID: "two", ProtocolModelPreferences: ProtocolModelPreferences{"responses": {"model"}}},
+		{LogicalChannelUID: "two", ProtocolModelPreferences: ProtocolModelPreferences{"chat": {"model", "model"}}},
 	}}
 }
 
@@ -315,7 +316,7 @@ func TestProtocolModelPreferencesLoadValidation(t *testing.T) {
 	}{
 		{"legacy", `{}`, false},
 		{"valid", `{"logicalChannels":[{"logicalChannelUid":"lc-a","protocolModelPreferences":{"chat":["model-a"],"responses":["model-b"]}}]}`, false},
-		{"conflict within channel", `{"logicalChannels":[{"logicalChannelUid":"lc-a","protocolModelPreferences":{"chat":["model-a"],"responses":["model-a"]}}]}`, true},
+		{"same model across protocols", `{"logicalChannels":[{"logicalChannelUid":"lc-a","protocolModelPreferences":{"chat":["model-a"],"responses":["model-a"]}}]}`, false},
 		{"independent channels", `{"logicalChannels":[{"logicalChannelUid":"lc-a","protocolModelPreferences":{"chat":["model-a"]}},{"logicalChannelUid":"lc-b","protocolModelPreferences":{"responses":["model-a"]}}]}`, false},
 		{"unknown protocol", `{"logicalChannels":[{"logicalChannelUid":"lc-a","protocolModelPreferences":{"unknown":["model-a"]}}]}`, true},
 		{"blank model", `{"logicalChannels":[{"logicalChannelUid":"lc-a","protocolModelPreferences":{"chat":[" "]}}]}`, true},

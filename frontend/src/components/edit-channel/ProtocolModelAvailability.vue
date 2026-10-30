@@ -233,7 +233,6 @@
           v-if="editable"
           :models="preferences?.[route.upstreamKind] ?? []"
           :discovered-models="allDiscoveredModels"
-          :conflicts="conflictingModels(route.upstreamKind)"
           :saving="savingPreferences"
           @save="models => emit('savePreferences', { ...preferences, [route.upstreamKind]: models })"
         />
@@ -633,10 +632,6 @@ const baseNormalizedRoutes = computed(() => (props.routes ?? []).map((route) => 
 }))
 
 const allDiscoveredModels = computed(() => normalizeModels(baseNormalizedRoutes.value.flatMap(route => route.models)))
-const conflictingModels = (kind: ChannelKind) => normalizeModels(Object.entries(props.preferences ?? {})
-  .filter(([otherKind]) => otherKind !== kind)
-  .flatMap(([, models]) => models))
-
 const sharedProtocolRoutes = computed(() => (
   baseNormalizedRoutes.value.filter(route => route.hasInventory)
 ))

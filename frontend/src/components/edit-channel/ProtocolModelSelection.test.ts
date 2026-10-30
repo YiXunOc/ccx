@@ -12,7 +12,7 @@ const autocomplete = defineComponent({
 })
 const button = defineComponent({ props: ['disabled'], emits: ['click'], template: `<button :disabled="disabled" @click="$emit('click')"><slot /></button>` })
 const mountEditor = (props = {}) => mount(ProtocolModelSelection, {
-  props: { models: ['saved'], discoveredModels: ['all-a', 'all-b'], conflicts: [], saving: false, ...props },
+  props: { models: ['saved'], discoveredModels: ['all-a', 'all-b'], saving: false, ...props },
   global: { stubs: { VAutocomplete: autocomplete, VBtn: button, VAlert: { template: '<div><slot /></div>' } } },
 })
 
@@ -43,20 +43,20 @@ describe('ProtocolModelSelection', () => {
     expect(wrapper.emitted('save')).toEqual([[[]]])
     expect(wrapper.text()).toContain('channelEditor.protocolModels.automaticSelection')
   })
-  it('显示冲突但不自行裁决，并在刷新后回显配置', async () => {
-    const wrapper = mountEditor({ conflicts: ['saved'] })
-    expect(wrapper.text()).toContain('channelEditor.protocolModels.conflictSelection')
+  it('刷新后回显配置且不将未发现模型视为冲突', async () => {
+    const wrapper = mountEditor()
+    expect(wrapper.text()).not.toContain('channelEditor.protocolModels.conflictSelection')
     await wrapper.setProps({ models: ['all-b'] })
     expect(wrapper.findComponent(autocomplete).props('modelValue')).toEqual(['all-b'])
   })
-  it('新选择冲突模型时提示并阻止保存，清除后可保存', async () => {
-    const wrapper = mountEditor({ conflicts: ['all-a'] })
-    wrapper.findComponent(autocomplete).vm.$emit('update:modelValue', ['all-a'])
+  it('同协议选项和保存值去重', async () => {
+    const wrapper = mountEditor({ discoveredModels: ['all-a', 'all-a', 'saved'] })
+    expect(wrapper.findComponent(autocomplete).props('items')).toEqual(['all-a', 'saved'])
+    wrapper.findComponent(autocomplete).vm.$emit('update:modelValue', ['all-a', 'all-a'])
     await wrapper.vm.$nextTick()
-    expect(wrapper.get('[data-action="save-models"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('channelEditor.protocolModels.conflictSelection')
-    await wrapper.get('[data-action="clear-models"]').trigger('click')
     expect(wrapper.get('[data-action="save-models"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-action="save-models"]').trigger('click')
+    expect(wrapper.emitted('save')).toEqual([[['all-a']]])
   })
   it('后台发现刷新不覆盖尚未保存的编辑', async () => {
     const wrapper = mountEditor()

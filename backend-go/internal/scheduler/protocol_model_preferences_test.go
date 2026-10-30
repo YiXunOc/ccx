@@ -45,7 +45,7 @@ func boundAliasConfig() config.Config {
 			LogicalChannelUID:        "logical",
 			AccountUID:               accountUID,
 			BaseURLs:                 []string{baseURL},
-			ProtocolModelPreferences: config.ProtocolModelPreferences{"chat": {"actual"}},
+			ProtocolModelPreferences: config.ProtocolModelPreferences{"chat": {"actual"}, "responses": {"actual"}},
 		}},
 	}
 }
@@ -281,5 +281,121 @@ func TestProtocolPreferencesScopedCandidates(t *testing.T) {
 	candidates := []ChannelInfo{{Route: ChannelRouteRef{Kind: "messages", ChannelUID: "native"}}}
 	if got := filterProtocolPreferences(&cfg, candidates, ChannelKindMessages, "model"); len(got) != 0 {
 		t.Fatal("unavailable bound protocol must not fall back")
+	}
+}
+
+func TestBoundSingleEndpointDoesNotRequireClientRoute(t *testing.T) {
+	for _, target := range []ChannelKind{ChannelKindMessages, ChannelKindResponses} {
+		t.Run(string(target), func(t *testing.T) {
+			cfg := boundAliasConfig()
+			u := cfg.Upstream[0]
+			u.ServiceType = "claude"
+			cfg.Upstream, cfg.ChatUpstream = nil, nil
+			if target == ChannelKindMessages {
+				cfg.Upstream = []config.UpstreamConfig{u}
+			} else {
+				u.ServiceType = "responses"
+				cfg.ResponsesUpstream = []config.UpstreamConfig{u}
+			}
+			cfg.LogicalChannels[0].ProtocolModelPreferences = config.ProtocolModelPreferences{string(target): {"actual"}}
+			scheduler, cleanup := createTestScheduler(t, cfg)
+			defer cleanup()
+			setBoundAliasResolver(scheduler)
+			result, err := scheduler.SelectChannelWithOptions(context.Background(), SelectionOptions{Kind: ChannelKindChat, Model: "alias"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Route.Kind != string(target) || result.ExecutionModel != "actual" {
+				t.Fatalf("wrong selection: %#v", result)
+			}
+		})
+	}
+}
+
+func TestBoundCandidatesPreserveExistingFilters(t *testing.T) {
+	for _, mode := range []string{"eligible", "unbound", "disabled", "no-key", "unsupported"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := boundAliasConfig()
+			cfg.Upstream = nil
+			cfg.LogicalChannels[0].ProtocolModelPreferences = config.ProtocolModelPreferences{"chat": {"actual"}}
+			if mode == "unbound" {
+				cfg.LogicalChannels[0].ProtocolModelPreferences = nil
+			}
+			if mode == "disabled" {
+				cfg.ChatUpstream[0].Status = "disabled"
+			}
+			if mode == "no-key" {
+				cfg.ChatUpstream[0].APIKeys = nil
+			}
+			scheduler, cleanup := createTestScheduler(t, cfg)
+			defer cleanup()
+			scheduler.SetModelSupportResolverProvider(func(_ context.Context, _ ChannelKind, _ *config.UpstreamConfig, _ string) (bool, string, string, string) {
+				return mode != "unsupported", "actual", "test", ""
+			})
+			snapshot := scheduler.configManager.GetConfig()
+			got := scheduler.addBoundProtocolCandidates(context.Background(), &snapshot, ChannelKindMessages, "alias", nil, nil)
+			want := 0
+			if mode == "eligible" {
+				want = 1
+			}
+			if len(got) != want {
+				t.Fatalf("candidates=%#v, want count %d", got, want)
+			}
+		})
+	}
+}
+
+func TestProtocolPreferencesRequestActualIntersection(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		preferences config.ProtocolModelPreferences
+		want        bool
+	}{
+		{"both automatic", nil, true},
+		{"request automatic", config.ProtocolModelPreferences{"chat": {"actual"}}, true},
+		{"actual automatic", config.ProtocolModelPreferences{"chat": {"alias"}}, true},
+		{"overlap", config.ProtocolModelPreferences{"chat": {"alias", "actual"}, "responses": {"alias"}, "messages": {"actual"}}, true},
+		{"disjoint", config.ProtocolModelPreferences{"chat": {"alias"}, "responses": {"actual"}}, false},
+		{"actual denies", config.ProtocolModelPreferences{"chat": {"alias"}, "messages": {"actual"}}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := boundAliasConfig()
+			cfg.LogicalChannels[0].ProtocolModelPreferences = tt.preferences
+			for i := 0; i < 100; i++ {
+				if got := protocolPreferenceAllows(&cfg, ChannelRouteRef{Kind: "chat", ChannelUID: "target"}, "alias", "actual"); got != tt.want {
+					t.Fatalf("allows=%v want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestMultiBoundCandidatesPriorityAndFailover(t *testing.T) {
+	cfg := boundAliasConfig()
+	response := *cfg.ChatUpstream[0].Clone()
+	response.ChannelUID = "response"
+	response.ServiceType = "responses"
+	response.Priority = 1
+	cfg.ChatUpstream[0].Priority = 9
+	cfg.ResponsesUpstream = []config.UpstreamConfig{response}
+	cfg.LogicalChannels[0].ProtocolModelPreferences = config.ProtocolModelPreferences{"chat": {"actual"}, "responses": {"actual"}}
+	scheduler, cleanup := createTestScheduler(t, cfg)
+	defer cleanup()
+	setBoundAliasResolver(scheduler)
+	for i := 0; i < 20; i++ {
+		first, err := scheduler.SelectChannelWithOptions(context.Background(), SelectionOptions{Kind: ChannelKindMessages, Model: "alias"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first.Route.Kind != "responses" || first.CandidateCount != 2 {
+			t.Fatalf("priority/multi candidates lost: %#v", first)
+		}
+		next, err := scheduler.SelectChannelWithOptions(context.Background(), SelectionOptions{Kind: ChannelKindMessages, Model: "alias", FailedRoutes: map[ChannelRouteKey]bool{first.Route.Key(): true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next.Route.Kind != "chat" {
+			t.Fatalf("failover lost other bound protocol: %#v", next)
+		}
 	}
 }

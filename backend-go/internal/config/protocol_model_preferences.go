@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -20,67 +21,80 @@ func (p ProtocolModelPreferences) Clone() ProtocolModelPreferences {
 }
 
 func (p ProtocolModelPreferences) Validate() error {
-	seen := map[string]string{}
 	for kind, models := range p {
 		switch kind {
 		case "messages", "chat", "responses", "gemini", "images", "vectors":
 		default:
 			return fmt.Errorf("protocolModelPreferences: unknown protocol %q", kind)
 		}
+		seen := map[string]bool{}
 		for _, model := range models {
 			if model == "" || strings.TrimSpace(model) != model {
 				return fmt.Errorf("protocolModelPreferences: model must be nonblank without surrounding whitespace")
 			}
-			if previous, ok := seen[model]; ok {
-				return fmt.Errorf("protocolModelPreferences: model %q is bound more than once (%s, %s)", model, previous, kind)
+			if seen[model] {
+				return fmt.Errorf("protocolModelPreferences: model %q is duplicated for protocol %s", model, kind)
 			}
-			seen[model] = kind
+			seen[model] = true
 		}
 	}
 	return nil
 }
 
-func (p ProtocolModelPreferences) ProtocolForModel(model string) string {
-	for kind, models := range p {
-		for _, candidate := range models {
-			if candidate == model {
-				return kind
-			}
+func (p ProtocolModelPreferences) HasModelForProtocol(protocol, model string) bool {
+	for _, candidate := range p[protocol] {
+		if candidate == model {
+			return true
 		}
 	}
-	return ""
+	return false
+}
+
+// ProtocolsForModel returns every explicitly bound protocol in deterministic order.
+func (p ProtocolModelPreferences) ProtocolsForModel(model string) []string {
+	var protocols []string
+	for protocol := range p {
+		if p.HasModelForProtocol(protocol, model) {
+			protocols = append(protocols, protocol)
+		}
+	}
+	sort.Strings(protocols)
+	return protocols
 }
 
 func mergeProtocolModelPreferences(a, b ProtocolModelPreferences) (ProtocolModelPreferences, error) {
+	if err := a.Validate(); err != nil {
+		return nil, err
+	}
+	if err := b.Validate(); err != nil {
+		return nil, err
+	}
 	out := a.Clone()
 	if out == nil {
 		out = ProtocolModelPreferences{}
 	}
 	for kind, models := range b {
 		for _, model := range models {
-			if existing := out.ProtocolForModel(model); existing != "" {
-				if existing != kind {
-					return nil, fmt.Errorf("model %q has conflicting protocols", model)
-				}
-				continue
+			if !out.HasModelForProtocol(kind, model) {
+				out[kind] = append(out[kind], model)
 			}
-			out[kind] = append(out[kind], model)
 		}
 	}
 	return out, nil
 }
 
-// ProtocolForLogicalModel resolves a binding using the caller's configuration snapshot.
-func (c *Config) ProtocolForLogicalModel(uid, model string) string {
-	if uid == "" || model == "" {
-		return ""
+// ProtocolsForLogicalModel resolves bindings using the caller's configuration snapshot.
+// No binding means automatic routing, not an empty set of eligible protocols.
+func (c *Config) ProtocolsForLogicalModel(uid, model string) []string {
+	if c == nil || uid == "" || model == "" {
+		return nil
 	}
 	for _, l := range c.LogicalChannels {
 		if l.LogicalChannelUID == uid {
-			return l.ProtocolModelPreferences.ProtocolForModel(model)
+			return l.ProtocolModelPreferences.ProtocolsForModel(model)
 		}
 	}
-	return ""
+	return nil
 }
 
 func validateProtocolModelPreferences(c *Config) error {

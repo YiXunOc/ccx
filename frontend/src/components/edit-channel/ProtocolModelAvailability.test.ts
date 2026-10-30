@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChannelProtocolRoute } from '../../services/api'
 import ProtocolModelAvailability from './ProtocolModelAvailability.vue'
+import ProtocolModelSelection from './ProtocolModelSelection.vue'
+import type { ProtocolModelPreferences } from '../../services/api-types'
 
 const autopilotMocks = vi.hoisted(() => ({
   autoDiscoverChannel: vi.fn(),
@@ -63,9 +65,57 @@ describe('ProtocolModelAvailability', () => {
     const editor = wrapper.findAllComponents({ name: 'ProtocolModelSelection' })[0]
     expect(editor.props('discoveredModels')).toEqual(['a', 'b'])
     expect(editor.props('models')).toEqual(['old'])
-    expect(editor.props('conflicts')).toEqual(['reserved'])
+    expect(editor.attributes('conflicts')).toBeUndefined()
     editor.vm.$emit('save', [])
     expect(wrapper.emitted('savePreferences')).toEqual([[{ chat: [], messages: ['reserved'] }]])
+  })
+  it.each(['chat', 'messages'] as const)('%s 可绑定另一协议同名模型，保存及清除均不影响另一协议', async (kind) => {
+    const otherKind = kind === 'chat' ? 'messages' : 'chat'
+    const preferences: ProtocolModelPreferences = { [kind]: ['old'], [otherKind]: ['shared'] }
+    const selectStub = defineComponent({
+      props: ['modelValue', 'items'], emits: ['update:modelValue'], template: '<div />',
+    })
+    const saveButtonStub = defineComponent({
+      props: ['disabled'], emits: ['click'],
+      template: '<button :disabled="disabled" @click="$emit(\'click\')"><slot /></button>',
+    })
+    const mountPanel = (saved: ProtocolModelPreferences) => mount(ProtocolModelAvailability, {
+      props: {
+        editable: true, preferences: saved,
+        routes: [
+          { kind: 'chat', index: 0, name: 'one', serviceType: 'openai', discoveredModels: ['shared', 'chat-only'] },
+          { kind: 'messages', index: 0, name: 'two', serviceType: 'claude', discoveredModels: ['shared', 'messages-only'] },
+        ],
+      },
+      global: { stubs: {
+        ...baseStubs, VAutocomplete: selectStub, VBtn: saveButtonStub,
+        VAlert: passthroughStub, VProgressCircular: passthroughStub,
+      } },
+    })
+    const wrapper = mountPanel(preferences)
+    const editor = wrapper.get('[data-kind="' + kind + '"]').findComponent(ProtocolModelSelection)
+    expect(editor.findComponent(selectStub).props('items')).toEqual(['chat-only', 'messages-only', 'old', 'shared'])
+    editor.findComponent(selectStub).vm.$emit('update:modelValue', ['shared'])
+    await nextTick()
+    expect(editor.get('[data-action="save-models"]').attributes('disabled')).toBeUndefined()
+    expect(editor.text()).not.toContain('channelEditor.protocolModels.conflictSelection')
+    await editor.get('[data-action="save-models"]').trigger('click')
+    const saved = wrapper.emitted('savePreferences')![0]![0] as ProtocolModelPreferences
+    expect(saved).toEqual({ chat: ['shared'], messages: ['shared'] })
+    await wrapper.setProps({ preferences: saved })
+    for (const selection of wrapper.findAllComponents(ProtocolModelSelection)) {
+      expect(selection.findComponent(selectStub).props('modelValue')).toEqual(['shared'])
+    }
+    await editor.get('[data-action="clear-models"]').trigger('click')
+    await editor.get('[data-action="save-models"]').trigger('click')
+    const cleared = wrapper.emitted('savePreferences')![1]![0] as ProtocolModelPreferences
+    expect(cleared).toEqual({ [kind]: [], [otherKind]: ['shared'] })
+    expect(preferences).toEqual({ [kind]: ['old'], [otherKind]: ['shared'] })
+    wrapper.unmount()
+    const restored = mountPanel(cleared)
+    expect(restored.get('[data-kind="' + kind + '"]').findComponent(selectStub).props('modelValue')).toEqual([])
+    expect(restored.get('[data-kind="' + otherKind + '"]').findComponent(selectStub).props('modelValue')).toEqual(['shared'])
+    restored.unmount()
   })
   it('按协议分组展示各自的可用模型', () => {
     const wrapper = mount(ProtocolModelAvailability, {
