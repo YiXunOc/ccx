@@ -41,8 +41,9 @@ export const ARTIFICIAL_ANALYSIS_MODEL_MAP = {
   // GPT-6 Sol/Luna（2026-09-22 发布）：AA slug 与 canonical 同名
   'gpt-6-sol': 'gpt-6-sol',
   'gpt-6-luna': 'gpt-6-luna',
-  // GPT-6.1 Sol（2026-09-29 发布）：AA slug 点号转连字符
+  // GPT-6.1 Sol/Terra：AA slug 点号转连字符
   'gpt-6-1-sol': 'gpt-6.1-sol',
+  'gpt-6-1-terra': 'gpt-6.1-terra',
   'claude-opus-4-8': 'claude-opus-4-8',
   'claude-opus-4-7': 'claude-opus-4-7',
   'claude-opus-4-6': 'claude-opus-4-6',
@@ -82,6 +83,9 @@ export const ARTIFICIAL_ANALYSIS_MODEL_MAP = {
   'kimi-k2-5': 'kimi-k2.5',
   'kimi-k2-thinking': 'kimi-k2-thinking',
   'kimi-k3': 'kimi-k3',
+  // Kimi K3.1 Pro（2026-10-23 发布）：AA slug 用连字符分段版本号，highspeed 同能力折入同一 canonical
+  'kimi-k3-1-pro': 'kimi-k3.1-pro',
+  'kimi-k3-1-pro-highspeed': 'kimi-k3.1-pro',
   'gemini-3-1-pro': 'gemini-3.1-pro',
   'gemini-3-flash': 'gemini-3-flash',
   'gemini-3-5-flash': 'gemini-3.5-flash',

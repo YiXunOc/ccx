@@ -23,6 +23,7 @@ const modelPriorityPatterns: RegExp[] = [
   // OpenAI GPT 系列
   /gpt-6-astra/i,
   /gpt-6\.1-sol/i,
+  /gpt-6\.1-terra/i,
   /gpt-6-sol/i,
   /gpt-6-luna/i,
   /gpt-6/i,
@@ -105,6 +106,7 @@ const modelPriorityPatterns: RegExp[] = [
   /deepseek-v3/i,
 
   // Moonshot Kimi / MiniMax
+  /kimi-?k3\.1/i,
   /^(?:kimi-)?k3(?:\[1m\])?$/i,
   /kimi-for-coding-highspeed/i,
   /kimi-for-coding/i,
@@ -121,6 +123,7 @@ const modelPriorityPatterns: RegExp[] = [
   /ernie-4\.5/i,
   /baichuan-m2/i,
   /yi-34b-200k/i,
+  /k3\.1/i,
   /k2\.7/i,
   /k2\.6/i,
   /k2\.5/i,
