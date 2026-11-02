@@ -19,8 +19,9 @@ export const DEEPSWE_MODEL_MAP = {
   // GPT-6 Sol/Luna（2026-09-22 发布）：deepswe slug 与 canonical 同名
   'gpt-6-sol': 'gpt-6-sol',
   'gpt-6-luna': 'gpt-6-luna',
-  // GPT-6.1 Sol（2026-09-29 发布）：deepswe slug 点号转连字符
+  // GPT-6.1 Sol/Terra：deepswe slug 点号转连字符
   'gpt-6-1-sol': 'gpt-6.1-sol',
+  'gpt-6-1-terra': 'gpt-6.1-terra',
   'gpt-5-6-sol': 'gpt-5.6-sol',
   'gpt-5-6-terra': 'gpt-5.6-terra',
   'gpt-5-6-luna': 'gpt-5.6-luna',
@@ -43,6 +44,9 @@ export const DEEPSWE_MODEL_MAP = {
   'kimi-k2-7-code-highspeed': 'kimi-k2.7-code',
   'kimi-k3': 'kimi-k3',
   'kimi-3': 'kimi-k3',
+  // Kimi K3.1 Pro（2026-10-23 发布）：榜单 slug 连字符分段版本号，highspeed 同能力折入
+  'kimi-k3-1-pro': 'kimi-k3.1-pro',
+  'kimi-k3-1-pro-highspeed': 'kimi-k3.1-pro',
   'gemini-3-1-pro': 'gemini-3.1-pro',
   'gemini-3-flash': 'gemini-3-flash',
   'gemini-3-5-flash': 'gemini-3.5-flash',
@@ -81,8 +85,9 @@ export const BENCHLM_MODEL_MAP = {
   // GPT-6 Sol/Luna（2026-09-22 发布）：benchlm slug 与 canonical 同名
   'gpt-6-sol': 'gpt-6-sol',
   'gpt-6-luna': 'gpt-6-luna',
-  // GPT-6.1 Sol（2026-09-29 发布）：benchlm slug 点号转连字符
+  // GPT-6.1 Sol/Terra：benchlm slug 点号转连字符
   'gpt-6-1-sol': 'gpt-6.1-sol',
+  'gpt-6-1-terra': 'gpt-6.1-terra',
   'claude-opus-4-8': 'claude-opus-4-8',
   'claude-opus-4-7': 'claude-opus-4-7',
   'claude-opus-4-7-adaptive': 'claude-opus-4-7',
@@ -111,6 +116,9 @@ export const BENCHLM_MODEL_MAP = {
   // 榜单 slug 是 kimi-k3（旧键 kimi-3 是 8/20 审计发现的键名错误，保留作别名）
   'kimi-k3': 'kimi-k3',
   'kimi-3': 'kimi-k3',
+  // Kimi K3.1 Pro（2026-10-23 发布）：榜单 slug 连字符分段版本号，highspeed 同能力折入
+  'kimi-k3-1-pro': 'kimi-k3.1-pro',
+  'kimi-k3-1-pro-highspeed': 'kimi-k3.1-pro',
   'claude-mythos-5': 'claude-mythos-5',
   'claude-mythos-5-1': 'claude-mythos-5-1',
   'qwen3-8-max': 'qwen3.8-max',
