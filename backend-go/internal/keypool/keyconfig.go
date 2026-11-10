@@ -109,6 +109,9 @@ func CandidatesForModelWeighted(upstream *config.UpstreamConfig, failedKeys map[
 		if model != "" && len(cfg.Models) > 0 && !matchesModel(model, cfg.Models) {
 			continue
 		}
+		if model != "" && !IsModelAvailableForConfig(cfg, model) {
+			continue
+		}
 		// (Key, 模型) 组合级限制：model_not_found 等错误后，该组合在限制期内被跳过，
 		// 不影响该 Key 的其他模型，也不阻断 failover 到其他渠道。
 		// 注意此处按选 Key 阶段的重定向后模型检查；autopilot 自动映射的目标模型
@@ -165,6 +168,33 @@ func CandidatesForModelWeighted(upstream *config.UpstreamConfig, failedKeys map[
 	}
 
 	return out
+}
+
+// IsModelAvailableForConfig enforces an exact, case-insensitive allowlist. An empty list is unrestricted.
+func IsModelAvailableForConfig(cfg config.APIKeyConfig, model string) bool {
+	if len(cfg.AvailableModels) == 0 {
+		return true
+	}
+	model = strings.TrimSpace(model)
+	for _, available := range cfg.AvailableModels {
+		if strings.EqualFold(model, strings.TrimSpace(available)) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsModelAvailableForKey resolves the current key config for final post-rewrite validation.
+func IsModelAvailableForKey(upstream *config.UpstreamConfig, key, model string) bool {
+	if upstream == nil {
+		return false
+	}
+	for _, cfg := range config.NormalizeAPIKeyConfigsForView(*upstream) {
+		if cfg.Key == key {
+			return IsModelAvailableForConfig(cfg, model)
+		}
+	}
+	return true
 }
 
 // conflictingAPIKeyIdentities 标记同一明文 Key 绑定到不同稳定身份或 new-api ownership 的配置。

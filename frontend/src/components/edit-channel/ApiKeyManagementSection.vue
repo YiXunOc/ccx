@@ -622,6 +622,25 @@
                   </v-alert>
 
                   <v-divider class="my-3" />
+                  <div class="text-subtitle-2 font-weight-medium mb-1">{{ t('channelCard.availableModels') }}</div>
+                  <v-combobox
+                    :model-value="availableModelsForKey(row.key)"
+                    :items="modelOptions"
+                    item-title="title"
+                    item-value="value"
+                    multiple
+                    chips
+                    closable-chips
+                    clearable
+                    variant="outlined"
+                    density="compact"
+                    :label="t('channelCard.availableModels')"
+                    :hint="t('channelCard.availableModelsHint')"
+                    persistent-hint
+                    @update:model-value="stageAvailableModels(row, $event)"
+                  />
+
+                  <v-divider class="my-3" />
 
                   <div class="text-subtitle-2 font-weight-medium mb-1">{{ t(editingQuotaGroup ? 'channelCard.groupModelPolicy' : 'channelCard.keyModelPolicy') }}</div>
                   <div class="model-exclusion-input d-flex flex-wrap ga-2" :class="{ 'model-exclusion-input--error': groupModelError }">
@@ -1778,6 +1797,26 @@ const planRowTitle = (): string => {
 }
 
 const hasConfigurableKeys = computed(() => props.serviceType === 'copilot' || keyRows.value.length > 0)
+
+function availableModelsForKey(key: string): string[] {
+  return [...(props.apiKeyConfigs?.find(config => config.key === key)?.availableModels ?? [])]
+}
+
+function stageAvailableModels(row: ChannelApiKeyRow, value: unknown) {
+  const availableModels = (Array.isArray(value) ? value : value == null ? [] : [value])
+    .map(item => typeof item === 'string' ? item : String(item))
+    .map(model => model.trim())
+    .filter(Boolean)
+  const config = props.apiKeyConfigs?.find(cfg => cfg.key === row.key)
+  const nextConfig: APIKeyConfig = config
+    ? { ...config, availableModels }
+    : { key: row.key, ...(row.keyUid ? { keyUid: row.keyUid } : {}), ...(row.credentialUid ? { credentialUid: row.credentialUid } : {}), availableModels }
+  const configs = [...(props.apiKeyConfigs ?? [])]
+  const index = configs.findIndex(cfg => cfg.key === row.key)
+  if (index < 0) configs.push(nextConfig)
+  else configs[index] = nextConfig
+  emit('update:apiKeyConfigs', configs)
+}
 
 const visibleDisabledKeyModels = computed(() => props.disabledKeyModels || [])
 const visibleDisabledGroupModels = computed(() => props.disabledGroupModels || [])

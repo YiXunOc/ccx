@@ -242,6 +242,36 @@ func TestPlainAPIKeySelectionSkipsDisabledModel(t *testing.T) {
 	}
 }
 
+func TestPlainAPIKeySelectionFilteredByAvailableModelsBeforePolicy(t *testing.T) {
+	upstream := &config.UpstreamConfig{
+		Name:    "available-models-plain",
+		BaseURL: "https://example.com",
+		APIKeys: []string{"sk-wrong", "sk-right"},
+		APIKeyConfigs: []config.APIKeyConfig{
+			{Key: "sk-wrong", AvailableModels: []string{"other-model"}},
+			{Key: "sk-right", AvailableModels: []string{"TARGET-MODEL"}},
+		},
+	}
+	policy := &autopilot.EndpointAttemptPolicy{}
+	fallback := func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+		for _, key := range upstream.APIKeys {
+			if !failedKeys[key] {
+				return key, nil
+			}
+		}
+		return "", errors.New("no key")
+	}
+
+	_, key, err := selectAttemptAPIKeyFiltered(nil, scheduler.ChannelKindMessages, 0, upstream, upstream.BaseURL,
+		map[string]bool{}, map[string]bool{}, "target-model", fallback, policy, "Messages", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("select key error: %v", err)
+	}
+	if key != "sk-right" {
+		t.Fatalf("raw/policy selection key = %q, want sk-right", key)
+	}
+}
+
 func TestPlainAPIKeySelectionSkipsDisabledKey(t *testing.T) {
 	upstream := &config.UpstreamConfig{
 		Name:    "managed-plain-keys",

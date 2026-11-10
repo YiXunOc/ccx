@@ -913,6 +913,8 @@ func applyAPIKeyConfigUpdate(upstream *UpstreamConfig, updates UpstreamUpdate) {
 	if updates.APIKeyConfigs != nil {
 		if updates.SkipAPIKeyConfigMerge {
 			upstream.APIKeyConfigs = normalizeAPIKeyConfigs(upstream.APIKeys, updates.APIKeyConfigs)
+		} else if updates.APIKeyConfigsPatch {
+			upstream.APIKeyConfigs = patchAndNormalizeAPIKeyConfigs(upstream.APIKeys, upstream.APIKeyConfigs, updates.APIKeyConfigs)
 		} else {
 			upstream.APIKeyConfigs = mergeAndNormalizeAPIKeyConfigs(upstream.APIKeys, upstream.APIKeyConfigs, updates.APIKeyConfigs)
 		}
@@ -959,6 +961,9 @@ func cloneAPIKeyConfig(cfg APIKeyConfig) APIKeyConfig {
 	}
 	if cfg.Models != nil {
 		cfg.Models = append([]string(nil), cfg.Models...)
+	}
+	if cfg.AvailableModels != nil {
+		cfg.AvailableModels = append([]string(nil), cfg.AvailableModels...)
 	}
 	cfg.ConsumptionPolicy = NormalizeKeyConsumptionPolicy(cfg.ConsumptionPolicy)
 	return cfg

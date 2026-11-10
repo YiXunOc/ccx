@@ -33,6 +33,28 @@ func TestCandidatesForModel_FiltersByModels(t *testing.T) {
 	}
 }
 
+func TestCandidatesForModel_FiltersByAvailableModelsExactCaseInsensitive(t *testing.T) {
+	up := &config.UpstreamConfig{
+		APIKeys: []string{"allowed", "wrong-case", "unrestricted"},
+		APIKeyConfigs: []config.APIKeyConfig{
+			{Key: "allowed", AvailableModels: []string{"gpt-4o"}},
+			{Key: "wrong-case", AvailableModels: []string{"GPT-4O-MINI"}},
+			{Key: "unrestricted"},
+		},
+	}
+
+	cands := CandidatesForModel(up, nil, "GPT-4O")
+	if len(cands) != 2 || cands[0].APIKey != "allowed" || cands[1].APIKey != "unrestricted" {
+		t.Fatalf("availableModels must be exact case-insensitive and empty unrestricted, got %+v", cands)
+	}
+	if IsModelAvailableForKey(up, "allowed", "other-model") || !IsModelAvailableForKey(up, "allowed", "GPT-4O") {
+		t.Fatal("final key lookup must enforce the current config's allowlist")
+	}
+	if !IsModelAvailableForKey(up, "unrestricted", "other-model") {
+		t.Fatal("missing key allowlist should remain unrestricted")
+	}
+}
+
 func TestCandidatesForModel_WildcardPattern(t *testing.T) {
 	up := &config.UpstreamConfig{
 		APIKeys: []string{"k1", "k2"},

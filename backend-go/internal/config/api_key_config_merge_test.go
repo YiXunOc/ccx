@@ -152,6 +152,55 @@ func TestMergeAPIKeyConfigPreservesConsumptionPolicy(t *testing.T) {
 	}
 }
 
+func TestApplyAPIKeyConfigPatchPreservesUnrelatedFields(t *testing.T) {
+	ratio := 1.25
+	upstream := &UpstreamConfig{APIKeys: []string{"k1"}, APIKeyConfigs: []APIKeyConfig{{Key: "k1", KeyUID: "uid-1", BaseURL: "https://bound.example", Name: "primary", QuotaGroup: "group", Enabled: boolPtrForPatchTest(false), RateLimitRPM: 12, Weight: 3, Models: []string{"!blocked"}, GroupMultiplier: &ratio, AvailableModels: []string{"old"}}}}
+	applyAPIKeyConfigUpdate(upstream, UpstreamUpdate{APIKeyConfigsPatch: true, APIKeyConfigs: []APIKeyConfig{{Key: "k1", KeyUID: "uid-1", AvailableModels: []string{}, ConsumptionPolicy: KeyConsumptionOpportunistic}}})
+	got := upstream.APIKeyConfigs[0]
+	if got.BaseURL != "https://bound.example" || got.Name != "primary" || got.QuotaGroup != "group" || got.Enabled == nil || *got.Enabled || got.RateLimitRPM != 12 || got.Weight != 3 || len(got.Models) != 1 || got.GroupMultiplier == nil || *got.GroupMultiplier != ratio || got.AvailableModels == nil || len(got.AvailableModels) != 0 || got.ConsumptionPolicy != KeyConsumptionOpportunistic {
+		t.Fatalf("key patch lost unrelated settings or failed explicit clear: %+v", got)
+	}
+}
+
+func boolPtrForPatchTest(value bool) *bool { return &value }
+
+func TestMergeAvailableModelsOnlyPatchKeepsOtherKeySettings(t *testing.T) {
+	existing := []APIKeyConfig{{Key: "k1", KeyUID: "uid-1", BaseURL: "https://bound.example", Name: "primary", Models: []string{"!blocked"}, AvailableModels: []string{"old"}}}
+	got := patchAndNormalizeAPIKeyConfigs([]string{"k1"}, existing, []APIKeyConfig{{Key: "k1", KeyUID: "uid-1", AvailableModels: []string{"new"}}})
+	if len(got) != 1 || got[0].BaseURL != existing[0].BaseURL || got[0].Name != existing[0].Name || len(got[0].Models) != 1 || got[0].AvailableModels[0] != "new" {
+		t.Fatalf("available-model-only patch lost unrelated key settings: %+v", got)
+	}
+}
+
+func TestMergeAPIKeyConfigPreservesNilAndClearsExplicitEmptyAvailableModels(t *testing.T) {
+	existing := APIKeyConfig{Key: "k1", AvailableModels: []string{"gpt-4o"}}
+
+	merged := mergeAPIKeyConfig(&existing, APIKeyConfig{Key: "k1"})
+	if len(merged.AvailableModels) != 1 || merged.AvailableModels[0] != "gpt-4o" {
+		t.Fatalf("nil AvailableModels should preserve existing value, got %+v", merged.AvailableModels)
+	}
+
+	merged = mergeAPIKeyConfig(&existing, APIKeyConfig{Key: "k1", AvailableModels: []string{}})
+	if merged.AvailableModels == nil || len(merged.AvailableModels) != 0 {
+		t.Fatalf("explicit empty AvailableModels should clear existing value, got %#v", merged.AvailableModels)
+	}
+}
+
+func TestCloneAPIKeyConfigCopiesAvailableModels(t *testing.T) {
+	upstream := UpstreamConfig{APIKeyConfigs: []APIKeyConfig{{Key: "k1", AvailableModels: []string{"gpt-4o"}}}}
+	clone := upstream.Clone()
+	clone.APIKeyConfigs[0].AvailableModels[0] = "changed"
+	if upstream.APIKeyConfigs[0].AvailableModels[0] != "gpt-4o" {
+		t.Fatal("clone should not share AvailableModels backing array")
+	}
+}
+
+func TestIsAPIKeyConfigEffectiveIncludesAvailableModels(t *testing.T) {
+	if !IsAPIKeyConfigEffective(APIKeyConfig{AvailableModels: []string{"gpt-4o"}}) {
+		t.Fatal("AvailableModels should make APIKeyConfig effective")
+	}
+}
+
 func TestMarkAutopilotPresenceDetectsExplicitEmptyExchangeQuotes(t *testing.T) {
 	cfg := DefaultAutopilotRoutingConfig()
 	cfg.CostOptimization.ExchangeRateQuotesConfigured = false

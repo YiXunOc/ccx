@@ -16,6 +16,20 @@ describe('buildChannelPayload', () => {
     expect(payload.modelMapping).toEqual(form.modelMapping)
     expect(payload.supportedModels).toEqual(['Model-A'])
   })
+  it('normalizes availableModels and preserves [] as an explicit clear', () => {
+    const form = {
+      name: 'key-models', serviceType: 'openai' as const, baseUrl: 'https://example.com', baseUrls: [], website: '',
+      insecureSkipVerify: false, lowQuality: false, injectDummyThoughtSignature: false, stripThoughtSignature: false,
+      description: '', apiKeys: ['sk-1'], apiKeyConfigs: [{ key: 'sk-1', availableModels: [' alpha ', '', 'beta'] }],
+      reasoningParamStyle: 'reasoning', textVerbosity: '', fastMode: false, customHeaders: {}, proxyUrl: '',
+      routePrefix: '', supportedModels: [], modelMapping: {}, autoBlacklistBalance: true,
+      normalizeMetadataUserId: true, normalizeSystemRoleToTopLevel: false, codexToolCompat: false, noVision: false,
+    }
+    expect(buildChannelPayload(form as Parameters<typeof buildChannelPayload>[0]).apiKeyConfigs?.[0].availableModels).toEqual(['alpha', 'beta'])
+    expect(buildChannelPayload({ ...form, apiKeyConfigs: [{ key: 'sk-1', availableModels: [] }] } as Parameters<typeof buildChannelPayload>[0])
+      .apiKeyConfigs?.[0].availableModels).toEqual([])
+  })
+
   it('应序列化渠道级 verbosity/fastMode', () => {
     const result = buildChannelPayload({
       name: '  test-channel  ',

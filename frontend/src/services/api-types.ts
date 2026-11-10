@@ -142,6 +142,8 @@ export interface APIKeyConfig {
   rateLimitAutoFromHeaders?: boolean
   weight?: number
   models?: string[]
+  /** Per-key allow-list; undefined/[] means unrestricted. */
+  availableModels?: string[]
   /** 保留服务端未来扩展字段，整对象编辑时不得意外丢失。 */
   [key: string]: unknown
 }

@@ -1161,6 +1161,16 @@ func TryUpstreamWithAllKeys(
 				}
 				continue
 			}
+			if actualAttemptModel != "" && !keypool.IsModelAvailableForKey(upstream, apiKey, actualAttemptModel) {
+				RequestLogf(c, "[%s-KeyModel] 跳过 (Key %s, 模型 %s)：不在 availableModels 白名单，尝试下一个 Key/渠道",
+					apiType, utils.MaskAPIKey(apiKey), actualAttemptModel)
+				failedKeys[apiKey] = true
+				if probeKey := currentBaseURL + "|" + apiKey; probeAcquired[probeKey] {
+					metricsManager.ReleaseProbe(currentBaseURL, apiKey, metricsServiceType)
+					delete(probeAcquired, probeKey)
+				}
+				continue
+			}
 
 			actualOriginalModel := ""
 			if actualAttemptModel != model {
@@ -2358,13 +2368,13 @@ func selectAttemptAPIKeyFiltered(
 			for _, k := range sorted {
 				filteredSet[k] = true
 			}
-			if key != "" && filteredSet[key] && !effectiveFailedKeys[key] {
+			if key != "" && filteredSet[key] && !effectiveFailedKeys[key] && keypool.IsModelAvailableForKey(upstream, key, model) {
 				return keypool.Selection{APIKey: key}, key, nil
 			}
 		}
 		// 五元组调度 pin：选中 key 在 policy 过滤集内时优先返回；
 		// pin key 失败进入 failedKeys 后自然落到下方循环（兜底轮转）。
-		if pinAPIKey != "" && !effectiveFailedKeys[pinAPIKey] {
+		if pinAPIKey != "" && !effectiveFailedKeys[pinAPIKey] && keypool.IsModelAvailableForKey(upstream, pinAPIKey, model) {
 			for _, key := range sorted {
 				if key == pinAPIKey {
 					return keypool.Selection{APIKey: key}, key, nil
@@ -2372,7 +2382,7 @@ func selectAttemptAPIKeyFiltered(
 			}
 		}
 		for _, key := range sorted {
-			if key != "" && !effectiveFailedKeys[key] {
+			if key != "" && !effectiveFailedKeys[key] && keypool.IsModelAvailableForKey(upstream, key, model) {
 				return keypool.Selection{APIKey: key}, key, nil
 			}
 		}

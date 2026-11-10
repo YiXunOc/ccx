@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildManagedChannelPatch, buildStagedKeyMultiplierConfigs, listDroppedManagedChannelFields } from './managedChannelPatch'
+import { buildManagedChannelPatch, buildStagedKeyMultiplierConfigs, buildStagedManagedKeyConfigs, listDroppedManagedChannelFields } from './managedChannelPatch'
 import type { Channel } from '../services/api'
 
 const baseChannel = {
@@ -147,12 +147,48 @@ describe('buildStagedKeyMultiplierConfigs', () => {
       apiKeyConfigs: [{ key: 'sk-1', keyUid: 'uid-1', groupMultiplier: null, consumptionPolicy: 'normal' }],
     })
     expect(staged).toEqual([
-      { key: 'sk-1', keyUid: 'uid-1', credentialUid: undefined, groupMultiplier: null, consumptionPolicy: 'normal' },
+      { key: 'sk-1', keyUid: 'uid-1', credentialUid: undefined, groupMultiplier: null },
     ])
   })
 
   it('original 为空或无 configs 时返回 null', () => {
     expect(buildStagedKeyMultiplierConfigs(null, { apiKeyConfigs: [{ key: 'k' }] })).toBeNull()
     expect(buildStagedKeyMultiplierConfigs(original, {})).toBeNull()
+  })
+})
+
+describe('buildStagedManagedKeyConfigs', () => {
+  const original = { ...baseChannel, apiKeyConfigs: [
+    { key: 'sk-1', keyUid: 'uid-1', credentialUid: 'cred-1', availableModels: ['alpha'], groupMultiplier: 1, consumptionPolicy: 'normal' },
+    { key: 'sk-2', keyUid: 'uid-2', availableModels: ['beta'] },
+  ] } as Channel
+
+  it('sends only changed allow-list plus identity and preserves explicit empty clear', () => {
+    expect(buildStagedManagedKeyConfigs(original, { apiKeyConfigs: [
+      { key: 'sk-1', keyUid: 'uid-1', credentialUid: 'cred-1', availableModels: [], groupMultiplier: 1, consumptionPolicy: 'normal', sourceRemoteTokenId: 42 },
+    ] })).toEqual([{ key: 'sk-1', keyUid: 'uid-1', credentialUid: 'cred-1', availableModels: [] }])
+  })
+
+  it('omits an unchanged or absent allow-list without clearing it', () => {
+    expect(buildStagedManagedKeyConfigs(original, { apiKeyConfigs: [
+      { key: 'sk-1', keyUid: 'uid-1', availableModels: ['alpha'] },
+      { key: 'sk-2', keyUid: 'uid-2' },
+    ] })).toBeNull()
+  })
+
+  it('treats an explicit empty list as unchanged against an unrestricted key', () => {
+    expect(buildStagedManagedKeyConfigs({ ...original, apiKeyConfigs: [{ key: 'sk-1', keyUid: 'uid-1' }] }, {
+      apiKeyConfigs: [{ key: 'sk-1', keyUid: 'uid-1', availableModels: [] }],
+    })).toBeNull()
+  })
+
+  it('sends changed multiplier and allow-list on different keys without unrelated fields', () => {
+    expect(buildStagedManagedKeyConfigs(original, { apiKeyConfigs: [
+      { key: 'sk-1', keyUid: 'uid-1', credentialUid: 'cred-1', groupMultiplier: 2, consumptionPolicy: 'normal' },
+      { key: 'sk-2', keyUid: 'uid-2', availableModels: ['gamma'] },
+    ] })).toEqual([
+      { key: 'sk-1', keyUid: 'uid-1', credentialUid: 'cred-1', groupMultiplier: 2 },
+      { key: 'sk-2', keyUid: 'uid-2', availableModels: ['gamma'] },
+    ])
   })
 })

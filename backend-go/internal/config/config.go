@@ -316,6 +316,8 @@ type APIKeyConfig struct {
 	RateLimitAutoFromHeaders *bool                `json:"rateLimitAutoFromHeaders,omitempty"`
 	Weight                   int                  `json:"weight,omitempty"`
 	Models                   []string             `json:"models,omitempty"`
+	// AvailableModels restricts the actual upstream model by exact case-insensitive match; empty is unrestricted.
+	AvailableModels []string `json:"availableModels,omitempty"`
 }
 
 // ManagedAccountConfig 是自动托管 provider 的账号级持久化根。
@@ -792,6 +794,29 @@ func normalizeAPIKeyConfigs(apiKeys []string, configs []APIKeyConfig) []APIKeyCo
 	return normalized
 }
 
+func patchAndNormalizeAPIKeyConfigs(apiKeys []string, existing []APIKeyConfig, incoming []APIKeyConfig) []APIKeyConfig {
+	patched := append([]APIKeyConfig(nil), existing...)
+	for _, next := range incoming {
+		target := findExistingAPIKeyConfig(patched, next)
+		if target == nil {
+			patched = append(patched, next)
+			continue
+		}
+		merged := cloneAPIKeyConfig(*target)
+		if next.AvailableModels != nil {
+			merged.AvailableModels = append([]string{}, next.AvailableModels...)
+		}
+		if next.GroupMultiplier != nil {
+			merged.GroupMultiplier = next.GroupMultiplier
+		}
+		if next.ConsumptionPolicy != "" {
+			merged.ConsumptionPolicy = next.ConsumptionPolicy
+		}
+		*target = merged
+	}
+	return normalizeAPIKeyConfigs(apiKeys, patched)
+}
+
 // mergeAndNormalizeAPIKeyConfigs 以 existing 为基底、把 incoming 逐条合并上去（按 KeyUID /
 // CredentialUID / Key 定位），未提及的 Key 配置保持原样。
 // 渠道编辑保存只下发变更 Key 的 trimmed 配置（托管渠道单卡补发仅带定位+倍率字段），
@@ -872,6 +897,9 @@ func mergeAPIKeyConfig(existing *APIKeyConfig, incoming APIKeyConfig) APIKeyConf
 	if merged.GroupMultiplier == nil {
 		merged.GroupMultiplier = existing.GroupMultiplier
 	}
+	if merged.AvailableModels == nil {
+		merged.AvailableModels = existing.AvailableModels
+	}
 	if strings.TrimSpace(merged.MultiplierSource) == "" {
 		merged.MultiplierSource = existing.MultiplierSource
 	}
@@ -916,7 +944,7 @@ func IsAPIKeyConfigEffective(cfg APIKeyConfig) bool {
 	if cfg.RateLimitAutoFromHeaders != nil {
 		return true
 	}
-	if cfg.Weight > 0 || len(cfg.Models) > 0 {
+	if cfg.Weight > 0 || len(cfg.Models) > 0 || len(cfg.AvailableModels) > 0 {
 		return true
 	}
 	// 显式配置了非默认消耗策略时保留该配置条目。
@@ -1319,6 +1347,7 @@ type UpstreamUpdate struct {
 	BaseURLs                 []string                           `json:"baseUrls"`
 	APIKeys                  []string                           `json:"apiKeys"`
 	APIKeyConfigs            []APIKeyConfig                     `json:"apiKeyConfigs"`
+	APIKeyConfigsPatch       bool                               `json:"apiKeyConfigsPatch"`
 	Remark                   *string                            `json:"remark"`
 	Description              *string                            `json:"description"`
 	Website                  *string                            `json:"website"`

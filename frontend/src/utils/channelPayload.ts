@@ -505,6 +505,7 @@ export function buildChannelPayload(
       if (typeof cfg.name === 'string') normalized.name = cfg.name.trim() || undefined
       if (typeof cfg.quotaGroup === 'string') normalized.quotaGroup = cfg.quotaGroup.trim() || undefined
       if (Array.isArray(cfg.models)) normalized.models = cfg.models.map(model => model.trim()).filter(Boolean)
+      if (Array.isArray(cfg.availableModels)) normalized.availableModels = cfg.availableModels.map(model => model.trim()).filter(Boolean)
       return normalized
     })
   const advancedOptions = normalizeAdvancedChannelOptions(form.serviceType, {

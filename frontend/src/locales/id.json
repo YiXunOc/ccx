@@ -507,6 +507,8 @@
   "channelCard.modelNotFound": "Model tidak tersedia",
   "channelCard.groupModelPolicy": "Kecualikan model per grup",
   "channelCard.keyModelPolicy": "Kecualikan model untuk key ini",
+  "channelCard.availableModels": "Model yang tersedia untuk key ini",
+  "channelCard.availableModelsHint": "Kosongkan untuk mengizinkan semua model",
   "channelCard.disabledGroupModels": "Model grup dinonaktifkan manual",
   "channelCard.disableGroupModel": "Nonaktifkan model",
   "channelCard.restoreGroupModel": "Pulihkan model",

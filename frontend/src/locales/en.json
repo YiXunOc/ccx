@@ -507,6 +507,8 @@
   "channelCard.modelNotFound": "Model unavailable",
   "channelCard.groupModelPolicy": "Exclude models by group",
   "channelCard.keyModelPolicy": "Exclude models for this key",
+  "channelCard.availableModels": "Available models for this key",
+  "channelCard.availableModelsHint": "Leave empty to allow all models",
   "channelCard.disabledGroupModels": "Manually disabled group models",
   "channelCard.disableGroupModel": "Disable model",
   "channelCard.restoreGroupModel": "Restore model",

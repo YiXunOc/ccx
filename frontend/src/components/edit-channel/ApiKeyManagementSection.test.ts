@@ -233,6 +233,30 @@ describe('ApiKeyManagementSection', () => {
     expect(wrapper.text().toLowerCase().match(/manual/g)).toHaveLength(1)
   })
 
+  it('stages a per-key available-model allow-list and allows clearing it', async () => {
+    const wrapper = mountSection({
+      apiKeyConfigs: [{ key: 'sk-1', keyUid: 'uid-1', availableModels: ['alpha'] }],
+      channelUid: 'ch-1',
+      channelKind: 'messages',
+    })
+    await nextTick()
+    await wrapper.find('[aria-label="channelCard.keyDetail"]').trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('channelCard.availableModels')
+    const editor = wrapper.findAllComponents(comboboxStub)
+      .find(component => JSON.stringify(component.props('modelValue')) === JSON.stringify(['alpha']))
+    expect(editor).toBeDefined()
+    await editor!.vm.$emit('update:modelValue', ['alpha', 'beta'])
+    await nextTick()
+    const addedEvents = wrapper.emitted('update:apiKeyConfigs') || []
+    expect((addedEvents[addedEvents.length - 1][0] as Array<Record<string, unknown>>)[0].availableModels).toEqual(['alpha', 'beta'])
+    await wrapper.setProps({ apiKeyConfigs: addedEvents[addedEvents.length - 1][0] as Array<import('../../services/api-types').APIKeyConfig> })
+    await editor!.vm.$emit('update:modelValue', [])
+    await nextTick()
+    const events = wrapper.emitted('update:apiKeyConfigs') || []
+    expect((events[events.length - 1][0] as Array<Record<string, unknown>>)[0].availableModels).toEqual([])
+  })
+
   it('opens multiplier editor with current policy', async () => {
     const wrapper = mountSection({
       apiKeyConfigs: [

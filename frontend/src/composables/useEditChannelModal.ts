@@ -529,6 +529,7 @@ export function useEditChannelModal(props: ResolvedEditChannelModalProps, emit: 
       ? channel.apiKeyConfigs.map(cfg => ({
           ...cfg,
           models: cfg.models ? [...cfg.models] : undefined,
+          availableModels: cfg.availableModels ? [...cfg.availableModels] : undefined,
         }))
       : undefined
 

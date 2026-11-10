@@ -98,37 +98,48 @@ type KeyMultiplierConfigLike = {
   consumptionPolicy?: 'normal' | 'opportunistic' | null
 }
 
-/**
- * 比较 Key 级倍率（groupMultiplier/consumptionPolicy）在编辑前后的差异，
- * 返回需要随单卡更新补发的 trimmed apiKeyConfigs（仅定位字段+倍率字段，
- * 避免覆盖托管凭证元数据）；无差异返回 null。托管账号保存链路专用。
- */
-export function buildStagedKeyMultiplierConfigs(
+type ManagedKeyConfigLike = KeyMultiplierConfigLike & {
+  availableModels?: string[]
+}
+
+function stringListsEqual(a: string[] | undefined, b: string[] | undefined): boolean {
+  return isStructurallyEqual(a, b)
+}
+
+/** Stage changed per-key managed fields only; an explicit [] remains a clear. */
+export function buildStagedManagedKeyConfigs(
   original: Channel | null | undefined,
   next: Record<string, unknown>,
-): Array<KeyMultiplierConfigLike> | null {
+): Array<ManagedKeyConfigLike> | null {
   if (!original) return null
-  const originalConfigs = (original as unknown as Record<string, unknown>).apiKeyConfigs as KeyMultiplierConfigLike[] | undefined
-  const nextConfigs = next.apiKeyConfigs as KeyMultiplierConfigLike[] | undefined
+  const originalConfigs = (original as unknown as Record<string, unknown>).apiKeyConfigs as ManagedKeyConfigLike[] | undefined
+  const nextConfigs = next.apiKeyConfigs as ManagedKeyConfigLike[] | undefined
   if (!nextConfigs?.length) return null
 
-  const staged: Array<KeyMultiplierConfigLike> = []
+  const staged: Array<ManagedKeyConfigLike> = []
   for (const nextCfg of nextConfigs) {
     const before = originalConfigs?.find(cfg =>
       (nextCfg.keyUid && cfg.keyUid === nextCfg.keyUid)
       || (nextCfg.credentialUid && cfg.credentialUid === nextCfg.credentialUid)
       || (nextCfg.key && cfg.key === nextCfg.key),
     )
-    const multiplierChanged = !looselyEqual(before?.groupMultiplier ?? null, nextCfg.groupMultiplier ?? null)
-    const policyChanged = (before?.consumptionPolicy ?? null) !== (nextCfg.consumptionPolicy ?? null)
-    if (!multiplierChanged && !policyChanged) continue
+    const multiplierChanged = 'groupMultiplier' in nextCfg
+      && !looselyEqual(before?.groupMultiplier ?? null, nextCfg.groupMultiplier ?? null)
+    const policyChanged = 'consumptionPolicy' in nextCfg
+      && (before?.consumptionPolicy ?? null) !== (nextCfg.consumptionPolicy ?? null)
+    const availableModelsChanged = Array.isArray(nextCfg.availableModels)
+      && !stringListsEqual(before?.availableModels ?? [], nextCfg.availableModels)
+    if (!multiplierChanged && !policyChanged && !availableModelsChanged) continue
     staged.push({
       key: nextCfg.key,
       keyUid: nextCfg.keyUid,
       credentialUid: nextCfg.credentialUid,
-      groupMultiplier: nextCfg.groupMultiplier ?? null,
-      consumptionPolicy: nextCfg.consumptionPolicy ?? null,
+      ...(multiplierChanged ? { groupMultiplier: nextCfg.groupMultiplier ?? null } : {}),
+      ...(policyChanged ? { consumptionPolicy: nextCfg.consumptionPolicy ?? null } : {}),
+      ...(availableModelsChanged ? { availableModels: [...nextCfg.availableModels!] } : {}),
     })
   }
   return staged.length > 0 ? staged : null
 }
+
+export const buildStagedKeyMultiplierConfigs = buildStagedManagedKeyConfigs
