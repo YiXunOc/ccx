@@ -81,9 +81,9 @@ const chipStub = defineComponent({
   template: '<div v-bind="$attrs"><slot /><button v-if="closable !== undefined && closable !== false" class="chip-close" :aria-label="closeLabel" :disabled="disabled" @click="$emit(\'click:close\')" type="button">x</button></div>',
 })
 const comboboxStub = defineComponent({
-  props: ['modelValue', 'items', 'label'],
-  emits: ['update:modelValue'],
-  template: '<div><input class="combobox-stub-input" :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)" /></div>',
+  props: ['modelValue', 'search', 'items', 'label', 'multiple'],
+  emits: ['update:modelValue', 'update:search', 'blur'],
+  template: '<div><input class="combobox-stub-input" :class="{ \'model-exclusion-text\': \'data-model-exclusion\' in $attrs }" :value="\'data-model-exclusion\' in $attrs ? search : modelValue" @input="\'data-model-exclusion\' in $attrs && $emit(\'update:search\', $event.target.value)" @change="!(\'data-model-exclusion\' in $attrs) && $emit(\'update:modelValue\', $event.target.value)" @blur="$emit(\'blur\', $event)" /></div>',
 })
 
 const mountSection = (props: Record<string, unknown> = {}, realChips = false) => mount(ApiKeyManagementSection, {
@@ -816,6 +816,24 @@ describe('分组模型排除行内化', () => {
     await wrapper.setProps({ disabledGroupModels: [records[1]] })
     expect(wrapper.get('.group-model-policy-list').text()).toContain(maskApiKey(records[1].key))
     expect(wrapper.get('.group-model-policy-list').text()).not.toContain(maskApiKey(records[0].key))
+  })
+
+  it('排除模型使用与可用模型一致的下拉控件，选中仍走原暂存事件', async () => {
+    const wrapper = mountSection({
+      apiKeyConfigs: [{ key: 'sk-1', keyUid: 'uid-1' }],
+      channelUid: 'ch-1',
+      channelKind: 'messages',
+      modelOptions: [{ title: 'model-a', value: 'model-a' }],
+    })
+    await wrapper.get('[aria-label="channelCard.keyDetail"]').trigger('click')
+    const combo = wrapper.findAllComponents(comboboxStub).find(component => component.attributes('data-model-exclusion') !== undefined)
+    expect(combo).toBeDefined()
+    expect(combo!.props('multiple')).not.toBeUndefined()
+    expect(combo!.props('items')).toEqual([{ title: 'model-a', value: 'model-a' }])
+    combo!.vm.$emit('update:modelValue', ['model-a'])
+    await nextTick()
+    expect(wrapper.emitted('stage-group-model-disable')).toEqual([['sk-1', 'model-a']])
+    expect(wrapper.emitted('update:apiKeyConfigs')).toBeUndefined()
   })
 
   it('统一详情按钮行内展开，模型选定即提交且无对话框按钮', async () => {

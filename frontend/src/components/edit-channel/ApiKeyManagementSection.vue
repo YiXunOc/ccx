@@ -685,22 +685,29 @@
                       <v-icon start size="14">mdi-clock-outline</v-icon>
                       {{ pending.model }}
                     </v-chip>
-                    <input
-                      v-model="groupModelForm.model"
-                      class="model-exclusion-text"
-                      :aria-label="t('channelCard.groupModelModel')"
-                      :aria-invalid="!!groupModelError"
-                      :aria-describedby="groupModelError ? 'model-exclusion-error' : undefined"
+                    <v-combobox
+                      data-model-exclusion
+                      :model-value="[]"
+                      :search="groupModelForm.model"
+                      :items="modelOptions"
+                      item-title="title"
+                      item-value="value"
+                      :return-object="false"
+                      multiple
+                      variant="outlined"
+                      density="compact"
+                      class="model-exclusion-combobox"
+                      :label="t('channelCard.groupModelModel')"
                       :placeholder="t('channelCard.groupModelModelPlaceholder')"
-                      list="model-exclusion-options"
+                      :error="!!groupModelError"
+                      :aria-describedby="groupModelError ? 'model-exclusion-error' : undefined"
+                      @update:search="groupModelForm.model = $event ?? ''"
+                      @update:model-value="onGroupModelSelected"
                       @blur="onGroupModelBlur"
-                      @keydown.enter="onGroupModelEnter"
+                      @keydown.enter.capture="onGroupModelEnter"
                       @compositionstart="groupModelComposing = true"
                       @compositionend="groupModelComposing = false"
                     />
-                    <datalist id="model-exclusion-options">
-                      <option v-for="option in modelOptions" :key="option.value" :value="option.value" />
-                    </datalist>
                   </div>
                   <div v-if="groupModelError" id="model-exclusion-error" class="text-error text-caption mt-1" role="alert">{{ groupModelError }}</div>
                   <div class="text-caption text-medium-emphasis mt-2">{{ t('channelCard.groupModelInlineHint') }}</div>
@@ -1952,6 +1959,12 @@ const submitGroupModelDisable = (): boolean => {
   groupModelForm.value.model = ''
   return true
 }
+const onGroupModelSelected = (value: string[] | null) => {
+  const model = value?.[value.length - 1]
+  if (!model) return
+  groupModelForm.value.model = model
+  submitGroupModelDisable()
+}
 const onGroupModelBlur = (event: FocusEvent) => {
   // Save finalizes explicitly; cancel discards. Avoid a second confirmation on the same click.
   if ((event.relatedTarget as HTMLElement | null)?.closest('[data-model-exclusion-action]')) return
@@ -3196,22 +3209,9 @@ const getDisabledKeyLabel = (reason: string) => {
 
 .model-exclusion-input {
   width: 100%;
-  padding: 8px 12px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.4);
-  border-radius: 4px;
   align-items: center;
 }
-.model-exclusion-input:focus-within { border-color: rgb(var(--v-theme-primary)); }
-.model-exclusion-input--error,
-.model-exclusion-input--error:focus-within { border-color: rgb(var(--v-theme-error)); }
-.model-exclusion-text {
-  flex: 1 1 180px;
-  min-width: 0;
-  max-width: 100%;
-  min-height: 32px;
-  outline: none;
-  color: inherit;
-}
+.model-exclusion-combobox { flex: 1 1 180px; min-width: 0; }
 .model-exclusion-input :deep(.v-chip) { max-width: 100%; height: auto; min-height: 26px; }
 .model-exclusion-input :deep(.v-chip__content) { white-space: normal; overflow-wrap: anywhere; }
 </style>
