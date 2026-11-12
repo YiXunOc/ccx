@@ -645,69 +645,54 @@
                   <div class="text-subtitle-2 font-weight-medium mb-1">{{ t(editingQuotaGroup ? 'channelCard.groupModelPolicy' : 'channelCard.keyModelPolicy') }}</div>
                   <div class="model-exclusion-input d-flex flex-wrap ga-2" :class="{ 'model-exclusion-input--error': groupModelError }">
 
-                    <v-chip
-                      v-for="saved in savedDisablesForEditingKey"
-                      :key="'saved|' + groupModelPolicyKey(saved)"
-                      :model-value="true"
-                      @update:model-value="() => {}"
-                      size="small"
-                      color="secondary"
-                      variant="tonal"
-                      closable
-                      :close-label="t('channelCard.restoreGroupModel')"
-                      :title="t('channelCard.restoreGroupModel')"
-                      :disabled="!!changingGroupModel"
-                      @click:close="!changingGroupModel && emit('restore-group-model', saved)"
-                    >
-                      <v-progress-circular
-                        v-if="changingGroupModel === groupModelPolicyKey(saved)"
-                        indeterminate
-                        size="14"
-                        width="2"
-                        class="mr-1"
-                      />
-                      {{ saved.model }}
-                    </v-chip>
-                    <v-chip
-                      v-for="pending in pendingDisablesForEditingKey"
-                      :key="'pending|' + pending.key + '|' + pending.model"
-                      size="small"
-                      color="warning"
-                      variant="tonal"
-                      closable
-                      :close-label="t('app.actions.cancel')"
-                      :title="t('app.actions.cancel')"
-                      :model-value="true"
-                      @update:model-value="() => {}"
-                      :disabled="!!changingGroupModel"
-                      @click:close="!changingGroupModel && unstageGroupModelDisable(pending.key, pending.model)"
-                    >
-                      <v-icon start size="14">mdi-clock-outline</v-icon>
-                      {{ pending.model }}
-                    </v-chip>
-                    <v-combobox
-                      data-model-exclusion
-                      :model-value="[]"
-                      :search="groupModelForm.model"
-                      :items="modelOptions"
-                      item-title="title"
-                      item-value="value"
-                      :return-object="false"
-                      multiple
-                      variant="outlined"
-                      density="compact"
-                      class="model-exclusion-combobox"
-                      :label="t('channelCard.groupModelModel')"
-                      :placeholder="t('channelCard.groupModelModelPlaceholder')"
-                      :error="!!groupModelError"
-                      :aria-describedby="groupModelError ? 'model-exclusion-error' : undefined"
-                      @update:search="groupModelForm.model = $event ?? ''"
-                      @update:model-value="onGroupModelSelected"
-                      @blur="onGroupModelBlur"
-                      @keydown.enter.capture="onGroupModelEnter"
-                      @compositionstart="groupModelComposing = true"
-                      @compositionend="groupModelComposing = false"
-                    />
+                  <v-combobox
+                    data-model-exclusion
+                    :model-value="groupExcludedModels"
+                    :search="groupModelForm.model"
+                    :items="groupExcludedModelOptions"
+                    item-title="title"
+                    item-value="value"
+                    :return-object="false"
+                    multiple
+                    chips
+                    closable-chips
+                    clearable
+                    variant="outlined"
+                    density="compact"
+                    class="model-exclusion-combobox"
+                    :label="t('channelCard.groupModelModel')"
+                    :placeholder="t('channelCard.groupModelModelPlaceholder')"
+                    :error="!!groupModelError"
+                    :aria-describedby="groupModelError ? 'model-exclusion-error' : undefined"
+                    @update:search="groupModelForm.model = $event ?? ''"
+                    @update:model-value="onGroupModelSelectionChange"
+                    @blur="onGroupModelBlur"
+                    @keydown.enter.capture="onGroupModelEnter"
+                    @compositionstart="groupModelComposing = true"
+                    @compositionend="groupModelComposing = false"
+                  >
+                    <template #chip="{ item }">
+                      <v-chip
+                        :model-value="true"
+                        @update:model-value="() => {}"
+                        closable
+                        size="small"
+                        :color="savedDisablesForEditingKey.some(record => record.model.toLowerCase() === String(item.value).toLowerCase()) ? 'secondary' : 'warning'"
+                        variant="tonal"
+                        :disabled="!!changingGroupModel"
+                        :close-label="savedDisablesForEditingKey.some(record => record.model.toLowerCase() === String(item.value).toLowerCase()) ? t('channelCard.restoreGroupModel') : t('app.actions.cancel')"
+                        :title="savedDisablesForEditingKey.some(record => record.model.toLowerCase() === String(item.value).toLowerCase()) ? t('channelCard.restoreGroupModel') : t('app.actions.cancel')"
+                        @click:close="onGroupModelChipClose(String(item.value))"
+                      >
+                        <v-progress-circular
+                          v-if="savedDisablesForEditingKey.some(record => record.model.toLowerCase() === String(item.value).toLowerCase()) && props.changingGroupModel === groupModelPolicyKey(savedDisablesForEditingKey.find(record => record.model.toLowerCase() === String(item.value).toLowerCase())!)"
+                          indeterminate size="14" width="2" class="mr-1"
+                        />
+                        <v-icon v-if="!savedDisablesForEditingKey.some(record => record.model.toLowerCase() === String(item.value).toLowerCase())" start size="14">mdi-clock-outline</v-icon>
+                        {{ item.title }}
+                      </v-chip>
+                    </template>
+                  </v-combobox>
                   </div>
                   <div v-if="groupModelError" id="model-exclusion-error" class="text-error text-caption mt-1" role="alert">{{ groupModelError }}</div>
                   <div class="text-caption text-medium-emphasis mt-2">{{ t('channelCard.groupModelInlineHint') }}</div>
@@ -1829,6 +1814,17 @@ const visibleDisabledKeyModels = computed(() => props.disabledKeyModels || [])
 const visibleDisabledGroupModels = computed(() => props.disabledGroupModels || [])
 const modelOptions = computed(() => props.modelOptions || [])
 const editingQuotaGroup = computed(() => keyRows.value.find(row => row.key === expandedDetailKey.value)?.quotaGroup?.trim() || '')
+const groupExcludedModels = computed(() => [
+  ...savedDisablesForEditingKey.value.map(record => record.model),
+  ...pendingDisablesForEditingKey.value.map(record => record.model),
+])
+const groupExcludedModelOptions = computed(() => {
+  const optionByModel = new Map(modelOptions.value.map(option => [option.value.toLowerCase(), option]))
+  for (const model of groupExcludedModels.value) {
+    if (!optionByModel.has(model.toLowerCase())) optionByModel.set(model.toLowerCase(), { title: model, value: model })
+  }
+  return [...optionByModel.values()]
+})
 const groupModelAffectedCount = computed(() => {
   if (!expandedDetailKey.value) return 0
   const group = editingQuotaGroup.value
@@ -1959,11 +1955,35 @@ const submitGroupModelDisable = (): boolean => {
   groupModelForm.value.model = ''
   return true
 }
-const onGroupModelSelected = (value: string[] | null) => {
-  const model = value?.[value.length - 1]
-  if (!model) return
-  groupModelForm.value.model = model
-  submitGroupModelDisable()
+const onGroupModelChipClose = (model: string) => {
+  if (props.changingGroupModel) return
+  const saved = savedDisablesForEditingKey.value.find(record => record.model.toLowerCase() === model.toLowerCase())
+  if (saved) emit('restore-group-model', saved)
+  else {
+    const pending = pendingDisablesForEditingKey.value.find(record => record.model.toLowerCase() === model.toLowerCase())
+    if (pending) unstageGroupModelDisable(pending.key, pending.model)
+  }
+}
+
+const onGroupModelSelectionChange = (value: string[] | null) => {
+  const selected = value ?? []
+  const current = groupExcludedModels.value
+  const removed = current.find(model => !selected.some(item => item.toLowerCase() === model.toLowerCase()))
+  if (removed) {
+    if (props.changingGroupModel) return
+    const saved = savedDisablesForEditingKey.value.find(record => record.model.toLowerCase() === removed.toLowerCase())
+    if (saved) emit('restore-group-model', saved)
+    else {
+      const pending = pendingDisablesForEditingKey.value.find(record => record.model.toLowerCase() === removed.toLowerCase())
+      if (pending) unstageGroupModelDisable(pending.key, pending.model)
+    }
+    return
+  }
+  const added = selected.find(model => !current.some(item => item.toLowerCase() === model.toLowerCase()))
+  if (added) {
+    groupModelForm.value.model = added
+    submitGroupModelDisable()
+  }
 }
 const onGroupModelBlur = (event: FocusEvent) => {
   // Save finalizes explicitly; cancel discards. Avoid a second confirmation on the same click.

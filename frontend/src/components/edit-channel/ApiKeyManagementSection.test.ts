@@ -83,7 +83,7 @@ const chipStub = defineComponent({
 const comboboxStub = defineComponent({
   props: ['modelValue', 'search', 'items', 'label', 'multiple'],
   emits: ['update:modelValue', 'update:search', 'blur'],
-  template: '<div><input class="combobox-stub-input" :class="{ \'model-exclusion-text\': \'data-model-exclusion\' in $attrs }" :value="\'data-model-exclusion\' in $attrs ? search : modelValue" @input="\'data-model-exclusion\' in $attrs && $emit(\'update:search\', $event.target.value)" @change="!(\'data-model-exclusion\' in $attrs) && $emit(\'update:modelValue\', $event.target.value)" @blur="$emit(\'blur\', $event)" /></div>',
+  template: '<div><div v-for="(value, index) in (Array.isArray(modelValue) ? modelValue : [])" :key="String(value)"><slot name="chip" :item="{ value, title: items.find(item => item.value === value)?.title ?? value }" :props="{ closable: true, closeLabel: \'restore\', \'onClick:close\': () => $emit(\'update:modelValue\', modelValue.filter((_, i) => i !== index)) }" /></div><input class="combobox-stub-input" :class="{ \'model-exclusion-text\': \'data-model-exclusion\' in $attrs }" :value="\'data-model-exclusion\' in $attrs ? search : modelValue" @input="$emit(\'update:search\', $event.target.value)" @change="!(\'data-model-exclusion\' in $attrs) && $emit(\'update:modelValue\', $event.target.value)" @blur="$emit(\'blur\', $event)" /></div>',
 })
 
 const mountSection = (props: Record<string, unknown> = {}, realChips = false) => mount(ApiKeyManagementSection, {
@@ -568,27 +568,39 @@ describe('分组模型排除行内化', () => {
       apiKeyConfigs: [{ key: 'sk-1', keyUid: 'uid-1' }],
     })
     await wrapper.get('[aria-label="channelCard.keyDetail"]').trigger('click')
-    return { wrapper, input: wrapper.get('input.model-exclusion-text') }
+    const combo = wrapper.findAllComponents(comboboxStub).find(component => component.attributes('data-model-exclusion') !== undefined)!
+    const input = wrapper.get('input.model-exclusion-text')
+    return {
+      wrapper,
+      combo,
+      input,
+      setDraft: async (value: string) => {
+        await input.setValue(value)
+        await combo.vm.$emit('update:search', value)
+      },
+      draft: () => String(combo.props('search') ?? ''),
+    }
   }
   it('分号批量过滤空项与大小写重复，输入期间不定稿', async () => {
-    const { wrapper, input } = await openInput()
-    await input.setValue(' Model-A ; model-a ； ; prefix* ; *suffix ; *contains* ')
+    const { wrapper, input, setDraft, draft } = await openInput()
+    await setDraft(' Model-A ; model-a ； ; prefix* ; *suffix ; *contains* ')
     expect(wrapper.emitted('stage-group-model-disable')).toBeUndefined()
     await input.trigger('blur')
     expect(wrapper.emitted('stage-group-model-disable')).toEqual([
       ['sk-1', 'Model-A'], ['sk-1', 'prefix*'], ['sk-1', '*suffix'], ['sk-1', '*contains*'],
     ])
-    expect((input.element as HTMLInputElement).value).toBe('')
+    await nextTick()
+    expect(draft()).toBe('')
   })
   it.each(['a*b', '**', 'a**', '*a*b*', 'a?', '[a]', '!a', '^a'])('非法语法保留整批文本且主保存入口返回失败：%s', async invalid => {
-    const { wrapper, input } = await openInput()
-    await input.setValue('valid; ' + invalid)
+    const { wrapper, setDraft, draft } = await openInput()
+    await setDraft('valid; ' + invalid)
     expect(wrapper.vm.finalizeModelExclusions()).toBe(false)
     await nextTick()
     expect(wrapper.get('[role="alert"]').text()).toContain('channelCard.groupModelInvalidPattern')
-    expect((input.element as HTMLInputElement).value).toBe('valid; ' + invalid)
+    expect(draft()).toBe('valid; ' + invalid)
     expect(wrapper.emitted('stage-group-model-disable')).toBeUndefined()
-    await input.setValue('corrected*')
+    await setDraft('corrected*')
     expect(wrapper.vm.finalizeModelExclusions()).toBe(true)
     await nextTick()
     expect(wrapper.find('#model-exclusion-error').exists()).toBe(false)
@@ -606,8 +618,8 @@ describe('分组模型排除行内化', () => {
   })
   it('Ctrl+Enter交由主保存定稿，不重复触发全模型确认', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const { wrapper, input } = await openInput()
-    await input.setValue('*')
+    const { wrapper, input, setDraft } = await openInput()
+    await setDraft('*')
     await input.trigger('keydown.enter', { ctrlKey: true })
     expect(confirm).not.toHaveBeenCalled()
     expect(wrapper.vm.finalizeModelExclusions()).toBe(true)
@@ -615,16 +627,16 @@ describe('分组模型排除行内化', () => {
     confirm.mockRestore()
   })
   it('主保存无需失焦即可定稿，重复调用不会重复发事件', async () => {
-    const { wrapper, input } = await openInput()
-    await input.setValue('new-a；new-b')
+    const { wrapper, setDraft } = await openInput()
+    await setDraft('new-a；new-b')
     expect(wrapper.vm.finalizeModelExclusions()).toBe(true)
     expect(wrapper.vm.finalizeModelExclusions()).toBe(true)
     expect(wrapper.emitted('stage-group-model-disable')).toEqual([['sk-1', 'new-a'], ['sk-1', 'new-b']])
   })
   it('IME组合期间Enter、blur和主保存均不定稿', async () => {
-    const { wrapper, input } = await openInput()
+    const { wrapper, input, setDraft } = await openInput()
     await input.trigger('compositionstart')
-    await input.setValue('model-x')
+    await setDraft('model-x')
     await input.trigger('keydown.enter', { isComposing: true })
     await input.trigger('blur')
     expect(wrapper.vm.finalizeModelExclusions()).toBe(false)
@@ -635,8 +647,8 @@ describe('分组模型排除行内化', () => {
   })
   it('移焦到主保存或取消不提前确认全模型，主保存独立校验', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    const { wrapper, input } = await openInput()
-    await input.setValue('*')
+    const { wrapper, input, setDraft } = await openInput()
+    await setDraft('*')
     const save = document.createElement('button')
     save.dataset.modelExclusionAction = 'save'
     await input.trigger('blur', { relatedTarget: save })
@@ -651,19 +663,19 @@ describe('分组模型排除行内化', () => {
   })
   it('全模型排除确认取消保留文本，接受后才暂存', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    const { wrapper, input } = await openInput()
-    await input.setValue('model-a;*')
+    const { wrapper, setDraft, draft } = await openInput()
+    await setDraft('model-a;*')
     expect(wrapper.vm.finalizeModelExclusions()).toBe(false)
     expect(wrapper.emitted('stage-group-model-disable')).toBeUndefined()
-    expect((input.element as HTMLInputElement).value).toBe('model-a;*')
+    expect(draft()).toBe('model-a;*')
     confirm.mockReturnValue(true)
     expect(wrapper.vm.finalizeModelExclusions()).toBe(true)
     expect(wrapper.emitted('stage-group-model-disable')).toEqual([['sk-1', 'model-a'], ['sk-1', '*']])
     confirm.mockRestore()
   })
   it('取消弹窗丢弃未定稿文本且不发送恢复请求', async () => {
-    const { wrapper, input } = await openInput()
-    await input.setValue('new-a')
+    const { wrapper, setDraft } = await openInput()
+    await setDraft('new-a')
     await wrapper.setProps({ dialogOpen: false })
     await wrapper.setProps({ dialogOpen: true })
     await wrapper.get('[aria-label="channelCard.keyDetail"]').trigger('click')
@@ -826,14 +838,52 @@ describe('分组模型排除行内化', () => {
       modelOptions: [{ title: 'model-a', value: 'model-a' }],
     })
     await wrapper.get('[aria-label="channelCard.keyDetail"]').trigger('click')
-    const combo = wrapper.findAllComponents(comboboxStub).find(component => component.attributes('data-model-exclusion') !== undefined)
-    expect(combo).toBeDefined()
-    expect(combo!.props('multiple')).not.toBeUndefined()
-    expect(combo!.props('items')).toEqual([{ title: 'model-a', value: 'model-a' }])
-    combo!.vm.$emit('update:modelValue', ['model-a'])
+    const combo = wrapper.findAllComponents(comboboxStub).find(component => component.attributes('data-model-exclusion') !== undefined)!
+    const input = wrapper.get('input.model-exclusion-text')
+    expect(combo.props('multiple')).not.toBeUndefined()
+    expect(combo.props('items')).toEqual([{ title: 'model-a', value: 'model-a' }])
+    await input.setValue('model-a')
+    await combo.vm.$emit('update:search', 'model-a')
+    await combo.vm.$emit('update:modelValue', ['model-a'])
     await nextTick()
     expect(wrapper.emitted('stage-group-model-disable')).toEqual([['sk-1', 'model-a']])
     expect(wrapper.emitted('update:apiKeyConfigs')).toBeUndefined()
+  })
+
+  it('排除框回显已保存与暂存模型，保持同一选择状态', async () => {
+    const wrapper = mountSection({
+      apiKeys: ['sk-1'],
+      channelUid: 'ch-1', channelKind: 'messages',
+      apiKeyConfigs: [{ key: 'sk-1', keyUid: 'uid-1' }],
+      disabledGroupModels: [{ quotaGroup: '', key: 'sk-1', model: 'saved-model', disabledAt: '' }],
+      pendingGroupModelDisables: [{ key: 'sk-1', model: 'pending-model' }],
+    })
+    await wrapper.get('[aria-label="channelCard.keyDetail"]').trigger('click')
+    const combo = wrapper.findAllComponents(comboboxStub).find(component => component.attributes('data-model-exclusion') !== undefined)!
+    expect(combo.props('modelValue')).toEqual(['saved-model', 'pending-model'])
+  })
+
+  it('首次选择后、重新展开时已选排除模型始终在同一输入框回显', async () => {
+    const wrapper = mountSection({
+      apiKeys: ['sk-1'],
+      channelUid: 'ch-1', channelKind: 'messages',
+      apiKeyConfigs: [{ key: 'sk-1', keyUid: 'uid-1' }],
+      modelOptions: [{ title: 'model-a', value: 'model-a' }],
+    })
+    const open = async () => {
+      await wrapper.get('[aria-label="channelCard.keyDetail"]').trigger('click')
+      return wrapper.findAllComponents(comboboxStub).find(component => component.attributes('data-model-exclusion') !== undefined)!
+    }
+    let combo = await open()
+    await combo.vm.$emit('update:modelValue', ['model-a'])
+    await nextTick()
+    expect(wrapper.emitted('stage-group-model-disable')).toEqual([['sk-1', 'model-a']])
+    await wrapper.setProps({ pendingGroupModelDisables: [{ key: 'sk-1', model: 'model-a' }] })
+    expect(combo.props('modelValue')).toEqual(['model-a'])
+
+    await wrapper.get('[aria-label="channelCard.keyDetail"]').trigger('click')
+    combo = await open()
+    expect(combo.props('modelValue')).toEqual(['model-a'])
   })
 
   it('统一详情按钮行内展开，模型选定即提交且无对话框按钮', async () => {
